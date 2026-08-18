@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Secrets
+.env
+.env.*
+
+# Local Redis dump and Windows Redis binaries
+dump.rdb
+redis-windows/
+
+# Archives
+*.zip
+
+# Local tooling
+.claude/
+.angular/
+dist/
+coverage/

@@ -1,0 +1,672 @@
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&display=swap" rel="stylesheet">
+
+<div class="page">
+
+  <header class="top-bar">
+    <div class="top-bar-left">
+      <button class="round-icon app-launcher" aria-label="Open app launcher"></button>
+      <div class="app-title-group">
+        <span class="app-system-name">Paperless System</span>
+      </div>
+    </div>
+    <button *ngIf="currentUser" class="sharepoint-connect-button" type="button" (click)="logout()">
+      Log Out
+    </button>
+  </header>
+
+  <section class="message-bar" aria-label="Message">
+    <div class="message-left">
+      <button class="message-icon-button" type="button" aria-label="Open message">
+        <i class="fi fi-rr-envelope" aria-hidden="true"></i>
+      </button>
+      <span class="app-divider">|</span>
+      <div *ngIf="currentUser" class="user-info-header">
+        <span class="user-name">{{ currentUser.username }}</span>
+      </div>
+      <div *ngIf="!currentUser" class="not-logged-in-message">
+        <span>{{ isConnecting ? 'Signing in to Microsoft 365...' : statusMessage }}</span>
+      </div>
+    </div>
+    
+    <div class="message-right">
+      <app-manual-refresh [isLoading]="isManualRefreshLoading" (refreshRequested)="onManualRefresh()"></app-manual-refresh>
+    </div>
+  </section>
+
+  <main class="main-layout" [class.all-files-layout]="showAllFilesSection">
+    <!-- ============================================================
+         TASK CARD (left column)
+         ============================================================ -->
+    <section class="card task-card" [class.active]="mobileCardView === 'task' || mobileCardView === 'todo' || mobileCardView === 'allFiles'" aria-label="Tasks">
+      <div class="card-header">
+        <div class="task-header-left">
+          <div class="user-profile-display" *ngIf="currentUser && currentUser.username"
+            [class.active]="!showToDoSection && !showAllFilesSection" (click)="toggleUserInfo()">
+            <i class="fi fi-rr-user" aria-hidden="true"></i>
+          </div>
+          
+          <button class="user-outline-icon" *ngIf="!currentUser?.username" (click)="toggleUserInfo()"
+            aria-label="Show user options"></button>
+
+          <button class="tab-button To-do"  type="button" [class.active]="showToDoSection" (click)="toggleToDoSection()">To Do</button>
+          <button class="tab-button AllFiles" type="button" [class.active]="showAllFilesSection" (click)="toggleAllFilesSection()">All Files</button>
+          <div class="plus-btn">
+            <i class="fi fi-br-plus" (click)="openPowerAppsModal(); $event.stopPropagation()"></i>
+          </div>
+        </div>
+      </div>
+
+      <div class="card-body">
+        <div *ngIf="currentUser && currentUser.email">
+          <!-- ToDo Section -->
+          <div *ngIf="showToDoSection" class="todo-section">
+            <app-todo-list
+            [loadingTasks]="isLoadingTodoTasks"
+            [loadingMoreTasks]="isLoadingMoreTodoTasks"
+            (submitterSelected)="onSubmitterSelected($event)"
+            (superiorModeChange)="onSuperiorModeChange($event)"
+            (taskCompleted)="onCompleteTask($event)"
+            (taskDueDateChanged)="onTaskDueDateChanged($event)">
+          </app-todo-list>
+
+          <div class="load-more-container" *ngIf="hasMoreTodoTasks && !isLoadingTodoTasks && !todoProcurementDrainActive">
+            <button
+              type="button"
+              class="load-more-btn"
+              [disabled]="isLoadingMoreTodoTasks"
+              (click)="loadMoreTodoTasks()">
+              Load more tasks
+            </button>
+          </div>
+          </div>
+
+          <!-- All Files Section — keep mounted after first open so cache / search state survives tab switches -->
+          <div
+            *ngIf="allFilesMounted"
+            class="all-files-section"
+            [class.all-files-section--hidden]="!showAllFilesSection">
+            <app-all-files
+              [commentItems]="commentItems"
+              [selectedApprovalFilter]="selectedApprovalFilter"
+              (approvalFilterChange)="onApprovalFilterChange($event)"
+              (fileSelected)="onAllFileSelected($event)"
+              (commentSelected)="onAllFilesCommentSelected($event)"
+              (attachmentSelected)="onAllFilesAttachmentSelected($event)"
+              (ensureFolderComments)="onEnsureFolderComments($event)"
+              (ensureFolderAttachments)="onEnsureFolderAttachments($event)"
+              (librarySelected)="onLibrarySelected($event)"
+              (foldersForPrefetch)="onFoldersForPrefetch($event)"></app-all-files>
+          </div>
+
+          <!-- Normal User Profile Display -->
+          <div *ngIf="!showToDoSection && !showAllFilesSection" class="user-list-container">
+            <div class="filter-container">
+              <ng-container *ngIf="taskFilterForms$ | async as taskForms">
+                <div class="filter-field">
+                  <span class="filter-label" id="hr-task-type-filter-label">Task type</span>
+                  <app-dropdown
+                    class="task-select-dropdown"
+                    [(ngModel)]="selectedTaskFilter"
+                    (ngModelChange)="onTaskFilterChange($event)"
+                    [options]="getTaskFilterOptions(taskForms)"
+                    placeholder="All Tasks"
+                    ariaLabel="Filter by task type"
+                    [fullWidth]="true"
+                    triggerId="hr-task-type-filter"
+                  />
+                </div>
+              </ng-container>
+              <div class="filter-field">
+                <span class="filter-label" id="hr-status-filter-label">Status</span>
+                <app-dropdown
+                  class="task-select-dropdown status-select-dropdown"
+                  [(ngModel)]="selectedApprovalFilter"
+                  (ngModelChange)="onApprovalFilterChange($event)"
+                  [options]="approvalFilterOptions"
+                  placeholder="All statuses"
+                  ariaLabel="Filter by approval status"
+                  [fullWidth]="true"
+                  triggerId="hr-status-filter"
+                />
+              </div>
+            </div>
+
+            <div class="user-list-scroll">
+              <app-hr-files
+                [items]="hrPersonalRootFolders"
+                [isLoading]="isLoadingHrFilesList"
+                [progressMessage]="userFileProgressMessage"
+                [errorMessage]="userFileError"
+                [warningMessage]="userFileWarning"
+                (loadRequested)="loadHrFilesInFirstSection()"
+                (itemSelected)="openHrFileListItem($event)"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         COMMENTS CARD (centre column — HR Tasks / eForms)
+         ============================================================ -->
+    <section class="card comment-card" [class.active]="mobileCardView === 'comments'" [hidden]="hideComments" aria-label="Comments">
+      <div class="card-header">
+        <div class="comment-title-group">
+          <i class="fi fi-rr-comment-alt" aria-hidden="true"></i>
+          <h2>
+            Comments
+            <span *ngIf="selectedFolderName && showAllFilesSection" class="submitter-filter-badge">
+              — {{ selectedFolderName }}
+            </span>
+            <span *ngIf="selectedSubmitter && !showAllFilesSection" class="submitter-filter-badge">
+              — {{ selectedSubmitter }}
+            </span>
+          </h2>
+        </div>
+        <div class="header-actions">
+          <div class="plus-btn" *ngIf="showToDoSection">
+            <button type="button" aria-label="Add new comment" (click)="openNewCommentModal(); $event.stopPropagation()">
+              <i class="fi fi-br-plus" aria-hidden="true"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card-body" *ngIf="!hideComments">
+        <div class="comment-search-row">
+          <div class="search-field">
+            <img class="search-icon" src="search.png" alt="Search">
+            <input
+              class="searchBar"
+              type="search"
+              placeholder="Search..."
+              (input)="onSearchChange($event)"
+              (search)="onSearchChange($event)"
+              [value]="searchQuery"
+            />
+          </div>
+        </div>
+
+        <!-- Empty state -->
+        <p *ngIf="!isLoadingComments && filteredCommentItems.length === 0 && !showAllFilesSection">
+          {{ commentsMessage || 'No HR Tasks found. Click refresh to load HR Tasks.' }}
+        </p>
+        <p *ngIf="!isLoadingComments && filteredCommentItems.length === 0 && showAllFilesSection">
+          {{ commentsMessage || 'No tasks found. Click a folder in All Files to load tasks.' }}
+        </p>
+
+        <app-loading-screen
+          [loading]="isLoadingComments"
+          [compact]="true"
+          [message]="commentsLoadingLabel"
+        ></app-loading-screen>
+
+        <p class="comments-loading-more" *ngIf="isLoadingMoreComments && !isLoadingComments">
+          Loading more tasks…
+        </p>
+
+        <!-- Detail modal: shown when user clicks "View Details" on a card -->
+        <div class="eform-content-viewer" *ngIf="selectedEFormContent">
+          
+          <div class="eform-content-header">
+            <div class="eform-header-info">
+              <h3>{{ selectedEFormContent.fileName }}</h3>
+              <div class="eform-meta-info">
+                <span class="eform-upload-date">Uploaded: {{ selectedEFormContent.uploadDate | date:'M/d/yy' }}</span>
+              </div>
+            </div>
+            <button class="close-content-btn" (click)="closeFormViewer()" aria-label="Close content">&times;</button>
+          </div>
+          <div class="eform-content-body">   
+            <div *ngIf="isLoadingEFormContent" class="loading-content">
+              Loading content...
+            </div>   
+            <div *ngIf="!isLoadingEFormContent" class="content-display">
+              <dl
+                class="eform-content-detail"
+                *ngIf="selectedEFormContent.detailRows?.length; else rawEFormContent">
+
+                <div
+                  class="eform-content-detail-row"
+                  *ngFor="let row of selectedEFormContent.detailRows"
+                  [class.eform-content-detail-row--section-end]="row.sectionBreak">
+                  <dt>{{ row.label }}</dt>
+                  <dd>{{ row.value }}</dd>
+                </div>
+              </dl>
+              <ng-template #rawEFormContent>
+                <pre>{{ selectedEFormContent.content }}</pre>
+              </ng-template>
+            </div>
+          </div>
+        </div>
+
+        <!-- HR Tasks list — hidden while loading so cards don't appear under the spinner -->
+        <div class="eforms-container" *ngIf="!selectedEFormContent && !isLoadingComments && filteredCommentItems.length > 0">
+          <div class="eform-list">
+            <div *ngFor="let eform of pagedCommentItems" class="eform-item"
+              [attr.id]="'comment-item-' + eform.id"
+              [class.comment-item-highlight]="highlightedCommentId === (eform.id + '')">
+
+              <!-- Desktop header -->
+              <div class="eform-header clean-header eform-header--desktop">
+                <div class="eform-header-left">
+                  <h3 class="eform-title">{{ formatFormTitle(eform.name) }}</h3>
+                  <div class="eform-top-meta">
+                    <span class="eform-id">eForm List ID: {{ eform.eFormDetails?.eFormListId }}</span>
+                    <span class="eform-category" *ngIf="eform.eFormDetails?.category">
+                      Category: {{ eform.eFormDetails.category }}
+                    </span>
+                  </div>
+                  <div class="eform-submitted-line">Submitted by: {{ eform.submittedBy }}</div>
+                  <div
+                    class="eform-meta-date"
+                    *ngIf="showAllFilesSection && (eform.eFormDetails?.customCreatedDate || eform.eFormDetails?.submittedDate)">
+                    {{ (eform.eFormDetails.customCreatedDate || eform.eFormDetails.submittedDate) | date:'dd/MM/yyyy hh:mm a' }}
+                  </div>
+                </div>
+
+                <div class="eform-header-right">
+                  <span class="eform-status-badge"
+                    [class.completed]="eform.eFormDetails.status.toLowerCase().includes('approved') || eform.eFormDetails.status.toLowerCase().includes('complete')"
+                    [attr.data-status]="eform.eFormDetails.status"
+                    *ngIf="eform.eFormDetails?.status && !shouldHideCommentStatus(eform)">
+                    {{ eform.eFormDetails.status }}
+                  </span>
+                  <!-- Open: Assigned To. Completed: Completed By. -->
+                  <div
+                    class="assigned-inline"
+                    *ngIf="isEformComplete(eform) && getLastModifiedByName(eform) as completedByName">
+                    <span class="assigned-label">Completed By:</span>
+                    <span class="assigned-value">{{ completedByName }} ✓</span>
+                  </div>
+                  <div
+                    class="assigned-inline"
+                    *ngIf="!isEformComplete(eform) && getAssignedToDisplay(eform) as assignedToDisplay">
+                    <span class="assigned-label">Assigned To:</span>
+                    <span class="assigned-value" *ngIf="!showAssigneeDropdown(assignedToDisplay, eform)">
+                      {{ formatAssigneeLabel(assignedToDisplay, eform) }}
+                    </span>
+                    <app-dropdown
+                      *ngIf="showAssigneeDropdown(assignedToDisplay, eform)"
+                      class="assigned-select-dropdown"
+                      [options]="getAssigneeOptions(assignedToDisplay, eform)"
+                      [ngModel]="getAssignees(assignedToDisplay)[0]"
+                      ariaLabel="Assigned to"
+                      triggerClass="assigned-select"
+                    />
+                  </div>
+                  <div
+                    class="eform-modified-by"
+                    *ngIf="showAllFilesSection && !isEformComplete(eform) && eform.eFormDetails?.customModifiedBy">
+                    {{ eform.eFormDetails.customModifiedBy }}
+                  </div>
+                  <div
+                    class="eform-meta-date eform-meta-date--right"
+                    *ngIf="showAllFilesSection && eform.eFormDetails?.customModifiedDate">
+                    {{ eform.eFormDetails.customModifiedDate | date:'dd/MM/yyyy hh:mm a' }}
+                  </div>
+                  <div class="date-submit" *ngIf="!showAllFilesSection && eform.eFormDetails?.submittedDate">
+                    <span class="detail-label">Submitted Date:</span>
+                    <span class="detail-value">{{ eform.eFormDetails.submittedDate | date:'d/MMMM/yyyy HH:mm' }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Mobile header — structured label / value layout -->
+              <div class="eform-header clean-header eform-header--mobile">
+                <div class="eform-mobile-top">
+                  <div class="eform-mobile-title">
+                    <h3 class="eform-title">{{ formatFormTitle(eform.name.replace(' HR Task', '')) }}</h3>
+                    <span class="eform-type-label">HR Task</span>
+                  </div>
+                  <span class="eform-status-badge"
+                    [class.completed]="eform.eFormDetails.status.toLowerCase().includes('approved') || eform.eFormDetails.status.toLowerCase().includes('complete')"
+                    [attr.data-status]="eform.eFormDetails.status"
+                    *ngIf="eform.eFormDetails?.status && !shouldHideCommentStatus(eform)">
+                    {{ eform.eFormDetails.status }}
+                  </span>
+                </div>
+
+                <div class="eform-mobile-grid">
+                  <div class="eform-mobile-field" *ngIf="eform.eFormDetails?.eFormListId">
+                    <span class="eform-mobile-label">eForm List ID</span>
+                    <span class="eform-mobile-value">{{ eform.eFormDetails.eFormListId }}</span>
+                  </div>
+                  <div
+                    class="eform-mobile-field"
+                    *ngIf="isEformComplete(eform) && getLastModifiedByName(eform) as completedByName">
+                    <span class="eform-mobile-label">Completed By</span>
+                    <span class="eform-mobile-value">{{ completedByName }} ✓</span>
+                  </div>
+                  <div
+                    class="eform-mobile-field"
+                    *ngIf="!isEformComplete(eform) && getAssignedToDisplay(eform) as assignedToDisplay">
+                    <span class="eform-mobile-label">Assigned To</span>
+                    <span class="eform-mobile-value" *ngIf="!showAssigneeDropdown(assignedToDisplay, eform)">
+                      {{ formatAssigneeLabel(assignedToDisplay, eform) }}
+                    </span>
+                    <app-dropdown
+                      *ngIf="showAssigneeDropdown(assignedToDisplay, eform)"
+                      class="assigned-select-dropdown assigned-select-dropdown--mobile"
+                      [options]="getAssigneeOptions(assignedToDisplay, eform)"
+                      [ngModel]="getAssignees(assignedToDisplay)[0]"
+                      ariaLabel="Assigned to"
+                      triggerClass="assigned-select assigned-select--mobile"
+                      [fullWidth]="true"
+                    />
+                  </div>
+                  <div
+                    class="eform-mobile-field"
+                    *ngIf="showAllFilesSection && !isEformComplete(eform) && eform.eFormDetails?.customModifiedBy">
+                    <span class="eform-mobile-label">Custom Modified By</span>
+                    <span class="eform-mobile-value">{{ eform.eFormDetails.customModifiedBy }}</span>
+                  </div>
+                  <div
+                    class="eform-mobile-field"
+                    *ngIf="showAllFilesSection && eform.eFormDetails?.customModifiedDate">
+                    <span class="eform-mobile-label">Custom Modified Date</span>
+                    <span class="eform-mobile-value">{{ eform.eFormDetails.customModifiedDate | date:'dd/MM/yyyy hh:mm a' }}</span>
+                  </div>
+                  <div class="eform-mobile-field" *ngIf="eform.eFormDetails?.category">
+                    <span class="eform-mobile-label">Category</span>
+                    <span class="eform-mobile-value">{{ eform.eFormDetails.category }}</span>
+                  </div>
+                  <div class="eform-mobile-field">
+                    <span class="eform-mobile-label">Submitted by</span>
+                    <span class="eform-mobile-value">{{ eform.submittedBy }}</span>
+                  </div>
+                  <div
+                    class="eform-mobile-field"
+                    *ngIf="eform.eFormDetails?.customCreatedDate || eform.eFormDetails?.submittedDate">
+                    <span class="eform-mobile-label">{{ showAllFilesSection ? 'Custom Created Date' : 'Submitted Date' }}</span>
+                    <span class="eform-mobile-value">{{ (eform.eFormDetails.customCreatedDate || eform.eFormDetails.submittedDate) | date:(showAllFilesSection ? 'dd/MM/yyyy hh:mm a' : 'd/MMMM/yyyy HH:mm') }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="eform-details">
+                <!-- Structured detail grid (shown once content is loaded) -->
+                <div class="eform-card-details" *ngIf="eform.isContentLoaded && eform.eFormDetails">
+                  <div class="eform-detail-grid">
+                    <!-- All Files-only fields (keep HR Tasks UI unchanged) -->
+
+
+                    <div class="eform-detail-item" *ngIf="eform.eFormDetails?.commentHtml">
+                      <div class="detail-content">
+                        <span
+                          class="detail-value comment-text"
+                          [innerHTML]="eform.eFormDetails.commentHtml"
+                          (click)="onCommentLinkClick($event)"
+                        ></span>
+                      </div>
+                    </div>
+                    <div class="eform-detail-item" *ngIf="eform.eFormDetails?.dateOfMissingPunch">
+                      <span class="detail-icon">📅</span>
+                      <div class="detail-content">
+                        <span class="detail-label">Date of Missing Punch</span>
+                        <span class="detail-value">{{ eform.eFormDetails.dateOfMissingPunch }}</span>
+                      </div>
+                    </div>
+                    <div class="eform-detail-item" *ngIf="eform.eFormDetails?.approverName">
+                      <span class="detail-icon">✅</span>
+                      <div class="detail-content">
+                        <span class="detail-label">Approver Name</span>
+                        <span class="detail-value">{{ eform.eFormDetails.approverName }}</span>
+                      </div>
+                    </div>
+                    <div class="eform-detail-item" *ngIf="eform.eFormDetails?.approverComments">
+                      <div class="detail-content">
+                        <span class="detail-label">Approver Comments</span>
+                        <span class="detail-value">{{ eform.eFormDetails.approverComments }}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="eform-actions">
+                  <button
+                  class="eform-action-btn"
+                  (click)="openHrTaskForm(eform)"
+                  [disabled]="isLoadingEFormContent || isUserCommentCard(eform)"
+                >
+                  <i class="fi fi-rr-eye" aria-hidden="true"></i>
+                  View Details
+                </button>
+                  <!--Delegate Task Component-->
+                  <app-delegate-component
+                  *ngIf="!showAllFilesSection"
+                  [task]="eform"
+                  (delegateTask)="onDelegateTask($event)">
+                </app-delegate-component>
+               
+
+                </div>
+              </div>
+
+            </div>
+          </div>
+          <div *ngIf="hasMoreItems" class="load-more-container">
+            <button class="load-more-btn" (click)="loadMoreItems()">
+              Load more ({{ remainingItemCount }} remaining)
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </section>
+    <!-- ============================================================
+         ATTACHMENTS CARD (right column)
+         ============================================================ -->
+    <section class="card attachment-card" [class.active]="mobileCardView === 'attachments'" aria-label="Attachments">
+      <div class="card-header">
+        <div class="attachment-title-group">
+          <i class="fi fi-rr-envelope" aria-hidden="true"></i>
+          <h2 class="attachment-title">Attachments</h2>
+        </div>
+        <div class="header-actions">
+          <button class="small-action muted" aria-label="Add attachment"></button>
+
+        </div>
+      </div>
+
+      <div class="card-body sharepoint-results">
+        <div class="attachment-search-row">
+          <div class="search-field">
+            <img class="search-icon" src="search.png" alt="Search">
+            <input
+              class="searchBar-att"
+              type="search"
+              placeholder="Search..."
+              (input)="onAttachmentSearchChange($event)"
+              (search)="onAttachmentSearchChange($event)"
+              [value]="attachmentSearch"
+            />
+          </div>
+        </div>
+
+        <div *ngIf="!showUserFile">
+          <p class="error-message" *ngIf="errorMessage">{{ errorMessage }}</p>
+          <p *ngIf="!isLoadingUserFiles && attachmentItems.length === 0">
+            <ng-container *ngIf="showAllFilesSection">Click a folder in All Files to view attachments.</ng-container>
+            <ng-container *ngIf="!showAllFilesSection">Click the refresh icon to load your files.</ng-container>
+          </p>
+          <div *ngIf="!isLoadingUserFiles && attachmentItems.length > 0" class="attachment-table-wrapper">
+            <div class="attachment-table-header">
+              <span class="att-col-name">Name</span>
+              <span class="att-col-date">Date</span>
+              <span class="att-col-author">Author</span>
+            </div>
+            <p *ngIf="filteredAttachments.length === 0">No files found in this folder.</p>
+            <div *ngFor="let item of filteredAttachments" class="attachment-table-row"
+              [attr.id]="'attachment-item-' + item.id"
+              [class.attachment-item-highlight]="highlightedAttachmentId === (item.id + '')"
+              [class.attachment-row-folder]="item.isFolder" [class.attachment-row-file]="!item.isFolder">
+              <span class="att-col-name">
+                <span *ngIf="item.isFolder" class="att-folder-link" (click)="openFolder(item)">
+                  <img src="/folder.png" alt="folder" class="att-folder-icon" />
+                  {{ item.name }}
+                </span>
+                <a *ngIf="!item.isFolder" class="att-file-link" [href]="item.webUrl" target="_blank"
+                  rel="noopener noreferrer">
+                  <img *ngIf="item.fileIcon" [src]="item.fileIcon" alt="file" class="att-file-icon" />
+                  <img *ngIf="!item.fileIcon" src="/files.png" alt="file" class="att-file-icon" />
+                  {{ item.name }}
+                </a>
+              </span>
+              <span class="att-col-date att-meta">
+                <ng-container *ngIf="item.lastModifiedDateTime; else noDatePreview">
+                  {{ item.lastModifiedDateTime | date:'dd/MM/yyyy' }}
+                </ng-container>
+                <ng-template #noDatePreview>—</ng-template>
+              </span>
+              <span class="att-col-author att-meta">
+                {{ item.modifiedBy || currentUser?.username || '—' }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div *ngIf="showUserFile" class="user-file-panel">
+          <div class="user-file-header">
+            <button
+              *ngIf="showBackButtonInAttachments"
+              type="button"
+              class="back-button"
+              [class.back-button--disabled]="!canGoBackInAttachments"
+              [disabled]="!canGoBackInAttachments"
+              (click)="goBackToParent()"
+            >← Back</button>
+            <p>
+              <span *ngIf="currentFolderId">Folder contents</span>
+              <span *ngIf="!currentFolderId && !isUsingHrTaskList">Showing items for {{ currentUser?.username ||
+                'current user' }}</span>
+              <span *ngIf="!currentFolderId && isUsingHrTaskList">HR Task: {{ selectedHrTaskList }}</span>
+              <span *ngIf="!isLoadingUserFiles"> ({{ loadedHrPersonalItemCount }} items)</span>
+            </p>
+          </div>
+
+          <!-- HR Task List selector -->
+          <div *ngIf="isUsingHrTaskList" class="hr-task-list-selector">
+            <label for="hrTaskListSelect">Select HR Task List:</label>
+            <app-dropdown
+              triggerId="hrTaskListSelect"
+              class="hr-task-list-dropdown"
+              [(ngModel)]="selectedHrTaskList"
+              (ngModelChange)="onHrTaskListSelected($event)"
+              [options]="hrTaskListOptions"
+              placeholder="-- Select a list --"
+              ariaLabel="Select HR task list"
+              [fullWidth]="true"
+            />
+            <button type="button" class="load-list-btn" (click)="loadHrTaskListItems()"
+              [disabled]="!selectedHrTaskList || isLoadingUserFiles">
+              Load Items
+            </button>
+          </div>
+
+          <div class="user-file-content">
+            <p *ngIf="isLoadingUserFiles">{{ userFileProgressMessage || 'Loading files from SharePoint...' }}</p>
+            <p *ngIf="!isLoadingUserFiles && userFiles.length === 0 && !isUsingHrTaskList">No files or folders found.</p>
+            <p *ngIf="!isLoadingUserFiles && userFileWarning">{{ userFileWarning }}</p>
+
+            <div *ngIf="!isUsingHrTaskList && !isLoadingUserFiles && userFiles.length > 0" class="attachment-table-wrapper">
+              <div class="attachment-table-header">
+                <span class="att-col-name">Name</span>
+                <span class="att-col-date">Date</span>
+                <span class="att-col-author">Author</span>
+              </div>
+              <div *ngFor="let item of filteredAttachments" class="attachment-table-row"
+                [attr.id]="'attachment-item-' + item.id"
+                [class.attachment-item-highlight]="highlightedAttachmentId === (item.id + '')"
+                [class.attachment-row-folder]="item.isFolder" [class.attachment-row-file]="!item.isFolder">
+                <span class="att-col-name">
+                  <span *ngIf="item.isFolder" class="att-folder-link" (click)="openFolder(item)">
+                    <img src="/folder.png" alt="folder" class="att-folder-icon" />
+                    {{ item.name }}
+                  </span>
+                  <a *ngIf="!item.isFolder" class="att-file-link" [href]="item.webUrl" target="_blank"
+                    rel="noopener noreferrer">
+                    <img *ngIf="item.fileIcon" [src]="item.fileIcon" alt="file" class="att-file-icon" />
+                    <img *ngIf="!item.fileIcon" src="/files.png" alt="file" class="att-file-icon" />
+                    {{ item.name }}
+                  </a>
+                </span>
+
+                <span class="att-col-date att-meta">
+                  <ng-container *ngIf="item.lastModifiedDateTime; else noDate">
+                    {{ item.lastModifiedDateTime | date:'dd/MM/yyyy' }}
+                  </ng-container>
+                  <ng-template #noDate>—</ng-template>
+                </span>
+                <span class="att-col-author att-meta">
+                  {{ item.modifiedBy || currentUser?.username || '—' }}
+                </span>
+              </div>
+            </div>
+
+            <app-loading-screen
+            [loading]="isLoadingUserFiles"
+            [message]="userFileProgressMessage || 'Loading files from SharePoint...'"
+          ></app-loading-screen>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+
+  <!-- PowerApps modal - root level so it works from any mobile tab -->
+  <app-powerapps-modal
+    [open]="showPowerAppsModal"
+    (closed)="closePowerAppsModal()"
+  ></app-powerapps-modal>
+
+  <app-new-comment
+    [open]="isCommentPanelOpen"
+    [taskId]="selectedTask?.Id ?? ''"
+    [listName]="selectedCommentListName"
+    [eFormListId]="selectedEFormListId ?? ''"
+    [eFormTitle]="selectedEFormTitle ?? ''"
+    [showRequestForAction]="showRequestForActionCategory"
+    (closed)="closeNewCommentModal()"
+    (saved)="onNewCommentSaved($event)"
+  ></app-new-comment>
+  
+</div>
+
+<!-- Floating add button — visible on all mobile tabs -->
+<button
+  class="small-action mobile"
+  type="button"
+  aria-label="Add task"
+  (click)="openPowerAppsModal()"
+>
+  <i class="fi fi-br-plus"></i>
+</button>
+
+<app-mobile-navigation
+  [activeIndex]="activeNavIndex"
+  (navItemClick)="onNavItemClick($event)">
+</app-mobile-navigation>
+
+@if (modal.visible) {
+<div class="modal-overlay" (click)="closeModal()">
+  <div class="modal-box" [class]="'modal-' + modal.type" (click)="$event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title">{{ modal.title }}</span>
+      <button class="modal-close" (click)="closeModal()">✕</button>
+    </div>
+    <p class="modal-message">{{ modal.message }}</p>
+    <div class="modal-footer">
+      <button class="modal-btn" (click)="closeModal()">OK</button>
+
+    </div>
+  </div>
+</div>
+
+}

@@ -1,0 +1,196 @@
+<div class="main">
+  <div class="header">
+    <div class="header-filters">
+      <div class="allFiles-filters">
+        <app-dropdown
+          *ngIf="filterType === 'files'"
+          class="filter-type-top filter-dropdown-host"
+          [(ngModel)]="selectedLibrary"
+          (ngModelChange)="onLibraryChange($event)"
+          [options]="libraryDropdownOptions"
+          ariaLabel="Select document library"
+          [fullWidth]="true"
+        />
+      </div>
+      <div class="allFiles-filters">
+        <app-dropdown
+          class="filter-dropdown-host"
+          [(ngModel)]="filterType"
+          (ngModelChange)="onFilterTypeChange($event)"
+          [options]="filterTypeOptions"
+          ariaLabel="Filter file type"
+          [fullWidth]="true"
+        />
+
+        <app-dropdown
+          class="filter-dropdown-host status-select-dropdown"
+          [ngModel]="selectedApprovalFilter"
+          (ngModelChange)="onApprovalFilterChange($event)"
+          [options]="approvalFilterOptions"
+          placeholder="Select status"
+          ariaLabel="Filter by approval status"
+          [fullWidth]="true"
+        />
+        <div class="searchBar">
+          <img class="search-icon" src="search.png" alt="Search">
+          <input class="input" type="search" placeholder="Search..." [(ngModel)]="searchTerm"
+            (ngModelChange)="searchFiles($event)">
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="content">
+    <div class="content-inner">
+      <div *ngIf="isLoadingCommentTasks" class="loading">Loading comments…</div>
+      <div *ngIf="isSearchingMoreCommentTasks" class="loading">
+        Loading comments for matching folders…
+      </div>
+      <div *ngIf="isSearchingMoreAttachments" class="loading">
+        Loading attachments for matching folders…
+      </div>
+      <div *ngIf="isGraphSearching" class="loading">Searching SharePoint…</div>
+      <div *ngIf="isSearchingMoreFiles && !isGraphSearching" class="loading">Searching more folders…</div>
+
+      <!-- Comments search: Live-style comment rows (not folder cards) -->
+      <div
+        *ngIf="filterType === 'comments' && searchTerm.trim() && !isLoadingCommentTasks && commentHits.length > 0"
+        class="files-grid comment-hits-grid">
+        <div
+          *ngFor="let hit of commentHits"
+          class="file-card comment-search-card"
+          [class.active]="isCommentHitSelected(hit)"
+          (click)="selectCommentHit(hit)">
+          <div class="comment-hit-info">
+            <div class="comment-hit-header">
+              <div class="file-name" [title]="hit.title">{{ hit.title }}</div>
+              <i class="fi fi-br-angle-right comment-hit-arrow" aria-hidden="true"></i>
+            </div>
+            <div class="comment-hit-meta" *ngIf="hit.author || hit.date">
+              <img src="speech-bubble.png" alt="" class="comment-hit-icon">
+              <span class="comment-hit-author" *ngIf="hit.author">{{ hit.author }}</span>
+              <span class="comment-hit-date" *ngIf="hit.date">{{ hit.date | date:'dd/MM/yyyy hh:mm a' }}</span>
+            </div>
+            <div class="comment-hit-divider" *ngIf="hit.body"></div>
+            <div class="comment-hit-body" *ngIf="hit.body">{{ hit.body }}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Attachments search: Live-style rows with title / meta / file link / body -->
+      <div
+        *ngIf="filterType === 'attachments' && searchTerm.trim() && attachmentHits.length > 0"
+        class="files-grid comment-hits-grid">
+        <div
+          *ngFor="let hit of attachmentHits"
+          class="file-card comment-search-card attachment-search-card"
+          [class.active]="isAttachmentHitSelected(hit)"
+          (click)="selectAttachmentHit(hit)">
+          <div class="comment-hit-info">
+            <div class="comment-hit-header">
+              <div class="file-name" [title]="hit.title">{{ hit.title }}</div>
+              <i class="fi fi-br-angle-right comment-hit-arrow" aria-hidden="true"></i>
+            </div>
+            <div class="comment-hit-meta" *ngIf="hit.author || hit.date">
+              <img src="user.png" alt="" class="comment-hit-icon">
+              <span class="comment-hit-author" *ngIf="hit.author">{{ hit.author }}</span>
+              <span class="comment-hit-date" *ngIf="hit.date">{{ hit.date | date:'dd/MM/yyyy hh:mm a' }}</span>
+            </div>
+            <div class="attachment-hit-file" *ngIf="hit.fileName">
+              <img [src]="hit.fileIcon || 'files.png'" alt="" class="attachment-hit-file-icon">
+              <a
+                class="attachment-hit-file-link"
+                [href]="hit.webUrl || null"
+                [attr.target]="hit.webUrl ? '_blank' : null"
+                rel="noopener noreferrer"
+                (click)="$event.stopPropagation()">{{ hit.fileName }}</a>
+            </div>
+            <div class="comment-hit-divider" *ngIf="hit.body"></div>
+            <div class="comment-hit-body" *ngIf="hit.body">{{ hit.body }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div *ngIf="filterType !== 'comments' && filterType !== 'attachments' && !isLoading && !isLoadingAllLibraries && !isLoadingCommentTasks && !error && files.length > 0" class="files-grid">
+        <ng-container *ngFor="let file of files">
+          <!-- Level 1: folder card — click selects it and accordion-expands its subfolders -->
+          <div class="file-card" [class.folder]="file.isfolder"
+            [class.active]="isFileSelected(file)"
+            [class.is-expanded]="file.isfolder && isFolderExpanded(file)"
+            (click)="onParentCardClick(file)">
+            <img [src]="file.isfolder ? 'folder.png' : (file.fileIcon || 'folder.png')" [alt]="file.name" class="file-icon">
+            <div class="file-info">
+              <div class="file-name" [title]="file.name">{{ file.name }}</div>
+              <!-- Live shows SharePoint "Assigned To" on the folder card -->
+              <div class="file-details" *ngIf="file.assignedTo || file.modifiedby">
+                <img src="user.png" alt="User" class="user-icon">
+                <div class="user-name">
+                  {{ file.assignedTo || file.modifiedby }}
+                </div>
+              </div>
+            </div>
+            <button
+              *ngIf="hasChildSubjectDropdown(file)"
+              type="button"
+              class="folder-expand-btn"
+              [attr.aria-label]="isFolderExpanded(file) ? 'Collapse child folders' : 'Expand child folders'"
+              (click)="toggleFolderChildren(file, $event)">
+              <i class="fi fi-br-angle-right folder-arrow" aria-hidden="true"></i>
+            </button>
+          </div>
+          <!-- Level 2: ChildSubject / ChildSubject2 folders only -->
+          <div class="subfolder-list" *ngIf="file.isfolder && isFolderExpanded(file) && hasChildSubjectDropdown(file)">
+            <div *ngIf="isLoadingChildFolders(file)" class="loading child-loading">Loading subfolders…</div>
+            <div *ngFor="let child of getChildFolders(file)" class="file-card folder subfolder-item"
+              [class.active]="isFileSelected(child)" (click)="selectFile(child)">
+              <img src="folder.png" [alt]="child.name" class="file-icon">
+              <div class="file-info">
+                <div class="file-name" [title]="child.name">{{ child.name }}</div>
+                <div class="file-details" *ngIf="child.assignedTo || child.createdBy || child.modifiedby">
+                  <img src="user.png" alt="User" class="user-icon">
+                  <div class="user-name">
+                    {{ child.assignedTo || child.createdBy || child.modifiedby }}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </ng-container>
+      </div>
+      <div
+        *ngIf="(filterType === 'files' || filterType === 'all') && !isLoading && !isLoadingAllLibraries && !isGraphSearching && !isSearchingMoreFiles && searchTerm.trim() && files.length === 0"
+        class="empty">
+        No matching folders found.
+      </div>
+      <div
+        *ngIf="filterType === 'attachments' && !isSearchingMoreAttachments && !searchTerm.trim()"
+        class="empty">
+        Search attachments from All Files folders (already loaded folder files are searched instantly).
+      </div>
+      <div
+        *ngIf="filterType === 'attachments' && !isSearchingMoreAttachments && searchTerm.trim() && attachmentHits.length === 0"
+        class="empty">
+        No matching attachments in loaded All Files folders.
+      </div>
+      <div
+        *ngIf="filterType === 'comments' && !isLoadingCommentTasks && !isSearchingMoreCommentTasks && !searchTerm.trim()"
+        class="empty">
+        Search comments from All Files folders (already loaded folder comments are searched instantly).
+      </div>
+      <div
+        *ngIf="filterType === 'comments' && !isLoadingCommentTasks && !isSearchingMoreCommentTasks && searchTerm.trim() && commentHits.length === 0"
+        class="empty">
+        No matching comments in loaded All Files folders.
+      </div>
+    </div>
+    <div
+      class="load-more-container"
+      *ngIf="filterType === 'files' && hasMoreFiles && !searchTerm.trim()">
+      <button
+        class="load-more-btn"
+        [disabled]="isLoadingMoreFiles || isSearchingMoreFiles"
+        (click)="loadMoreFiles()">
+        {{ isLoadingMoreFiles || isSearchingMoreFiles ? 'Loading…' : 'Load more' }}
+      </button>
+    </div>
+  </div>
+</div>

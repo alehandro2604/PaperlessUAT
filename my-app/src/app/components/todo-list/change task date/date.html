@@ -1,0 +1,47 @@
+<div class="change-task-date" (click)="$event.stopPropagation()">
+  <button
+    type="button"
+    class="change-task-date-btn"
+    aria-label="Change task date"
+    [attr.aria-expanded]="isOpen"
+    (click)="onButtonClick($event)"
+  >
+    <i class="fi fi-br-clock" aria-hidden="true"></i>
+  </button>
+
+  <div
+    *ngIf="isOpen"
+    class="change-task-date-panel"
+    role="dialog"
+    aria-label="Change task date"
+    (click)="onPanelClick($event)"
+  >
+    <label class="change-task-date-label" for="change-task-date-input">Due date</label>
+    <input
+      id="change-task-date-input"
+      type="date"
+      class="change-task-date-input"
+      [(ngModel)]="selectedDate"
+      [disabled]="isSaving"
+    />
+    <p class="change-task-date-error" *ngIf="saveError">{{ saveError }}</p>
+    <div class="change-task-date-actions">
+      <button
+        type="button"
+        class="change-task-date-action secondary"
+        [disabled]="isSaving"
+        (click)="onCancel($event)"
+      >
+        Cancel
+      </button>
+      <button
+        type="button"
+        class="change-task-date-action primary"
+        [disabled]="!selectedDate || isSaving"
+        (click)="onApply($event)"
+      >
+        {{ isSaving ? 'Saving…' : 'Apply' }}
+      </button>
+    </div>
+  </div>
+</div>

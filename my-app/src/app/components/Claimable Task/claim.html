@@ -1,0 +1,27 @@
+<button type="button" class="claim-btn" (click)="openModal($event)">Claim</button>
+
+<ng-template #claimDialog>
+  <div
+    class="claim-modal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="claim-title"
+    (click)="$event.stopPropagation()"
+  >
+    <div class="claim-modal-header">
+      <h3 id="claim-title" class="claim-modal-title">Claim Task</h3>
+      <button type="button" class="claim-modal-x" aria-label="Close" (click)="closeModal($event)">
+        &times;
+      </button>
+    </div>
+
+    <div class="claim-modal-body">
+      <p>Are you sure you want to claim this task?</p>
+    </div>
+
+    <div class="claim-modal-footer">
+      <button type="button" class="claim-modal-btn secondary" (click)="closeModal($event)">Close</button>
+      <button type="button" class="claim-modal-btn primary" (click)="claimTask($event)">Claim Task</button>
+    </div>
+  </div>
+</ng-template>

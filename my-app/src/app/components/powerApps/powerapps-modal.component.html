@@ -1,0 +1,38 @@
+<div class="modal-backdrop" *ngIf="open" (click)="close()">
+  <div class="powerapps-modal" role="dialog" aria-modal="true" aria-labelledby="powerapps-modal-title"
+    (click)="$event.stopPropagation()">
+    <div class="powerapps-modal-header">
+      <div class="powerapps-header-main">
+        <h3 id="powerapps-modal-title">Fill out a new form</h3>
+        <div class="powerapps-tab-row">
+          <button class="HR" type="button" [class.active]="selectedFormTab === 'HR'"
+            [attr.aria-pressed]="selectedFormTab === 'HR'" (click)="setFormTab('HR')">HR</button>
+          <button class="WorkFlows" type="button" [class.active]="selectedFormTab === 'WorkFlows'"
+            [attr.aria-pressed]="selectedFormTab === 'WorkFlows'" (click)="setFormTab('WorkFlows')">WorkFlows</button>
+        </div>
+      </div>
+      <button type="button" class="modal-close-btn" aria-label="Close popup" (click)="close()">&times;</button>
+    </div>
+
+    <!-- Loading state -->
+    <div *ngIf="loading$ | async" class="powerapps-links" style="padding: 1rem;">
+      Loading forms...
+    </div>
+
+    <!-- Error state -->
+    <div *ngIf="error$ | async as err" class="powerapps-links" style="padding: 1rem; color: red;">
+      {{ err }}
+    </div>
+
+    <!-- Replaces visiblePowerAppsLinks -->
+    <ul class="powerapps-links">
+      <li *ngFor="let form of activeForms$ | async">
+        <div class="powerapps-link-card" (click)="openForm(form)" style="cursor: pointer;">
+          <span>{{ form.title }}</span>
+          <i class="fi fi-br-angle-right" aria-hidden="true"></i>
+        </div>
+      </li>
+    </ul>
+
+  </div>
+</div>

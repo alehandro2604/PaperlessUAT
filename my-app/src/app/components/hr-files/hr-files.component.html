@@ -1,0 +1,66 @@
+<div class="hr-files-header">
+  <div class="hr-files-title-row">
+    <div class="hr-files-heading">HR Files</div>
+    <app-dropdown
+      class="hr-files-sort-dropdown"
+      variant="icon"
+      iconSrc="filter.png"
+      menuAlign="right"
+      [(ngModel)]="sortDirection"
+      (ngModelChange)="onSortChange($event)"
+      [options]="sortOptions"
+      ariaLabel="Sort HR files"
+    />
+  </div>
+</div>
+
+<div class="hr-files-search-row">
+  <div class="search-field">
+    <img class="search-icon" src="search.png" alt="Search">
+    <input
+      class="searchBar"
+      type="search"
+      placeholder="Search..."
+      (input)="onSearchChange($event)"
+      (search)="onSearchChange($event)"
+      [value]="searchQuery"
+    />
+  </div>
+</div>
+
+<p class="hr-files-status" *ngIf="isLoading">
+  {{ progressMessage || 'Loading files from SharePoint...' }}
+</p>
+<p class="error-message" *ngIf="!isLoading && errorMessage">{{ errorMessage }}</p>
+<p class="hr-files-status" *ngIf="!isLoading && warningMessage">{{ warningMessage }}</p>
+
+<div *ngIf="!isLoading && !hasLoaded" class="user-list-item" (click)="loadRequested.emit()">
+  <div class="user-info">
+    <span class="user-identifier">Load HR Files</span>
+  </div>
+  <i class="fi fi-br-angle-right user-arrow" aria-hidden="true"></i>
+</div>
+
+<ng-container *ngIf="!isLoading && hasLoaded">
+  <div
+    *ngFor="let item of pagedItems"
+    class="user-list-item list-item-card"
+    [class.active]="isItemSelected(item)"
+    (click)="onItemClick(item)"
+  >
+    <div class="list-item-avatar" aria-hidden="true">{{ getDisplayInitial(item.name) }}</div>
+    <div class="user-info">
+      <span class="user-identifier">{{ formatDisplayNameFromEmail(item.name) }}</span>
+      <span class="user-email" *ngIf="item.name.includes('@')">{{ item.name }}</span>
+    </div>
+    <i class="fi fi-br-angle-right user-arrow" aria-hidden="true"></i>
+  </div>
+
+  <div *ngIf="hasMore" class="load-more-container">
+    <button class="load-more-btn" type="button" (click)="loadMore()">
+      Load more ({{ remainingCount }} remaining)
+    </button>
+  </div>
+
+  <p class="hr-files-status" *ngIf="pagedItems.length === 0">No files or folders found.</p>
+</ng-container>

@@ -1,0 +1,240 @@
+/* HR Files panel — styles scoped to this component (moved from app.css) */
+
+.hr-files-heading {
+  margin: 0 0 14px;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-dark);
+}
+
+.hr-files-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  width: 100%;
+}
+
+.hr-files-header .hr-files-heading {
+  margin-bottom: 0;
+}
+
+.hr-files-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.hr-files-sort-dropdown {
+  margin-left: auto;
+}
+
+.hr-files-search-row {
+  position: sticky;
+  top: 0;
+  /* Keep above list cards while scrolling, but below Task type / Status menus */
+  z-index: 1;
+  margin-bottom: 18px;
+  padding: 4px 0 10px;
+  background: var(--white);
+}
+
+.hr-files-search-row .search-field {
+  max-width: none;
+}
+
+.hr-files-status {
+  margin: 12px 0;
+  color: #555;
+  font-size: 14px;
+}
+
+.error-message {
+  color: #b42318;
+  font-weight: 600;
+}
+
+.search-field {
+  position: relative;
+  flex: 1 1 200px;
+  min-width: 140px;
+  max-width: 480px;
+}
+
+.searchBar {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 15px;
+  border: 1px solid #d1d1d1;
+  padding: 6px 28px 6px 36px;
+  font-size: 14px;
+}
+
+.searchBar::placeholder {
+  font-size: 13px;
+}
+
+.search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 15px;
+  height: 15px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.searchBar:active,
+.searchBar:hover,
+.searchBar:focus {
+  border-color: var(--brand-blue);
+  box-shadow: 0 0 0 2px rgba(0, 120, 212, 0.1);
+  outline: none;
+}
+
+.searchBar::-webkit-search-cancel-button {
+  margin-right: -20px;
+}
+
+.user-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  margin-bottom: 8px;
+  border-radius: 12px;
+  background: var(--white);
+  border: 1px solid var(--panel-border);
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  overflow: hidden;
+}
+
+
+.user-list-item.list-item-card {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.user-list-item.list-item-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 120, 212, 0.15);
+}
+
+.list-item-avatar {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--brand-blue);
+  background: rgba(0, 120, 212, 0.12);
+}
+
+
+
+.user-list-item.list-item-card.active,
+.user-list-item:hover {
+  background: var(--brand-blue);
+  color: #ffffff;
+  border-color: var(--brand-blue);
+}
+
+.user-list-item.active .list-item-avatar,
+.user-list-item:hover .list-item-avatar {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.user-list-item.active .user-identifier,
+.user-list-item:hover .user-identifier {
+  color: #ffffff;
+}
+
+.user-list-item.active .user-arrow,
+.user-list-item:hover .user-arrow {
+  color: #ffffff;
+}
+
+.user-list-item.active .user-email,
+.user-list-item:hover .user-email {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.user-list-item:last-child {
+  margin-bottom: 0;
+}
+
+.user-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.user-identifier {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-dark);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-list-item .user-email {
+  font-size: 12px;
+  font-weight: 400;
+  color: #667085;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-list-item:hover .user-identifier {
+  color: #ffffff;
+}
+
+.user-arrow {
+  font-size: 16px;
+  color: var(--brand-blue);
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+
+.user-list-item:hover .user-arrow {
+  color: #ffffff;
+}
+
+.user-list-item:hover .user-email {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.load-more-container {
+  display: flex;
+  justify-content: center;
+  padding: 12px 0;
+}
+
+.load-more-btn {
+  background: #267ef9;
+  color: #ffffff;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 8px 20px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.load-more-btn:hover {
+  background: #ffffff;
+  color: #3893fa;
+  border-color: #3893fa;
+}

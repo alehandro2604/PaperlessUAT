@@ -1,0 +1,158 @@
+    <!-- ============================================================
+         ATTACHMENTS CARD (right column)
+         ============================================================ -->
+    <section class="card attachment-card" [class.active]="mobileCardView === 'attachments'" aria-label="Attachments">
+      <div class="card-header">
+        <div class="attachment-title-group">
+          <i class="fi fi-rr-envelope" aria-hidden="true"></i>
+          <h2 class="attachment-title">Attachments</h2>
+        </div>
+        <div class="header-actions">
+          <button class="small-action muted" aria-label="Add attachment"></button>
+
+        </div>
+      </div>
+
+      <div class="card-body sharepoint-results">
+        <div class="attachment-search-row">
+          <div class="search-field">
+            <img class="search-icon" src="search.png" alt="Search">
+            <input
+              class="searchBar-att"
+              type="search"
+              placeholder="Search..."
+              (input)="onAttachmentSearchChange($event)"
+              (search)="onAttachmentSearchChange($event)"
+              [value]="attachmentSearch"
+            />
+          </div>
+        </div>
+
+        <div *ngIf="!showUserFile">
+          <p class="error-message" *ngIf="errorMessage">{{ errorMessage }}</p>
+          <p *ngIf="!isLoadingUserFiles && attachmentItems.length === 0">
+            <ng-container *ngIf="showAllFilesSection">Click a folder in All Files to view attachments.</ng-container>
+            <ng-container *ngIf="!showAllFilesSection">Click the refresh icon to load your files.</ng-container>
+          </p>
+          <div *ngIf="!isLoadingUserFiles && attachmentItems.length > 0" class="attachment-table-wrapper">
+            <div class="attachment-table-header">
+              <span class="att-col-name">Name</span>
+              <span class="att-col-date">Date</span>
+              <span class="att-col-author">Author</span>
+            </div>
+            <p *ngIf="filteredAttachments.length === 0">No files found in this folder.</p>
+            <div *ngFor="let item of filteredAttachments" class="attachment-table-row"
+              [class.attachment-row-folder]="item.isFolder" [class.attachment-row-file]="!item.isFolder">
+              <span class="att-col-name">
+                <span *ngIf="item.isFolder" class="att-folder-link" (click)="openFolder(item)">
+                  <img src="/folder.png" alt="folder" class="att-folder-icon" />
+                  {{ item.name }}
+                </span>
+                <a *ngIf="!item.isFolder" class="att-file-link" [href]="item.webUrl" target="_blank"
+                  rel="noopener noreferrer">
+                  <img *ngIf="item.fileIcon" [src]="item.fileIcon" alt="file" class="att-file-icon" />
+                  <img *ngIf="!item.fileIcon" src="/files.png" alt="file" class="att-file-icon" />
+                  {{ item.name }}
+                </a>
+              </span>
+              <span class="att-col-date att-meta">
+                <ng-container *ngIf="item.lastModifiedDateTime; else noDatePreview">
+                  {{ item.lastModifiedDateTime | date:'dd/MM/yyyy' }}
+                </ng-container>
+                <ng-template #noDatePreview>—</ng-template>
+              </span>
+              <span class="att-col-author att-meta">
+                {{ item.modifiedBy || currentUser?.username || '—' }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div *ngIf="showUserFile" class="user-file-panel">
+          <div class="user-file-header">
+            <button
+              *ngIf="showBackButtonInAttachments"
+              type="button"
+              class="back-button"
+              [class.back-button--disabled]="!canGoBackInAttachments"
+              [disabled]="!canGoBackInAttachments"
+              (click)="goBackToParent()"
+            >← Back</button>
+            <p>
+              <span *ngIf="currentFolderId">Folder contents</span>
+              <span *ngIf="!currentFolderId && !isUsingHrTaskList">Showing items for {{ currentUser?.username ||
+                'current user' }}</span>
+              <span *ngIf="!currentFolderId && isUsingHrTaskList">HR Task: {{ selectedHrTaskList }}</span>
+              <span *ngIf="!isLoadingUserFiles"> ({{ loadedHrPersonalItemCount }} items)</span>
+            </p>
+          </div>
+
+          <!-- HR Task List selector -->
+          <div *ngIf="isUsingHrTaskList" class="hr-task-list-selector">
+            <label for="hrTaskListSelect">Select HR Task List:</label>
+            <app-dropdown
+              triggerId="hrTaskListSelect"
+              class="hr-task-list-dropdown"
+              [(ngModel)]="selectedHrTaskList"
+              (ngModelChange)="onHrTaskListSelected($event)"
+              [options]="hrTaskListOptions"
+              placeholder="-- Select a list --"
+              ariaLabel="Select HR task list"
+              [fullWidth]="true"
+            />
+            <button type="button" class="load-list-btn" (click)="loadHrTaskListItems()"
+              [disabled]="!selectedHrTaskList || isLoadingUserFiles">
+              Load Items
+            </button>
+          </div>
+
+          <div class="user-file-content">
+            <p *ngIf="isLoadingUserFiles">{{ userFileProgressMessage || 'Loading files from SharePoint...' }}</p>
+            <p *ngIf="!isLoadingUserFiles && userFiles.length === 0 && !isUsingHrTaskList">No files or folders found.</p>
+            <p *ngIf="!isLoadingUserFiles && userFileWarning">{{ userFileWarning }}</p>
+
+            <div *ngIf="!isUsingHrTaskList && !isLoadingUserFiles && userFiles.length > 0" class="attachment-table-wrapper">
+              <div class="attachment-table-header">
+                <span class="att-col-name">Name</span>
+                <span class="att-col-date">Date</span>
+                <span class="att-col-author">Author</span>
+              </div>
+              <div *ngFor="let item of filteredAttachments" class="attachment-table-row"
+                [class.attachment-row-folder]="item.isFolder" [class.attachment-row-file]="!item.isFolder">
+                <!-- In app.html, replace the file icon section (around line 475-479) -->
+                <span class="att-col-name">
+                  <span *ngIf="item.isFolder" class="att-folder-link" (click)="openFolder(item)">
+                    <img src="/folder.png" alt="folder" class="att-folder-icon" />
+                    {{ item.name }}
+                  </span>
+                  <a *ngIf="!item.isFolder" class="att-file-link" [href]="item.webUrl" target="_blank"
+                    rel="noopener noreferrer">
+                    <!-- Dynamic file icon -->
+                    <img *ngIf="item.fileIcon" [src]="item.fileIcon" alt="file" class="att-file-icon" />
+                    <!-- Fallback to default icon -->
+                    <img *ngIf="!item.fileIcon" src="/files.png" alt="file" class="att-file-icon" />
+                    {{ item.name }}
+                  </a>
+                </span>
+
+                <span class="att-col-date att-meta">
+                  <ng-container *ngIf="item.lastModifiedDateTime; else noDate">
+                    {{ item.lastModifiedDateTime | date:'dd/MM/yyyy' }}
+                  </ng-container>
+                  <ng-template #noDate>—</ng-template>
+                </span>
+                <span class="att-col-author att-meta">
+                  {{ item.modifiedBy || currentUser?.username || '—' }}
+                </span>
+              </div>
+            </div>
+
+            <app-loading-screen
+            [loading]="isLoadingUserFiles"
+            [message]="userFileProgressMessage || 'Loading files from SharePoint...'"
+          ></app-loading-screen>
+          </div>
+        </div>
+
+      </div>
+    </section>

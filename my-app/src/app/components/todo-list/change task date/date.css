@@ -1,0 +1,138 @@
+.change-task-date {
+  position: relative;
+  flex-shrink: 0;
+  z-index: 2;
+}
+
+.change-task-date:has(.change-task-date-panel) {
+  z-index: 30;
+}
+
+.change-task-date-btn {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: color-mix(in srgb, var(--brand-blue, #0078d4) 80%, #6b7280);
+  font-size: 16px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease, transform 120ms ease;
+}
+
+.change-task-date-btn:hover {
+  background: color-mix(in srgb, var(--brand-blue, #0078d4) 12%, #ffffff);
+  color: var(--brand-blue, #0078d4);
+}
+
+.change-task-date-btn:active {
+  transform: scale(0.95);
+}
+
+.change-task-date-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 110, 255, 0.18);
+}
+
+.change-task-date-btn .fi {
+  display: block;
+  line-height: 1;
+}
+
+.change-task-date-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 220px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border, #d1d1d1);
+  background: var(--white, #fff);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.14);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 40;
+  font-family: "Poppins", sans-serif;
+  color: var(--text-dark, #1b2a3a);
+}
+
+.change-task-date-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--brand-blue-dark, #003e70);
+}
+
+.change-task-date-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #d1d1d1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: inherit;
+  background: #fff;
+}
+
+.change-task-date-input:focus {
+  outline: none;
+  border-color: #006eff;
+  box-shadow: 0 0 0 3px rgba(0, 110, 255, 0.12);
+}
+
+.change-task-date-error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.3;
+  color: #b91c1c;
+}
+
+.change-task-date-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.change-task-date-action {
+  border-radius: 8px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.change-task-date-action.secondary {
+  border: 1px solid #d1d1d1;
+  background: transparent;
+  color: inherit;
+}
+
+.change-task-date-action.secondary:hover {
+  background: #f7f7f7;
+  border-color: #bdbdbd;
+}
+
+.change-task-date-action.primary {
+  border: none;
+  background: #006eff;
+  color: #fff;
+}
+
+.change-task-date-action.primary:hover:not(:disabled) {
+  background: #5f98fb;
+}
+
+.change-task-date-action.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.change-task-date-action:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 110, 255, 0.22);
+}

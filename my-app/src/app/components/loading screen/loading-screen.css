@@ -1,0 +1,159 @@
+/* From Uiverse.io by andrew-manzyk */
+.loader-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 40px;
+  padding: 20px;
+}
+
+.loader-wrapper p,
+.loader-wrapper .loader-message {
+  margin: 0;
+  max-width: 280px;
+  text-align: center;
+  font-size: 0.95rem;
+  line-height: 1.4;
+  color: #5b6b7c;
+}
+
+.loader-wrapper--compact {
+  margin-top: 28px;
+  padding: 28px 16px;
+  min-height: 160px;
+  gap: 14px;
+}
+
+.loader-wrapper--compact .loader {
+  transform: scale(0.85);
+}
+
+.loader-wrapper--compact .loader-message {
+  font-size: 0.9rem;
+  color: #64748b;
+  font-weight: 500;
+}
+
+
+
+app-loading-screen .loader {
+  --cloud-color: #4387f4;
+  --arrows-color: #80b1ff;
+  --time-animation: 1s;
+  transform: scale(1);
+  display: block !important;
+}
+
+app-loading-screen .loader #cloud {
+  width: 100px;
+  height: 100px;
+}
+
+app-loading-screen .loader #cloud rect {
+  fill: var(--cloud-color);
+}
+
+app-loading-screen .loader #cloud g:nth-child(3) {
+  transform-origin: 50% 72.8938%;
+  fill: var(--arrows-color);
+  filter: drop-shadow(0 0 8px black);
+  animation: loader-rotation var(--time-animation) linear infinite;
+}
+
+app-loading-screen .loader mask[id$='-shapes'] g g circle {
+  animation: loader-cloud calc(var(--time-animation) * 2) linear infinite;
+}
+
+app-loading-screen .loader mask[id$='-shapes'] g g circle:nth-child(2) {
+  animation-delay: calc((var(--time-animation) * 2) / -3);
+}
+
+app-loading-screen .loader mask[id$='-shapes'] g g circle:nth-child(3) {
+  animation-delay: calc((var(--time-animation) * 2) / -1.5);
+}
+
+app-loading-screen .loader svg #lines g line {
+  stroke-width: 5;
+  transform-origin: 50% 50%;
+  rotate: -65deg;
+  animation: loader-lines calc(var(--time-animation) / 1.33) linear infinite;
+}
+
+@keyframes loader-rotation {
+  0% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(180deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes loader-lines {
+  0% {
+    transform: translateY(-10px);
+  }
+  100% {
+    transform: translateY(8px);
+  }
+}
+
+@keyframes loader-cloud {
+  0% {
+    cx: 20;
+    cy: 60;
+    r: 15;
+  }
+  50% {
+    cx: 50;
+    cy: 45;
+    r: 20;
+  }
+  100% {
+    cx: 80;
+    cy: 60;
+    r: 15;
+  }
+}
+
+@media (max-width: 768px) {
+  app-loading-screen .loader-wrapper {
+    margin-top: 20px;
+    padding: 16px;
+    min-height: 120px;
+    position: relative;
+    z-index: 1;
+  }
+
+  app-loading-screen .loader-wrapper::before {
+    display: none !important;
+    content: none !important;
+  }
+
+  .card-body app-loading-screen .loader-wrapper {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 100%;
+    margin: 0;
+  }
+
+  app-loading-screen .loader #cloud {
+    width: 80px;
+    height: 80px;
+  }
+
+  app-loading-screen .loader-wrapper p,
+  app-loading-screen .loader-wrapper .loader-message {
+    font-size: 14px;
+    text-align: center;
+    margin: 10px 0 0 0;
+    padding: 0 8px;
+    color: #8b949e;
+  }
+}

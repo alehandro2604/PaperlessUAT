@@ -1,0 +1,199 @@
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 25, 41, 0.45);
+  backdrop-filter: blur(2px);
+  display: grid;
+  place-items: center;
+  z-index: 1000;
+  padding: 16px;
+}
+
+.powerapps-modal {
+  width: 25%;
+  max-height: 82%;
+  background: var(--white);
+  border-radius: 12px;
+  border: 1px solid var(--panel-border);
+  padding: 18px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.powerapps-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #d1d1d1;
+}
+
+.powerapps-modal-header h3 {
+  margin: 0;
+  color: var(--brand-blue-dark);
+  font-size: 24px;
+}
+
+.powerapps-links {
+  list-style: none;
+  margin: 0;
+  padding: 2px;
+  display: grid;
+  gap: 10px;
+  max-height: calc((46px * 7) + (10px * 6));
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
+.powerapps-link-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 28px;
+  text-decoration: none;
+  color: #114a7c;
+  font-weight: 600;
+  background: #f8fbff;
+  border: 1px solid #0084ff;
+  border-radius: 10px;
+  padding:  8px;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.powerapps-link-card:hover {
+  background: #e5ecf5;
+  border-color: #0084ff;
+  transform: translateY(-1px);
+}
+
+.powerapps-link-card:focus-visible {
+  outline: 2px solid var(--brand-blue);
+  outline-offset: 2px;
+}
+
+.powerapps-link-card i {
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.modal-close-btn {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  background: var(--brand-blue);
+  color: var(--white);
+  font-size: 30px;
+  line-height: 1.15;
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+  padding: 0;
+  border-radius: 10px;
+  
+}
+
+.modal-close-btn:hover {
+  color: #ffffff;
+  background-color: #f70000;
+}
+
+.powerapps-header-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.powerapps-tab-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.HR,
+.WorkFlows {
+  height: 32px;
+  min-width: 100px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid #b7d4ef;
+  background: var(--white);
+  color: #0c9eff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.HR:hover,
+.WorkFlows:hover {
+  background: #e2f0ff;
+  border-color: #9fc7ea;
+  color: #2e90ff;
+}
+
+.HR:focus-visible,
+.WorkFlows:focus-visible {
+  outline: 2px solid var(--brand-blue);
+  outline-offset: 2px;
+}
+
+.HR.active,
+.WorkFlows.active {
+  border: 1px solid #b7d4ef;
+  background: #2e90ff;
+  color: var(--white);
+}
+
+
+@media (max-width: 768px) {
+  .powerapps-modal {
+    width: min(420px, 95vw);
+    max-height: min(85vh, 800px);
+    border-radius: 16px;
+  }
+
+  .powerapps-modal-header {
+    padding-bottom: 12px;
+  }
+
+  .powerapps-modal-header h3 {
+    font-size: 20px;
+  }
+
+  .powerapps-link-card {
+    min-height: 30px;
+    padding: 8px;
+    border-radius: 12px;
+    font-size: 14px;
+  }
+
+  .modal-backdrop {
+    padding: 8px;
+  }
+}
+
+@media (max-width: 480px) {
+  .powerapps-modal {
+    width: 70%;
+    height: 53%;
+    max-height: 100vh;
+    border-radius: 15px;
+    margin: 0;
+  }
+
+  .modal-backdrop {
+    padding: 0;
+  }
+
+  .powerapps-modal-header {
+    padding: 16px 16px 12px;
+  }
+
+  .powerapps-link-card {
+    padding: 16px;
+    font-size: 16px;
+  }
+}

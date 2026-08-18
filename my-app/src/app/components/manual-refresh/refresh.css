@@ -1,0 +1,51 @@
+.button {
+    color: #0078d4;
+    background-color: transparent;
+    font-weight: 500;
+    border-radius: 0.5rem;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    text-align: center;
+    padding: 0.25rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    flex-shrink: 0;
+  }
+  
+
+  .button:hover {
+    opacity: 0.8;
+  }
+  
+  .button svg {
+    display: inline;
+    width: 2rem;
+    height: 2rem;
+    margin: 0;
+  }
+  
+  .button:focus svg,
+  .button:active svg {
+    animation: spin_357 0.5s linear;
+  }
+
+  .button:disabled {
+    cursor: default;
+  }
+
+  .button svg.spinning {
+    animation: spin_357 0.8s linear infinite;
+  }
+
+  @keyframes spin_357 {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  

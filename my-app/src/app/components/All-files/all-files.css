@@ -1,0 +1,780 @@
+:host {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 12px 16px;
+  border-radius: 8px;
+  box-shadow: none;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.content {
+  flex: 1 1 0;
+  min-height: 0;
+  height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.content-inner {
+  flex: 1 1 0;
+  width: 100%;
+  min-height: 0;
+  height: 0;
+  max-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable;
+}
+
+.header-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+  margin-bottom: 10px;
+  padding-bottom: 15px;
+  margin-left: 10px;
+  margin-right: 10px;
+  border-bottom: 1px solid #dee2e6;
+  position: relative;
+  z-index: 30;
+}
+
+.allFiles-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+}
+
+.filter-dropdown-host,
+.filter-type-top {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+
+/* search bar needs to be at the bottom of the filter-dropdown-host */
+.searchBar {
+  position: relative;
+  flex: 1 1 140px;
+  min-width: 0;
+  margin-top: 10px;
+  margin-bottom: 10px;
+  margin-left: 10px;
+  margin-right: 10px;
+}
+
+.search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 15px;
+  height: 15px;
+  z-index: 1;
+}
+
+.input {
+  width: 100%;
+  padding: 8px 12px 8px 40px;
+  border: 1px solid #c8d4e0;
+  border-radius: 15px;
+  background: #fff;
+  color: #333;
+  font-size: 14px;
+  cursor: text;
+}
+
+
+.input:focus {
+  outline: none;
+  border-color: #0078d4;
+}
+
+.loading {
+  text-align: center;
+  padding: 20px;
+  color: #666;
+
+}
+
+.error {
+  text-align: center;
+  padding: 20px;
+  color: #dc3545;
+}
+
+.empty {
+  text-align: center;
+  padding: 20px;
+  color: #666;
+}
+
+.files-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 12px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.file-card {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start; /* icon stays top-left */
+  gap: 12px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-height: 72px;
+  padding: 12px 14px;
+  border: 1px solid #cdcaca;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+}
+
+.file-card.folder {
+  width: 100%;
+}
+
+.file-card:hover {
+  border-color: #0078d4;
+  transform: translateY(-2px);
+  background: #e2f0ff;
+  box-shadow: 0 4px 12px rgba(0, 120, 212, 0.15);
+}
+
+.file-card:active {
+  transform: translateY(0) scale(0.98);
+  border-color: #005a9e;
+  background: #cce4f7;
+  box-shadow: 0 1px 4px rgba(0, 90, 158, 0.25);
+}
+
+.file-card.active {
+  border-color: #0078d4;
+  background: #e2f0ff;
+  box-shadow: 0 0 0 2px rgba(0, 120, 212, 0.3);
+}
+
+.file-card.active:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 120, 212, 0.2), 0 0 0 2px rgba(0, 120, 212, 0.3);
+}
+
+.file-card:hover .file-name,
+.file-card:active .file-name,
+.file-card.active .file-name {
+  color: #0078d4;
+}
+
+.file-card:hover .file-meta,
+.file-card:active .file-meta,
+.file-card.active .file-meta {
+  color: #005a9e;
+}
+
+/* Folder icon — small, top-left, inside the card */
+.file-icon {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  flex-shrink: 0;
+  margin-top: 2px;
+  margin-left: 0;
+}
+
+.file-info {
+  text-align: left;
+  min-width: 0;
+  flex: 1;
+}
+
+.file-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #333;
+  line-height: 1.35;
+  overflow: hidden;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.file-details {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #0078d4;
+  line-height: 1.3;
+}
+
+.file-meta {
+  font-size: 12px;
+  color: #666;
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.file-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #0078d4;
+  color: #fff;
+  text-decoration: none;
+  transition: background 0.2s ease;
+}
+
+.file-link:hover {
+  background: #005a9e;
+}
+
+.file-link img {
+  width: 16px;
+  height: 16px;
+}
+
+.folder-icon {
+  width: 50px;
+  height: 50px;
+}
+
+/* ── Level-2 subfolders (same accordion pattern as My Tasks) ── */
+.folder-expand-btn {
+  margin-left: auto;
+  align-self: center;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.folder-expand-btn:hover {
+  background: #e2f0ff;
+}
+
+.folder-arrow {
+  font-size: 16px;
+  color: #0078d4;
+  transition: transform 140ms ease, color 140ms ease;
+}
+
+.file-card.is-expanded .folder-arrow {
+  transform: rotate(90deg);
+}
+
+.file-card.is-expanded {
+  border-color: #0078d4;
+  box-shadow: 0 4px 12px rgba(0, 120, 212, 0.15);
+}
+
+.subfolder-list {
+  margin: 0.25rem 0 0.5rem 2.25rem;
+  padding-left: 0.75rem;
+  border-left: 2px solid color-mix(in srgb, #e5e7eb 70%, transparent);
+  display: grid;
+  gap: 0.25rem;
+}
+
+.subfolder-item {
+  position: relative;
+  min-height: 52px;
+  padding: 0.55rem 0.75rem;
+  border-radius: 10px;
+  background: color-mix(in srgb, #ffffff 70%, transparent);
+  border: 1px solid color-mix(in srgb, #d1d1d1 65%, transparent);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+/* timeline dot marker */
+.subfolder-item::before {
+  content: '';
+  position: absolute;
+  left: -1.23rem;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  transform: translateY(-50%);
+  background: color-mix(in srgb, #0078d4 35%, #ffffff);
+  border: 2px solid color-mix(in srgb, #0078d4 55%, transparent);
+}
+
+.subfolder-item:hover::before,
+.subfolder-item.active::before {
+  background: #0078d4;
+  border-color: color-mix(in srgb, #0078d4 70%, transparent);
+}
+
+.child-loading,
+.child-empty {
+  padding: 8px;
+  font-size: 13px;
+  text-align: left;
+}
+
+@media (max-width: 1200px) {
+  .file-card {
+    min-height: 68px;
+    padding: 10px 12px;
+  }
+
+  .file-name {
+    font-size: 14px;
+  }
+}
+
+@media (max-width: 768px) {
+  .main {
+    padding: 12px;
+  }
+}
+
+@media (min-width: 1201px) {
+  .file-card {
+    min-height: 76px;
+    padding: 14px 16px;
+  }
+
+  .file-name {
+    font-size: 15px;
+  }
+}
+
+/* ── eForm card styles for all-files ── */
+.eforms-container {
+  padding: 16px;
+}
+
+.eform-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.eform-item {
+  border: 1px solid #d1d1d1;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.eform-item:hover {
+  border-color: var(--brand-blue);
+  box-shadow: 0 2px 8px rgba(0, 120, 212, 0.1);
+}
+
+.clean-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.eform-header-left {
+  flex: 1;
+  min-width: 0;
+}
+
+.eform-header-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  min-width: 220px;
+}
+
+.eform-title {
+  margin: 0 0 6px 0;
+  font-size: 22px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.eform-top-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 14px;
+  color: #6b7280;
+}
+
+.eform-id {
+  font-size: 14px;
+  color: #888;
+  font-family: 'Poppins', sans-serif;
+  font-weight: 400;
+  font-style: normal;
+}
+
+.eform-category {
+  font-size: 14px;
+  color: #6b7280;
+}
+
+.eform-submitted-line {
+  font-size: 14px;
+  color: #374151;
+}
+
+.assigned-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: right;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.assigned-label {
+  font-size: 13px;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.assigned-value {
+  font-size: 14px;
+  color: #111827;
+  font-weight: 600;
+}
+
+.date-submit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  margin-right: 0;
+}
+
+.date-submit .detail-label,
+.date-submit .detail-value {
+  margin: 0;
+}
+
+.date-submit .detail-label {
+  min-width: auto;
+}
+
+.date-submit .detail-value {
+  flex: unset;
+}
+
+.eform-details {
+  margin-top: 12px;
+}
+
+.eform-card-details {
+  padding: 12px 0;
+}
+
+.eform-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.eform-detail-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  background: #ffffff;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.eform-detail-item:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transform: translateY(-1px);
+}
+
+.detail-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.detail-content {
+  text-align: left;
+}
+
+.detail-label {
+  font-size: 12px;
+  color: #6b7280;
+  font-weight: 500;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.detail-value {
+  font-size: 14px;
+  color: #1f2937;
+  font-weight: 500;
+  line-height: 1.4;
+  word-break: break-word;
+  text-align: left;
+}
+
+.comment-text {
+  display: block;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  text-align: left;
+}
+
+/* filter type needs to be on top of search and  filter-dropdown full width */
+.filter-type {
+  position: relative;
+  margin-top: -20px;
+  padding: 0;
+  background-color: rgb(255, 255, 255);
+  color: #000;
+  border-radius: 6px;
+  width: 100%;
+}
+
+.filter-type-top {
+  position: relative;
+  margin-top: -20px;
+  background-color: rgb(255, 255, 255);
+  color: #000;
+  border-radius: 6px;
+  width: 100%;
+}
+
+
+.library-display {
+  grid-column: 1 / -1;
+  padding: 12px 16px;
+  background: #e8f4fd;
+  border: 1px solid #0078d4;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #0078d4;
+  margin-bottom: 8px;
+}
+/* display it on the left hand side of the user-name */
+.user-icon {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  flex-shrink: 0;
+  margin-right: 4px;
+  margin-left: 4px;
+  margin-top: 0px;
+  margin-bottom: 0px;
+  color: #0078d4;
+  float: left;
+}
+
+.load-more-container {
+  display: flex;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 12px 0 8px;
+  background: #fff;
+  border-top: 1px solid #eef1f4;
+  position: relative;
+  z-index: 2;
+}
+
+.load-more-btn {
+  background: #267ef9;
+  color: #ffffff;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 8px 20px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.load-more-btn:hover:not(:disabled) {
+  background: #ffffff;
+  color: #3893fa;
+  border-color: #3893fa;
+}
+
+.load-more-btn:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+/* Comments / Attachments search hits — Live-style rows */
+.comment-hits-grid {
+  gap: 10px;
+}
+
+.comment-search-card {
+  align-items: stretch;
+  min-height: auto;
+  padding: 12px 14px;
+  border-left: 3px solid transparent;
+}
+
+.comment-search-card.active,
+.attachment-search-card.active {
+  border-left-color: #0c9eff;
+  background: #e8f4fc;
+  box-shadow: none;
+  border-color: #cfe8f8;
+}
+
+.comment-search-card.active .file-name,
+.attachment-search-card.active .file-name {
+  color: #0a66c2;
+}
+
+.comment-hit-info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+  text-align: left;
+}
+
+.comment-hit-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.comment-hit-header .file-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.comment-hit-arrow {
+  flex-shrink: 0;
+  color: #0c9eff;
+  font-size: 14px;
+  margin-top: 2px;
+}
+
+.comment-hit-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #666;
+  line-height: 1.3;
+}
+
+.comment-hit-icon {
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.comment-hit-author {
+  color: #333;
+  font-weight: 500;
+}
+
+.comment-hit-date {
+  color: #888;
+}
+
+.attachment-hit-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 2px;
+}
+
+.attachment-hit-file-icon {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.attachment-hit-file-link {
+  color: #0c9eff;
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.attachment-hit-file-link:hover {
+  text-decoration: underline;
+}
+
+.comment-hit-divider {
+  height: 1px;
+  background: #e0e0e0;
+  width: 100%;
+  margin: 2px 0;
+}
+
+.comment-hit-body {
+  font-size: 13px;
+  color: #444;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+

@@ -1,0 +1,60 @@
+<button
+  type="button"
+  class="app-dropdown-trigger"
+  [ngClass]="triggerClass"
+  [class.app-dropdown-trigger--icon]="variant === 'icon'"
+  [class.active]="open || (variant === 'icon' && value === 'descending')"
+  (click)="toggle($event)"
+  [disabled]="disabled"
+  [attr.id]="triggerId || null"
+  aria-haspopup="listbox"
+  [attr.aria-expanded]="open"
+  [attr.aria-label]="ariaLabel"
+>
+  <ng-container *ngIf="variant === 'icon'; else textTrigger">
+    <img class="app-dropdown-icon" [src]="iconSrc" [alt]="iconAlt">
+  </ng-container>
+  <ng-template #textTrigger>
+    <span
+      *ngIf="selectedTone"
+      class="app-dropdown-dot"
+      [attr.data-tone]="selectedTone"
+      aria-hidden="true"
+    ></span>
+    <span class="app-dropdown-label">{{ displayLabel }}</span>
+    <span class="app-dropdown-chevron" aria-hidden="true"></span>
+  </ng-template>
+</button>
+
+<div
+  *ngIf="open"
+  class="app-dropdown-menu"
+  [class.app-dropdown-menu--align-right]="menuAlign === 'right'"
+  role="listbox"
+  [attr.aria-label]="ariaLabel"
+  (click)="$event.stopPropagation()"
+>
+  <button
+    *ngFor="let option of options"
+    type="button"
+    class="app-dropdown-option"
+    role="option"
+    [class.selected]="option.value === value"
+    [attr.aria-selected]="option.value === value"
+    [disabled]="option.disabled"
+    (click)="selectOption(option, $event)"
+  >
+    <span
+      *ngIf="option.tone"
+      class="app-dropdown-dot"
+      [attr.data-tone]="option.tone"
+      aria-hidden="true"
+    ></span>
+    <span class="app-dropdown-option-label">{{ option.label }}</span>
+    <span
+      class="app-dropdown-option-check"
+      *ngIf="option.value === value"
+      aria-hidden="true"
+    ></span>
+  </button>
+</div>

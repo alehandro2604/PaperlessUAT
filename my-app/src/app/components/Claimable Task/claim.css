@@ -1,0 +1,135 @@
+app-claim {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.claim-btn {
+  background-color: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  color: #0078d4;
+  border: 1px solid #0078d4;
+  border-radius: 5px;
+  padding: 8px 12px;
+  font-weight: bold;
+  text-align: center;
+  white-space: nowrap;
+  display: inline-block;
+  transition: transform 0.3s ease;
+}
+
+.claim-btn:hover {
+  background-color: #0078d4;
+  color: white;
+  transform: scale(1.05);
+}
+
+.claim-btn:active {
+  transform: scale(0.95);
+}
+
+.claim-modal-backdrop {
+  background: rgba(10, 25, 41, 0.45);
+  backdrop-filter: blur(2px);
+}
+
+.claim-modal-panel {
+  padding: 16px;
+  position: fixed;
+}
+
+.claim-modal {
+  width: min(420px, calc(100vw - 32px));
+  background: var(--white, #fff);
+  border-radius: 14px;
+  border: 1px solid var(--panel-border, #d1d1d1);
+  padding: 22px 24px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  color: var(--text-dark, #1b2a3a);
+  font-family: "Poppins", sans-serif;
+}
+
+.claim-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #d6d6d6;
+}
+
+.claim-modal-title {
+  margin: 0;
+  color: var(--brand-blue-dark, #003e70);
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.claim-modal-x {
+  border: none;
+  background: transparent;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  color: #6b7280;
+  padding: 0 4px;
+}
+
+.claim-modal-x:hover {
+  color: #111827;
+}
+
+.claim-modal-body p {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--text-dark, #1b2a3a);
+}
+
+.claim-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.claim-modal-btn {
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  min-height: 36px;
+}
+
+.claim-modal-btn.secondary {
+  border: 1px solid #d1d1d1;
+  background: transparent;
+  color: var(--text-dark, #1b2a3a);
+}
+
+.claim-modal-btn.secondary:hover {
+  background: #f7f7f7;
+  border-color: #bdbdbd;
+}
+
+.claim-modal-btn.primary {
+  border: none;
+  background: #006eff;
+  color: #fff;
+}
+
+.claim-modal-btn.primary:hover {
+  background: #5f98fb;
+  box-shadow: 0 10px 22px rgba(120, 170, 252, 0.35);
+}
+
+.claim-modal-btn:active {
+  transform: scale(0.98);
+}

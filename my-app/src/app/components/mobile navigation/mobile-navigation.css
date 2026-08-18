@@ -1,0 +1,907 @@
+﻿/* Mobile styles — loaded via app component styleUrls */
+
+
+/* Mobile-specific loader optimizations */
+@media (max-width: 768px) {
+  .loader-wrapper {
+    margin-top: 20px;
+    padding: 16px;
+    min-height: 120px;
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Ensure loader is centered within card bodies on mobile */
+  .card-body .loader-wrapper {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 100%;
+    margin: 0;
+  }
+
+  /* Hide the complex SVG loader on mobile */
+  .loader {
+    display: none;
+  }
+
+  /* Add a simple spinner for mobile */
+  .loader-wrapper::before {
+    content: '';
+    border: 4px solid rgba(0, 0, 0, 0.1);
+    border-top: 4px solid #3498db;
+    /* Blue color for the spinner */
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    animation: mobileSpin 1s linear infinite;
+    margin-bottom: 10px;
+    /* Space between spinner and text */
+  }
+
+  @keyframes mobileSpin {
+    0% {
+      transform: rotate(0deg);
+    }
+
+    100% {
+      transform: rotate(360deg);
+    }
+  }
+
+  .loader-wrapper p {
+    font-size: 14px;
+    text-align: center;
+    margin: 10px 0 0 0;
+    padding: 0 8px;
+    color: #8b949e;
+    /* Lighter grey color for the text */
+  }
+}
+
+@media (max-width: 480px) {
+  .loader-wrapper {
+    margin-top: 16px;
+    padding: 12px;
+    min-height: 100px;
+  }
+
+  /* Simple spinner already handled by 768px breakpoint */
+  .loader-wrapper p {
+    font-size: 13px;
+  }
+
+  /* Adjust spinner size for smaller screens */
+  .loader-wrapper::before {
+    width: 32px;
+    height: 32px;
+    border-width: 3px;
+  }
+}
+/* Tablet/mobile: stack cards vertically */
+@media (max-width: 1024px) {
+  .main-layout {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding-inline: 8px;
+  }
+
+  .task-card .card-body {
+    min-height: 380px;
+  }
+
+  .task-card .empty-panel-state {
+    margin-bottom: 70px;
+  }
+
+  .message-left {
+    font-size: 14px;
+  }
+
+  .top-bar {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 14px;
+    min-height: auto;
+    height: auto;
+  }
+
+  .app-brand,
+  .app-system-name {
+    font-size: 24px;
+  }
+
+  .card {
+    padding: 4px 12px 12px;
+  }
+
+  .card h2 {
+    font-size: 28px;
+  }
+
+  .message-bar {
+    margin-inline: 8px;
+    padding: 0 12px;
+    min-height: 56px;
+  }
+
+  .search-field {
+    flex: 1 1 150px;
+    max-width: 220px;
+    min-width: 100px;
+  }
+
+  .searchBar {
+    font-size: 12px;
+  }
+
+  .attachment-title-group .search-field {
+    flex: 1 1 110px;
+    max-width: 160px;
+    min-width: 80px;
+  }
+
+  .searchBar-att {
+    font-size: 12px;
+  }
+
+  .comment-title-group,
+  .attachment-title-group {
+    gap: 8px;
+  }
+
+}
+@media (max-width: 768px) {
+  .search-field {
+    flex: 1 1 120px;
+    max-width: 100%;
+    min-width: 90px;
+  }
+
+  .searchBar {
+    font-size: 13px;
+    padding: 6px 26px 6px 34px;
+  }
+
+  .attachment-title-group .search-field {
+    flex: 1 1 100px;
+    max-width: 100%;
+    min-width: 80px;
+  }
+
+  .searchBar-att {
+    font-size: 13px;
+    padding: 6px 26px 6px 34px;
+  }
+}
+.eform-header--mobile {
+  display: none;
+}
+/* Mobile view making 1 card visible and a btn is clicked to show comments and attachments instead of task card */
+@media (max-width: 600px) {
+
+  /* Main layout adjustments */
+  .main-layout {
+    padding: 4px;
+    gap: 4px;
+    height: calc(94.5vh - 110px);
+    overflow: hidden;
+  }
+
+  .page {
+    background: #f5f5f5;
+  }
+
+  :host {
+    background: #f5f5f5;
+  }
+
+  /* Top bar improvements */
+  .top-bar {
+    padding: 12px 16px;
+    min-height: 56px;
+    border-radius: 0;
+  }
+
+  .app-title-group {
+    gap: 8px;
+  }
+
+  .app-brand,
+  .app-system-name {
+    font-size: 20px;
+  }
+  
+  .sharepoint-connect-button {
+    height: 36px;
+    padding: 0 12px;
+    font-size: 14px;
+  }
+
+  /* Message bar improvements */
+  .message-bar {
+    margin: 4px 8px;
+    padding: 8px 12px;
+    min-height: auto;
+    border-radius: 12px;
+  }
+
+  .message-left {
+    font-size: 13px;
+    gap: 8px;
+  }
+
+  .message-icon-button {
+    width: 36px;
+    height: 36px;
+  }
+
+  .app-divider {
+    font-size: 18px;
+  }
+
+  .user-name {
+    font-size: 13px;
+  }
+
+  .user-email {
+    font-size: 11px;
+  }
+
+  /* Card improvements */
+  .card {
+    padding: 8px 12px 16px;
+    border-radius: 16px;
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  .card-header {
+    height: auto;
+    min-height: 48px;
+    padding: 8px 0;
+  }
+
+  .card h2 {
+    font-size: 22px;
+  }
+
+  .task-card .card-body {
+    height: calc(100% - 48px);
+    padding-top: 8px;
+    overflow: hidden;
+  }
+
+  /* Card visibility management */
+  .task-card,
+  .attachment-card,
+  .comment-card {
+    display: none;
+  }
+
+  .task-card.active,
+  .attachment-card.active,
+  .comment-card.active {
+    display: flex;
+    grid-column: span 1;
+    width: 100%;
+    min-height: auto;
+    justify-self: center;
+  }
+
+  /* Touch-friendly button sizes */
+  .tab-button {
+    min-width: 80px;
+    height: 36px;
+    font-size: 14px;
+    padding: 0 12px;
+  }
+
+
+
+  .round-icon {
+    width: 36px;
+    height: 36px;
+    font-size: 16px;
+  }
+
+  .user-profile-display {
+    width: 36px;
+    height: 36px;
+  }
+
+  .user-outline-icon {
+    width: 36px;
+    height: 36px;
+  }
+
+  /* Form elements */
+  .eform-search-input {
+    padding: 12px 16px;
+    font-size: 16px;
+    /* Prevents zoom on iOS */
+  }
+
+  .eform-item {
+    padding: 10px;
+    border-radius: 12px;
+  }
+
+  .eform-title {
+    font-size: 13px;
+  }
+
+  .eform-action-btn {
+    padding: 10px 16px;
+    font-size: 14px;
+  }
+
+  /* eForm card â€” structured mobile layout */
+  .eform-header--desktop {
+    display: none;
+  }
+
+  .eform-header--mobile {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-bottom: 10px;
+  }
+
+  .eform-mobile-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .eform-mobile-title {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .eform-header--mobile .eform-title {
+    font-size: 15px;
+    font-weight: 700;
+    margin: 0;
+    line-height: 1.3;
+    word-break: break-word;
+    color: #111827;
+  }
+
+  .eform-type-label {
+    display: block;
+    margin-top: 3px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #4b5563;
+    line-height: 1.3;
+  }
+
+  .eform-header--mobile .eform-status-badge {
+    flex-shrink: 0;
+    margin-left: 0;
+    width: auto;
+    font-size: 10px;
+    padding: 5px 10px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+
+  .eform-mobile-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    padding-top: 10px;
+    border-top: 1px solid #eef0f2;
+  }
+
+  .eform-mobile-field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    width: 100%;
+    min-width: 0;
+    padding: 8px 10px;
+    background: #f9fafb;
+    border-radius: 8px;
+    border: 1px solid #f0f1f3;
+    text-align: left;
+    align-items: flex-start;
+  }
+
+  .eform-mobile-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: #9ca3af;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    line-height: 1.2;
+  }
+
+  .eform-mobile-value {
+    font-size: 13px;
+    font-weight: 600;
+    color: #111827;
+    line-height: 1.35;
+    word-break: break-word;
+  }
+
+  /* HR Task List Selector */
+  .hr-task-list-selector {
+    padding: 12px;
+    background: #f0f6fa;
+    border-bottom: 1px solid #d1d1d1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .hr-task-list-selector label {
+    font-weight: 600;
+    color: #003e70;
+    font-size: 14px;
+  }
+
+  .hr-task-list-selector select {
+    padding: 12px 16px;
+    border: 1px solid #0078d4;
+    border-radius: 8px;
+    font-size: 16px;
+    /* Prevents zoom on iOS */
+    background: white;
+    color: #1b2a3a;
+    cursor: pointer;
+  }
+
+  .hr-task-list-selector select:hover {
+    border-color: #003e70;
+  }
+
+  .hr-task-list-selector .load-list-btn {
+    padding: 12px 20px;
+    background: #0078d4;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 120ms ease;
+    min-height: 48px;
+    /* Touch target size */
+  }
+
+  .hr-task-list-selector .load-list-btn:hover:not(:disabled) {
+    background: #003e70;
+  }
+
+  .hr-task-list-selector .load-list-btn:disabled {
+    background: #cccccc;
+    cursor: not-allowed;
+  }
+
+  /* File list improvements */
+  .user-file-row {
+    padding: 12px;
+    border-radius: 8px;
+    font-size: 14px;
+  }
+
+  .user-file-row a {
+    font-size: 14px;
+    line-height: 1.4;
+  }
+
+  /* Hide desktop header controls so mobile search spans full width */
+  .task-header-left,
+  .task-header-right {
+    display: none;
+  }
+
+  .header-actions {
+    gap: 6px;
+  }
+
+  /* eForm details improvements */
+  .eform-detail-item {
+    padding: 8px;
+    border-radius: 8px;
+  }
+
+  .detail-icon {
+    font-size: 18px;
+    width: 20px;
+    height: 20px;
+  }
+
+  .detail-label {
+    font-size: 11px;
+  }
+
+  .detail-value {
+    font-size: 13px;
+  }
+
+  /* Content display improvements */
+  .content-display {
+    max-height: 300px;
+  }
+
+  .content-display pre {
+    font-size: 11px;
+    padding: 8px;
+  }
+
+  /* User list improvements */
+  .user-list-item {
+    padding: 10px 12px;
+    border-radius: 8px;
+  }
+
+  .user-identifier {
+    font-size: 14px;
+  }
+
+  .user-email {
+    font-size: 12px;
+  }
+
+  /* Empty state improvements */
+  .empty-panel-state {
+    margin-bottom: 40px;
+  }
+
+  .empty-title,
+  .empty-text {
+    font-size: 18px;
+  }
+
+  .empty-text {
+    font-size: 14px;
+    margin-top: 8px;
+  }
+
+  /* Success box */
+  .success-box {
+    width: 18px;
+    height: 18px;
+    font-size: 11px;
+  }
+
+  /* Additional mobile improvements */
+  .card-header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--white);
+  }
+
+  .task-card .card-header,
+  .comment-card .card-header,
+  .attachment-card .card-header {
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  }
+
+
+
+  .tab-button:focus-visible,
+  .user-profile-display:focus-visible {
+    outline: 2px solid var(--brand-blue);
+    outline-offset: 2px;
+  }
+
+  /* Smooth scrolling for mobile */
+  .card-body {
+    scroll-behavior: smooth;
+  }
+
+  /* Better touch feedback */
+  .user-file-row:active,
+  .eform-item:active,
+  .user-list-item:active {
+    transform: scale(0.98);
+    transition: transform 0.1s ease;
+  }
+
+  /* Mobile-specific loading states */
+  .mobile-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    gap: 8px;
+    color: #666;
+    font-size: 14px;
+  }
+
+  .mobile-loading i {
+    animation: spin 1s linear infinite;
+  }
+
+  /* Mobile landscape adjustments */
+  @media (max-width: 600px) and (orientation: landscape) {
+    .main-layout {
+      padding: 2px;
+      gap: 2px;
+      height: calc(100vh - 100px);
+      overflow: hidden;
+    }
+
+    .card {
+      padding: 6px 12px 12px;
+    }
+
+    .card-header {
+      min-height: 44px;
+      padding: 4px 0;
+    }
+
+    .card h2 {
+      font-size: 18px;
+    }
+
+
+  }
+
+  /* Reduce motion for users who prefer it */
+  @media (prefers-reduced-motion: reduce) {
+
+
+
+    .mobile-loading i {
+      animation: none;
+    }
+
+    .card-body {
+      scroll-behavior: auto;
+    }
+  }
+
+  /* High contrast mode support */
+  @media (prefers-contrast: high) {
+
+
+    .card {
+      border-width: 2px;
+    }
+
+    .eform-item {
+      border-width: 2px;
+    }
+  }
+
+  /* Typography improvements for mobile */
+  .mobile-text-large {
+    font-size: 16px !important;
+    line-height: 1.5 !important;
+  }
+
+  .mobile-text-medium {
+    font-size: 14px !important;
+    line-height: 1.4 !important;
+  }
+
+  .mobile-text-small {
+    font-size: 12px !important;
+    line-height: 1.3 !important;
+  }
+
+  /* Better mobile form inputs */
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  select,
+  textarea {
+    font-size: 16px;
+    /* Prevents zoom on iOS */
+    line-height: 1.4;
+  }
+
+  /* eForm list: let items grow naturally; scroll via .eforms-container (same as laptop) */
+  .comment-card .card-body {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .eforms-container {
+    flex: 1;
+    min-height: 0;
+    height: auto;
+    overflow-y: auto;
+  }
+
+  .eform-list {
+    max-height: none;
+    padding-right: 6px;
+  }
+
+  .load-more-container {
+    flex-shrink: 0;
+    width: 100%;
+    margin-top: 4px;
+  }
+
+  .eform-list::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  /* Better mobile scrollbar styling */
+  .card-body::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  .card-body::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .card-body::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 2px;
+  }
+
+  .card-body::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.3);
+  }
+
+  /* Mobile-safe area handling for notched screens */
+  @supports (padding: max(0px)) {
+    .top-bar {
+      padding-left: max(16px, env(safe-area-inset-left));
+      padding-right: max(16px, env(safe-area-inset-right));
+    }
+
+    .main-layout {
+      padding-left: max(8px, env(safe-area-inset-left));
+      padding-right: max(8px, env(safe-area-inset-right));
+    }
+
+    .message-bar {
+      margin-left: max(8px, env(safe-area-inset-left));
+      margin-right: max(8px, env(safe-area-inset-right));
+    }
+  }
+
+  /* Comment text formatting for HR Tasks */
+  /* â”€â”€ Comment HTML rendered from PowerApps â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  .comment-text {
+    display: block;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    text-align: left;
+  }
+
+  .comment-text a {
+    display: inline-block;
+    margin: 0.15rem 0;
+    color: #000000;
+    text-decoration: underline;
+    word-break: break-all;
+  }
+
+  .comment-text p {
+    margin: 0 0 0.5rem 0;
+  }
+
+  .comment-text br {
+    display: block;
+    content: '';
+    margin-bottom: 0.35rem;
+  }
+
+  /* Ensure the parent label column also aligns left */
+  .detail-content {
+    text-align: left;
+  }
+
+
+  /* Mobile print styles */
+  @media print and (max-width: 600px) {
+
+    .mobile-next-btn,
+    .refresh-button {
+      display: none !important;
+    }
+
+    .card {
+      break-inside: avoid;
+      box-shadow: none;
+      border: 1px solid #ccc;
+    }
+
+    .main-layout {
+      display: block;
+      gap: 0;
+    }
+    .To-do,
+  .AllFiles {
+    display: none;
+  }
+  }
+
+  @media (max-width: 600px) {
+    .comment-title-group,
+    .attachment-title-group {
+      flex-wrap: wrap;
+      width: 100%;
+      gap: 6px;
+    }
+
+    .search-field {
+      flex: 1 1 100%;
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      margin: 0;
+      font-size: 14px;
+      height: auto;
+    }
+
+    .searchBar,
+    .searchBar-att {
+      padding: 8px 28px 8px 36px;
+      font-size: 14px;
+    }
+
+    .searchBar::placeholder,
+    .searchBar-att::placeholder {
+      font-size: 13px;
+    }
+
+  }
+}
+
+/* Floating action button — mobile only */
+@media (max-width: 768px) {
+  .small-action.mobile {
+    display: grid;
+    place-items: center;
+    position: fixed;
+    bottom: 108px;
+    right: 12px;
+    width: 52px;
+    height: 52px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #2483ff 0%, #0065fd 100%);
+    color: #ffffff;
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+    z-index: 1001;
+    box-shadow: 0 4px 16px rgba(36, 131, 255, 0.45);
+    -webkit-tap-highlight-color: transparent;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .small-action.mobile:active {
+    transform: scale(0.93);
+    box-shadow: 0 2px 8px rgba(36, 131, 255, 0.35);
+  }
+
+
+}
+
+@media (min-width: 769px) {
+  .small-action.mobile {
+    display: none !important;
+  }
+}
+
+/* Add padding to main content to account for fixed bottom nav */
+@media (max-width: 768px) {
+  main.main-layout {
+    padding-bottom: 80px !important;
+  }
+}

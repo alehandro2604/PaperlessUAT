@@ -1,0 +1,59 @@
+<button 
+  *ngIf="canShowDelegateButton()"
+  class="delegate-button"
+  type="button"
+  aria-label="Delegate task"
+  (click)="onDelegateClick()">
+  <img src="/delegate.png" alt="Delegate Task">
+</button>
+
+<!-- this is for the pop up -->
+<div *ngIf="showForm" class="delegate-backdrop" (click)="closePopup()">
+  <div class="delegate-form" (click)="$event.stopPropagation()">
+    <div class="form-header">
+      <h3>Delegate Task</h3>
+      <button type="button" class="close-button" (click)="closePopup()">×</button>
+    </div>
+  
+  <div class="form-content">
+    <div class="search-section">
+      <input 
+        type="text" 
+        [(ngModel)]="searchQuery" 
+        (input)="onSearchInput()"
+        placeholder="Search users..."
+        class="search-input"
+      />
+      
+      <div *ngIf="isSearching" class="search-loading">
+        Searching...
+      </div>
+      
+      <div *ngIf="searchError" class="search-error">
+        {{ searchError }}
+      </div>
+      
+      <div *ngIf="searchResults.length > 0" class="search-results">
+        <div *ngFor="let user of searchResults" class="user-result" (click)="selectUser(user)">
+          <div class="user-info">
+            <div class="user-name">{{ user.Title }}</div>
+            <div class="user-email">{{ user.Email }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <div *ngIf="selectedUser" class="selected-user">
+      <div class="selected-user-info">
+        <div class="selected-user-name">{{ selectedUser.Title }}</div>
+        <div class="selected-user-email">{{ selectedUser.Email }}</div>
+      </div>
+    </div>
+    
+    <div class="form-actions">
+      <button type="button" class="cancel-button" (click)="closePopup()">Cancel</button>
+      <button type="button" class="submit-button" (click)="onSubmit()" [disabled]="!selectedUser">Delegate</button>
+    </div>
+  </div>
+</div>
+

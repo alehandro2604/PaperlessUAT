@@ -1,0 +1,8912 @@
+﻿// ============================================================
+// IMPORTS & DEPENDENCIES
+// ============================================================
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { ChangeDetectorRef, Component, OnInit, OnDestroy, ViewChild } from '@angular/core';
+import { HttpClient, HttpErrorResponse } from '@angular/common/http';
+import { firstValueFrom, Observable, Subscription } from 'rxjs';
+import { sharePointConfig } from './sharepoint.config';
+import { AppConstants } from './app.constants';
+import { getFileExtension, getFileCategory, getFileIcon, normalizeSharePointFileUrl } from './file-utils';
+import { graphGet, graphGetWithRetry, clearGraphThrottleCooldown, toGraphPath, normalizeName } from './microsoft-graph';
+import { InteractionRequiredAuthError } from '@azure/msal-browser';
+import { AuthService } from './services/auth.service';
+import { FormConfigurationService } from './services/form-configuration.service';
+import { EForm } from './models/form-configuration.model';
+import {
+  MobileCardView, MobileNavigationComponent, MOBILE_NAV_INDEX, getAllFilesTabMobileState, getAttachmentsTabMobileState, getCommentsTabMobileState, getTaskTabMobileState, getTodoTabMobileState, resolveMobileNavClick,
+} from './components/mobile navigation/mobile-navigation';
+import {
+  resolveMobileSearchChange, syncMobileSearchTerm,
+} from './components/mobile navigation/mobile-search.utils';
+import { TodoListComponent, SubmitterSelection } from './components/todo-list/todo-list.component';
+import { AllFilesComponent, AttachmentSearchHit, CommentSearchHit } from './components/All-files/all-files';
+import { TodoService } from './services/todo.service';
+import { UserService } from './services/user.service';
+import { DelegateService } from './services/delegate.service';
+import { CommentService } from './services/comment.service';
+import { TaskService } from './services/task.service';
+import { SubordinaryTaskService } from './services/subordinaryTask.service';
+import { FileCrawlCacheService } from './services/file-crawl.service';
+import { SiteMetadataService } from './services/site-metadata.service';
+import { BackendApiService } from './services/backend-api.service';
+
+
+// ============================================================
+// ANGULAR COMPONENT DECORATOR
+// ============================================================
+import { PowerappsModalComponent } from './components/powerApps/powerapps-modal.component';
+import { NewCommentComponent } from './components/new-comment/new-comment';
+import { LoadingScreenComponent } from './components/loading screen/loading-screen';
+import { DelegateComponent } from './components/delegate-component/delegate';
+import { ManualRefreshComponent } from './components/manual-refresh/refresh';
+import { AppDropdownComponent, AppDropdownOption } from './components/app-dropdown/app-dropdown.component';
+import { HrFilesComponent } from './components/hr-files/hr-files.component';
+import { NewCommentSavedEvent, CommentListItem } from './models/comment.models';
+import { formatFormTitle } from './form-utils';
+
+@Component({
+  selector: 'app-root',
+  standalone: true,
+  imports: [CommonModule, FormsModule, TodoListComponent, AllFilesComponent, PowerappsModalComponent, NewCommentComponent, LoadingScreenComponent, MobileNavigationComponent, DelegateComponent, ManualRefreshComponent, AppDropdownComponent, HrFilesComponent],
+  templateUrl: './app.html',
+  styleUrls: ['./app.css', './form-list.css', './components/mobile navigation/mobile-navigation.css'],
+})
+export class AppComponent implements OnInit, OnDestroy {
+  @ViewChild(AllFilesComponent) private allFilesComponent?: AllFilesComponent;
+  @ViewChild(TodoListComponent) private todoListComponent?: TodoListComponent;
+
+  constructor(
+    private readonly http: HttpClient,
+    private readonly cdr: ChangeDetectorRef,
+    private readonly todoService: TodoService,
+    private readonly userService: UserService,
+    private readonly authService: AuthService,
+    private readonly delegateService: DelegateService,
+    private readonly commentService: CommentService,
+    private readonly formConfigService: FormConfigurationService,
+    private readonly taskService: TaskService,
+    private readonly subordinaryTaskService: SubordinaryTaskService,
+    private readonly fileCrawlCache: FileCrawlCacheService,
+    private readonly siteMetadataService: SiteMetadataService,
+    private readonly backendApi: BackendApiService,
+  ) { }
+
+  private static readonly HR_USER_TASKS_CACHE_KEY = 'tasks:hr-user:v5';
+  /** Persisted HR Files people-folder list so the first open paints from cache. */
+  private static readonly HR_ROOT_FOLDERS_CACHE_KEY = 'files:hr-root:v1';
+  /** Pause between batches of HR task-list fetches so SharePoint throttling (429) stays rare. */
+  private static readonly HR_TASK_LIST_BATCH_GAP_MS = 400;
+  /**
+   * Background poll for To Do watermarks. Folder Comments uses a longer cadence
+   * (FOLDER_COMMENTS_POLL_MS) so a person with many lists is not re-fanned every tick.
+   */
+  private static readonly SHAREPOINT_CACHE_POLL_MS = 60_000;
+  /** Idle top-up of the open HR/All Files Comments folder. Keep ≥3 min to avoid 429s. */
+  private static readonly FOLDER_COMMENTS_POLL_MS = 3 * 60_000;
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private normalizeCacheKeyPart(value: string): string {
+    return String(value ?? '').trim().toLowerCase();
+  }
+
+  private hrFolderTaskCacheKey(folderName: string): string {
+    // v8: strict name-part match (adrian ≠ adriana) + LookupId-first seed filter.
+    return `tasks:hr-folder:v8:${this.normalizeCacheKeyPart(folderName)}`;
+  }
+
+  private libFolderTaskCacheKey(listName: string, folderName: string): string {
+    return `tasks:lib:v7:${this.normalizeCacheKeyPart(listName)}:${this.normalizeCacheKeyPart(folderName)}`;
+  }
+
+  private driveFolderCacheKey(driveId: string, folderId: string): string {
+    return `files:folder:${driveId}:${folderId}`;
+  }
+
+  private invalidateFolderTaskCache(libraryName: string, folderName: string): void {
+    const folder = String(folderName || '').trim();
+    if (!folder) return;
+    if (normalizeName(libraryName) === normalizeName(this.targetLibraryName)) {
+      this.fileCrawlCache.invalidate(this.hrFolderTaskCacheKey(folder));
+      return;
+    }
+    const mappedTaskList = this.getTaskListForLibrary(libraryName);
+    if (mappedTaskList) {
+      this.fileCrawlCache.invalidate(this.libFolderTaskCacheKey(mappedTaskList, folder));
+    }
+  }
+
+  private applyCachedFolderTaskItems(cached: any[], folderName: string, pendingRefresh = false): void {
+    if (pendingRefresh) {
+      this.isLoadingMoreComments = true;
+      this.commentsMessage = '';
+    } else {
+      this.isLoadingMoreComments = false;
+    }
+    this.publishFolderTaskProgress(
+      this.sortCommentItemsByDateDesc(this.applyAllFilesFolderSubmitter(cached)),
+      {
+        done: !pendingRefresh,
+        emptyMessage: 'No tasks found.',
+      },
+    );
+  }
+
+
+
+  // this is to check if the item is a user comment card
+  protected isUserCommentCard(item: { id?: unknown }): boolean {
+    return String(item?.id ?? '').startsWith('comment:');
+  }
+
+  // ============================================================
+  // UI STATE
+  // ============================================================
+  protected isConnecting = false;
+  protected statusMessage = 'Checking Microsoft 365 sign-in...';
+  protected commentsMessage = 'Loading comments...';
+  protected errorMessage = '';
+  protected showUserFile = false;
+  protected isLoadingUserFiles = false;
+  /** True while the HR Files folder list in the first section is loading  separate from attachments. */
+  protected isLoadingHrFilesList = false;
+  protected isLoadingComments = false;
+  /** True while a Comments network fetch is still running after the first page is shown. */
+  protected isLoadingMoreComments = false;
+  protected showToDoSection = true;
+  protected isLoadingTodoTasks = false;
+  /** Prevent stale To Do loads when the tab or subordinate toggle is used rapidly. */
+  private todoTaskLoadSeq = 0;
+  /**
+   * True after the first To Do Graph pass (assignee + blocked-list fallback) finishes.
+   * False while still loading or after a mid-load cancel  used to decide resume vs full reload.
+   */
+  private todoFirstPassComplete = false;
+  /** True while Progress=Pending procurement pages are draining in the background. */
+  protected todoProcurementDrainActive = false;
+  /** Prevent stale Comments/HR task loads when task groups are clicked rapidly. */
+  private hrCommentsLoadSeq = 0;
+  /** Count of in-flight HR / All Files folder Comments Graph crawls. */
+  private folderTaskGraphInFlight = 0;
+  private userHrTasksLoaded = false;
+  protected showAllFilesSection = false;
+  /** Once true, All Files stays in the DOM (hidden) so listings/search caches survive tab switches. */
+  protected allFilesMounted = false;
+  protected searchTerm = '';
+  protected hideComments = true;
+  protected userFileProgressMessage = '';
+  protected userFileError = '';
+  protected userFileWarning = '';
+  protected mobileCardView: MobileCardView = 'todo';
+  protected currentFolderId: string | null = null;
+  protected currentFolderWebUrl = '';
+  protected currentFolderName = '';
+  protected folderStack: Array<{ id: string; name: string; webUrl: string }> = [];
+  /** Top-level folder opened from HR Files / All Files  back never goes above this. */
+  private attachmentBrowsingRoot: { id: string; name: string; webUrl: string } | null = null;
+  protected currentLibraryDriveId: string | null = null;
+  protected currentLibraryName: string | null = null;
+  protected selectedFolderName = '';
+  private selectedAllFilesFolderId: string | null = null;
+  /** Parent folder name when a level-2 ChildSubject folder is selected (for task-cache reuse). */
+  private selectedAllFilesParentFolderName = '';
+  private childSubjectSourceFetchedForFolderId: string | null = null;
+  /** ChildSubject / ChildSubject2 names keyed by library + trailing eForm id. */
+  private readonly childSubjectNamesByLibraryEFormId = new Map<string, string[]>();
+  /** SharePoint lastModifiedBy for the folder selected in All Files (shown as Submitted by). */
+  protected selectedFolderModifiedBy = '';
+  /** After Comments-search click: scroll/highlight this task id in the Comments panel. */
+  private pendingCommentFocusId: string | null = null;
+  protected highlightedCommentId: string | null = null;
+  /** After Attachments-search click: highlight this file id in the Attachments panel. */
+  private pendingAttachmentFocusId: string | null = null;
+  protected highlightedAttachmentId: string | null = null;
+
+  /** Library name ? task list name, sourced from the eForms list via FormConfigurationService. */
+  private documentLibraryTaskMap: Record<string, string> = {};
+  private documentLibraryTaskMapSub?: Subscription;
+
+  // ============================================================
+  // HR TASK LIST SELECTION
+  // ============================================================
+  protected allowedHrTaskLists: string[] = [];
+  protected selectedHrTaskList: string = '';
+  protected get isUsingHrTaskList(): boolean { return this.selectedHrTaskList !== ''; }
+
+  // ============================================================
+  // ATTACHMENTS / DRIVE FILES
+  // ============================================================
+  protected userFiles: Array<{
+    id: string;
+    name: string;
+    webUrl: string;
+    parentId?: string;
+    lastModifiedDateTime?: string;
+    size?: number;
+    isFolder: boolean;
+    modifiedBy?: string;
+    fileExtension?: string;
+    mimeType?: string;
+    fileCategory?: string;
+    fileIcon?: string;
+  }> = [];
+
+  /** Prevent stale folder results when users click folders quickly. */
+  private driveFolderLoadSeq = 0;
+  /** In-flight silent prefetches keyed by `files:folder:{driveId}:{folderId}`. */
+  private readonly folderPrefetchInFlight = new Set<string>();
+  private folderPrefetchTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Keep low  parallel prefetches were a primary Graph 429 source with All Files. */
+  private readonly folderPrefetchConcurrency = 2;
+  private readonly folderPrefetchMaxBatch = 8;
+  /** When true, idle prefetch is suspended so user clicks / task loads get Graph capacity. */
+  private folderPrefetchPaused = false;
+  /** In-flight silent HR person task prefetches keyed by `tasks:hr-folder:{name}`. */
+  private readonly hrTaskPrefetchInFlight = new Set<string>();
+  private hrTaskPrefetchTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Prevent stale All Files task loads when folders are clicked rapidly. */
+  private allFilesFolderTaskLoadSeq = 0;
+
+  protected hrPersonalRootFolders: Array<{
+    id: string;
+    name: string;
+    webUrl: string;
+    isFolder: boolean;
+  }> = [];
+
+  private userRootFolderId: string | null = null;
+  protected hrPersonalFolderName: string | null = null;
+
+  // ============================================================
+  // CURRENT USER
+  // ============================================================
+  protected currentUser: {
+    email: string;
+    username: string;
+    userPrincipalName: string;
+    employeeId?: string;
+  } | null = null;
+
+  protected get isUserLoggedIn(): boolean { return !!this.currentUser; }
+
+  /** Item count shown in the attachments header  matches what filteredAttachments displays. */
+  protected get loadedHrPersonalItemCount(): number {
+    if (this.currentLibraryDriveId || this.isUsingHrTaskList) {
+      return this.filteredAttachments.length;
+    }
+    return this.visibleFiles.length;
+  }
+
+  /** True when the attachments panel is showing the user's HR Personal drive tree (not All Files). */
+  private isBrowsingPersonalDriveAttachments(): boolean {
+    return !!this.userRootFolderId && !this.currentLibraryDriveId && !this.showAllFilesSection;
+  }
+
+
+  // ============================================================
+  // FILTER USERS
+  // ============================================================
+  protected readonly approvalFilterOptions: AppDropdownOption[] = [
+    { value: '', label: 'All statuses', tone: 'neutral' },
+    { value: 'approved', label: 'Complete', tone: 'complete' },
+    { value: 'pending', label: 'Pending', tone: 'pending' },
+    { value: 'general-comments', label: 'General Comments', tone: 'comment' },
+    { value: 'new-attachments', label: 'New Attachments', tone: 'attachment' },
+    { value: 'rfa', label: 'Request For Action', tone: 'action' },
+  ];
+  protected readonly hrTaskListOptions: AppDropdownOption[] = [
+    { value: '', label: '-- Select a list --' },
+    { value: 'ProcEForm', label: 'ProcEForm' },
+  ];
+
+  protected getTaskFilterOptions(forms: EForm[] | null | undefined): AppDropdownOption[] {
+    return [
+      { value: '', label: 'All Tasks' },
+      ...(forms ?? []).map(form => ({
+        value: form.taskListName || form.title,
+        label: this.formatFormTitle(form.title),
+      })),
+    ];
+  }
+
+  protected getAssigneeOptions(assignedTo: string, eform?: { status?: string; completedBy?: string; eFormDetails?: any }): AppDropdownOption[] {
+    return this.getAssignees(assignedTo).map(person => ({
+      value: person,
+      label: this.formatAssigneeLabel(person, eform),
+    }));
+  }
+
+  /**
+   * Multi-assignee dropdown only while the task is still open.
+   */
+  protected showAssigneeDropdown(
+    assignedTo: string,
+    eform?: { status?: string; completedBy?: string; eFormDetails?: any },
+  ): boolean {
+    return this.getAssignees(assignedTo).length >= 2 && !this.isEformComplete(eform);
+  }
+
+  /** True when the comment/task card should use Completed By instead of Assigned To. */
+  protected isEformComplete(eform?: { status?: string; eFormDetails?: any }): boolean {
+    const details = eform?.eFormDetails ?? {};
+    const progress = String(details.progress ?? details.eFormProgress ?? '').toLowerCase().trim();
+    if (progress === 'complete' || progress === 'completed') return true;
+    if (progress === 'pending') return false;
+
+    const taskOutcome = String(details.taskOutcome ?? details.taskOutcomeField ?? '').toLowerCase().trim();
+    if (taskOutcome === 'complete' || taskOutcome === 'completed') return true;
+
+    const status = this.getEformStatus(eform);
+    if (/\b(pending|awaiting|waiting|needs?)\b.*\bapprov/.test(status)) return false;
+    return status.includes('approv') || status.includes('complet');
+  }
+
+  /** Completed By when approved; falls back to last editor only when no completer is stored. */
+  protected getLastModifiedByName(
+    eform?: { status?: string; completedBy?: string; eFormDetails?: any } | null,
+  ): string {
+    const details = eform?.eFormDetails ?? {};
+    const rawFields = details.rawFields;
+
+    const completedByName =
+      this.extractPersonName(eform?.completedBy) ||
+      this.extractPersonName(details.completedBy) ||
+      (rawFields && typeof rawFields === 'object'
+        ? this.extractPersonName((rawFields as Record<string, unknown>)['CompletedBy'])
+        : '');
+    if (completedByName) return completedByName;
+
+    const completed = this.getCompletedByNames(eform ?? {}).find(Boolean);
+    if (completed) return completed;
+
+    const custom = String(details.customModifiedBy ?? '').trim();
+    if (custom) return custom;
+
+    if (rawFields && typeof rawFields === 'object') {
+      const fromFields =
+        this.extractPersonName((rawFields as Record<string, unknown>)['CustomModifiedBy']) ||
+        this.extractPersonName((rawFields as Record<string, unknown>)['Editor']) ||
+        this.extractPersonName((rawFields as Record<string, unknown>)['ModifiedBy']);
+      if (fromFields) return fromFields;
+    }
+
+    const modifiedBy = String(details.modifiedBy ?? '').trim();
+    // Ignore bare SharePoint lookup ids.
+    if (modifiedBy && !/^\d+$/.test(modifiedBy)) return modifiedBy;
+
+    return '';
+  }
+
+  /** Appends ? when complete, or ? when still pending. */
+  protected formatAssigneeLabel(person: string, eform?: { status?: string; completedBy?: string; eFormDetails?: any }): string {
+    const name = String(person ?? '').trim();
+    if (!name) return '';
+    if (this.hasAssigneeCompleted(name, eform)) {
+      return `${name} ?`;
+    }
+    if (this.isEformPending(eform)) {
+      return `${name} ?`;
+    }
+    return name;
+  }
+
+  protected hasAssigneeCompleted(person: string, eform?: { status?: string; completedBy?: string; eFormDetails?: any }): boolean {
+    const name = String(person ?? '').trim();
+    if (!name || !eform) return false;
+
+    const matchedCompleter = this.getCompletedByNames(eform).some(completer =>
+      this.userService.matchesAssigneeField(name, completer, completer)
+    );
+    if (matchedCompleter) return true;
+
+    if (this.isEformComplete(eform)) {
+      const lastModifier = this.getLastModifiedByName(eform);
+      if (lastModifier && this.userService.matchesAssigneeField(name, lastModifier, lastModifier)) {
+        return true;
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  private getEformStatus(eform?: { status?: string; eFormDetails?: any }): string {
+    return String(eform?.eFormDetails?.status ?? eform?.status ?? '').toLowerCase();
+  }
+
+  private isEformPending(eform?: { status?: string; eFormDetails?: any }): boolean {
+    const status = this.getEformStatus(eform);
+    if (!status) return false;
+    return !this.isEformComplete(eform);
+  }
+
+  private getCompletedByNames(eform: { completedBy?: string; eFormDetails?: any }): string[] {
+    const details = eform.eFormDetails ?? {};
+    const names = new Set<string>();
+
+    const push = (value: unknown) => {
+      const text = String(value ?? '').trim();
+      if (!text || text.toLowerCase() === 'enter value here') return;
+      for (const part of this.userService.parseAssignees(text)) {
+        names.add(part);
+      }
+    };
+
+    push(eform.completedBy);
+    push(details.completedBy);
+
+    const rawFields = details.rawFields;
+    if (rawFields && typeof rawFields === 'object') {
+      push((rawFields as Record<string, unknown>)['CompletedBy']);
+    }
+
+    const comment = String(details.comment ?? details.commentHtml ?? '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<[^>]+>/g, '');
+    const completedByMatches = comment.matchAll(/\[Completed by\s+([^\]]+?)(?:\s+on\s+[^\]]+)?\]/gi);
+    for (const match of completedByMatches) {
+      const raw = String(match[1] ?? '').replace(/:\s*$/, '').trim();
+      push(raw);
+    }
+
+    // Approvers who already acted (have a date), or the primary completer when the task is done.
+    if (String(details.approver1Date ?? '').trim()) push(details.approver1);
+    if (String(details.approver2Date ?? '').trim()) push(details.approver2);
+    if (String(details.approver3Date ?? '').trim()) push(details.approver3);
+    if (this.isEformComplete(eform)) {
+      push(details.approver1 || details.approver2 || details.approver3);
+    }
+
+    return Array.from(names);
+  }
+
+  // ============================================================
+  // COMMENTS / HR TASKS DATA
+  // ============================================================
+  protected commentItems: Array<{
+    id: string;
+    name: string;
+    webUrl: string;
+    lastModifiedDateTime?: string;
+    size?: number;
+    isFolder: boolean;
+    status?: string;
+    submittedBy?: string;
+    submittedDate?: string;
+    completedBy?: string;
+    description?: string;
+    contentType?: string;
+    downloadUrl?: string;
+    extractedContent?: string;
+    eFormDetails?: any;
+    isContentLoaded?: boolean;
+    showFullContent?: boolean;
+  }> = [];
+
+  // ============================================================
+  // FILTER STATE  cached, only recomputed when dirty
+  // ============================================================
+  protected selectedTaskFilter = '';
+  protected selectedApprovalFilter = '';
+  protected searchQuery = '';
+  protected selectedSubmitter: string | null = null;
+  protected selectedEFormListId: string | null = null;
+  protected selectedEFormTitle: string | null = null;
+  protected selectedGroupTaskIds: string[] = [];
+  protected superiorMode = false;
+
+  // eForms loaded from SharePoint, used to populate the task-type filter dropdown.
+  protected taskFilterForms$!: Observable<EForm[]>;
+
+  private _filteredCommentItems: Array<typeof this.commentItems[0]> = [];
+  private _filtersDirty = true;
+
+  // ============================================================
+  // FILTERED COMMENT ITEMS  latest-first pages + Load more
+  // ============================================================
+  protected get filteredCommentItems(): Array<typeof this.commentItems[0]> {
+    if (!this._filtersDirty) return this._filteredCommentItems;
+    this._filteredCommentItems = this.filterCommentItems();
+    this._filtersDirty = false;
+    return this._filteredCommentItems;
+  }
+
+  /** Short, user-facing Comments loader text (no raw folder/email dump). */
+  protected get commentsLoadingLabel(): string {
+    if (this.isLoadingMoreComments) {
+      return 'Loading more tasks...';
+    }
+    const custom = this.commentsMessage?.trim();
+    if (this.isLoadingComments) {
+      // Prefer progress text (e.g. "Scanning ProcTaskArchive") over a generic label.
+      if (custom) return custom;
+      if (this.selectedHrPersonalTaskFolder || this.selectedFolderName) {
+        return 'Loading tasks...';
+      }
+      return 'Loading comments...';
+    }
+    return custom || 'Loading comments...';
+  }
+
+  /** First paint shows the newest page; "Load more" reveals the next page from the loaded/cached set. */
+  protected visibleItemCount = 20;
+  protected readonly commentsInitialPageSize = 20;
+  protected readonly itemPageSize = 20;
+
+  protected get pagedCommentItems(): Array<typeof this.commentItems[0]> {
+    return this.filteredCommentItems.slice(0, this.visibleItemCount);
+  }
+
+  protected get hasMoreItems(): boolean {
+    return this.filteredCommentItems.length > this.visibleItemCount;
+  }
+
+  protected get remainingItemCount(): number {
+    return Math.max(this.filteredCommentItems.length - this.visibleItemCount, 0);
+  }
+
+  protected loadMoreItems(): void {
+    this.visibleItemCount += this.itemPageSize;
+    this.refreshView();
+  }
+
+  private invalidateCommentFilters(resetPagination = true): void {
+    this._filtersDirty = true;
+    if (resetPagination) {
+      this.visibleItemCount = this.commentsInitialPageSize;
+    }
+  }
+
+  /** Newest submittedDate first  ignore submitter for ordering. */
+  private sortCommentItemsByDateDesc<T extends { submittedDate?: string; lastModifiedDateTime?: string }>(
+    items: T[],
+  ): T[] {
+    return [...items].sort(
+      (a, b) =>
+        new Date(b.submittedDate || b.lastModifiedDateTime || 0).getTime() -
+        new Date(a.submittedDate || a.lastModifiedDateTime || 0).getTime(),
+    );
+  }
+
+  /**
+   * Publish folder/HR task results: always date-sorted (latest first).
+   * Prefer painting when a load is complete so newer rows do not keep jumping to the top.
+   * "Load more" pages the already-loaded set.
+   */
+  private publishFolderTaskProgress(
+    items: any[],
+    options: { done?: boolean; emptyMessage?: string } = {},
+  ): void {
+    const sorted = this.sortCommentItemsByDateDesc(
+      this.filterTasksForSelectedAllFilesFolder(items)
+    );
+    this.commentItems = sorted;
+    void this.publishSelectedFolderChildSubjects(sorted, !!options.done);
+
+    if (options.done) {
+      const wasLoading = this.isLoadingComments;
+      this.isLoadingComments = false;
+      this.isLoadingMoreComments = false;
+      this.commentsMessage = sorted.length === 0 ? (options.emptyMessage || 'No tasks found.') : '';
+      // Reset page window only on the first completed paint  keep Load more position
+      // when a background related-steps refresh replaces the list.
+      if (wasLoading || this.visibleItemCount < this.commentsInitialPageSize) {
+        this.visibleItemCount = this.commentsInitialPageSize;
+        this.invalidateCommentFilters(true);
+      } else {
+        this.invalidateCommentFilters(false);
+      }
+      this.refreshView();
+      this.focusPendingCommentIfNeeded();
+      return;
+    }
+
+    // Incomplete batches (legacy progressive callers): keep spinner until there is
+    // something to show; avoid flashing empty states while lists are still loading.
+    if (this.isLoadingComments) {
+      if (sorted.length === 0) {
+        this.commentsMessage = 'Loading tasks...';
+        this.refreshView();
+        return;
+      }
+      this.isLoadingComments = false;
+      this.visibleItemCount = this.commentsInitialPageSize;
+      this.invalidateCommentFilters(true);
+      this.commentsMessage = '';
+    } else {
+      this.invalidateCommentFilters(false);
+      if (sorted.length > 0) {
+        this.commentsMessage = '';
+      }
+    }
+    this.isLoadingMoreComments = false;
+    this.refreshView();
+    this.focusPendingCommentIfNeeded();
+  }
+
+  private focusPendingCommentIfNeeded(): void {
+    const id = String(this.pendingCommentFocusId ?? '').trim();
+    if (!id) return;
+
+    const idx = this.filteredCommentItems.findIndex((item) => String(item?.id ?? '') === id);
+    if (idx < 0) return;
+
+    this.visibleItemCount = Math.max(this.visibleItemCount, idx + 1);
+    this.highlightedCommentId = id;
+    this.pendingCommentFocusId = null;
+    this.refreshView();
+
+    setTimeout(() => {
+      const el = document.getElementById(`comment-item-${id}`);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 80);
+  }
+
+  private childSubjectCacheKey(libraryName: string, folderEFormId: string): string {
+    return `${this.normalizeCacheKeyPart(libraryName)}:${folderEFormId}`;
+  }
+
+  /**
+   * Unblock the ChildSubject accordion without waiting for the full folder task scan.
+   * Procurement ChildSubject columns live on the source eForm item (trailing folder id).
+   */
+  private async primeChildSubjectForFolder(
+    libraryName: string,
+    folderName: string,
+    folderId: string,
+  ): Promise<void> {
+    if (!folderId || !this.showAllFilesSection) return;
+
+    const eFormId = this.extractTrailingFolderId(folderName);
+    if (!eFormId) return;
+
+    const cacheKey = this.childSubjectCacheKey(libraryName, eFormId);
+    const cached = this.childSubjectNamesByLibraryEFormId.get(cacheKey);
+    if (cached && cached.length > 0) {
+      if (this.selectedAllFilesFolderId === folderId) {
+        this.childSubjectSourceFetchedForFolderId = folderId;
+        this.allFilesComponent?.setChildSubjectFolderNames(folderId, cached);
+      }
+      return;
+    }
+
+    const names = await this.loadChildSubjectNamesFromSourceEFormDirect(libraryName, folderName, eFormId);
+    if (this.selectedAllFilesFolderId !== folderId) return;
+
+    if (names.length > 0) {
+      this.childSubjectSourceFetchedForFolderId = folderId;
+      this.childSubjectNamesByLibraryEFormId.set(cacheKey, names);
+      this.allFilesComponent?.setChildSubjectFolderNames(folderId, names);
+    }
+    // Empty / failed: leave pending for publishSelectedFolderChildSubjects (task path).
+  }
+
+  /** Populate All Files level 2 from ChildSubject + ChildSubject2 on the source eForm row. */
+  private async publishSelectedFolderChildSubjects(items: any[], done: boolean): Promise<void> {
+    const folderId = this.selectedAllFilesFolderId;
+    if (!folderId || !this.showAllFilesSection) return;
+
+    let names = this.extractChildSubjectNamesFromTaskItems(items);
+    if (names.length === 0 && this.childSubjectSourceFetchedForFolderId !== folderId && items.length > 0) {
+      names = await this.loadChildSubjectNamesFromSourceEForm(items);
+      this.childSubjectSourceFetchedForFolderId = folderId;
+      const libraryName = this.currentLibraryName ?? '';
+      const eFormId = this.extractTrailingFolderId(this.selectedFolderName);
+      if (names.length > 0 && libraryName && eFormId) {
+        this.childSubjectNamesByLibraryEFormId.set(this.childSubjectCacheKey(libraryName, eFormId), names);
+      }
+    }
+
+    if (names.length > 0) {
+      this.allFilesComponent?.setChildSubjectFolderNames(folderId, names);
+      return;
+    }
+
+    // Don't wipe an early primeChildSubjectForFolder result when tasks have no ChildSubject columns.
+    if (done && this.childSubjectSourceFetchedForFolderId !== folderId) {
+      this.allFilesComponent?.setChildSubjectFolderNames(folderId, names);
+    }
+  }
+
+  private extractChildSubjectNamesFromTaskItems(items: any[]): string[] {
+    const names: string[] = [];
+    const seen = new Set<string>();
+    const selectedName = normalizeName(this.selectedFolderName);
+
+    for (const item of items) {
+      const fields = item?.eFormDetails?.rawFields ?? {};
+      names.push(...this.extractChildSubjectNamesFromFields(fields, selectedName, seen));
+    }
+    return names;
+  }
+
+  private extractChildSubjectNamesFromFields(
+    fields: Record<string, unknown>,
+    selectedName: string,
+    seen: Set<string>,
+  ): string[] {
+    const names: string[] = [];
+    for (const [key, rawValue] of Object.entries(fields)) {
+      if (!this.isChildSubjectColumn(key)) continue;
+
+      const text = this.stringifyTaskFieldValue(rawValue);
+      for (const candidate of text.split(/[\r\n;]+/)) {
+        const name = candidate.replace(/^#?\d+;#/, '').trim();
+        const normalizedName = normalizeName(name);
+        if (!name || !normalizedName || normalizedName === selectedName || seen.has(normalizedName)) {
+          continue;
+        }
+        seen.add(normalizedName);
+        names.push(name);
+      }
+    }
+    return names;
+  }
+
+  /** ChildSubject columns live on the source eForm list item, not always on the task row. */
+  private async loadChildSubjectNamesFromSourceEForm(items: any[]): Promise<string[]> {
+    const folderEFormId = this.extractTrailingFolderId(this.selectedFolderName);
+    const seedTask =
+      items.find((item) => String(item?.eFormDetails?.eFormListId ?? '').trim() === folderEFormId) ??
+      items[0];
+    if (!seedTask) return [];
+
+    const eFormListId = String(seedTask?.eFormDetails?.eFormListId ?? folderEFormId ?? '').trim();
+    if (!eFormListId) return [];
+
+    const libraryName = this.currentLibraryName ?? '';
+    const taskListName = String(seedTask?.eFormDetails?.listName ?? '').trim();
+    return this.loadChildSubjectNamesFromSourceEFormDirect(libraryName, this.selectedFolderName, eFormListId, taskListName);
+  }
+
+  /** Resolve ChildSubject names from the source eForm item by trailing folder / eForm id. */
+  private async loadChildSubjectNamesFromSourceEFormDirect(
+    libraryName: string,
+    folderName: string,
+    eFormListId: string,
+    taskListName = '',
+  ): Promise<string[]> {
+    if (!eFormListId) return [];
+
+    const form =
+      this.formConfigService.getFormByDocLibrary(libraryName) ??
+      (taskListName
+        ? this.formConfigService.snapshot.find(
+            (entry) => String(entry.taskListName ?? '').trim().toLowerCase() === taskListName.toLowerCase()
+          )
+        : undefined);
+    if (!form) return [];
+
+    try {
+      const token = await this.getSharePointToken();
+      await this.ensureSiteMetadata(
+        sharePointConfig.siteHostName,
+        sharePointConfig.sitePath,
+        token,
+      );
+      if (!this.cachedSiteId) return [];
+
+      const sourceListName = this.parseSharePointListNameFromUrl(form.url) || String(form.prefix ?? '').trim();
+      const sourceList = this.cachedSiteLists.find((list: any) =>
+        (list.name ?? '').toLowerCase() === sourceListName.toLowerCase() ||
+        (list.displayName ?? '').toLowerCase() === sourceListName.toLowerCase()
+      );
+      if (!sourceList?.id) return [];
+
+      const response: any = await graphGetWithRetry(
+        this.http,
+        `/sites/${this.cachedSiteId}/lists/${sourceList.id}/items/${eFormListId}?$expand=fields`,
+        token,
+        AppConstants.graphFileListingTimeoutMs,
+      );
+      const fields = (response?.fields ?? {}) as Record<string, unknown>;
+      return this.extractChildSubjectNamesFromFields(fields, normalizeName(folderName), new Set());
+    } catch (err) {
+      console.warn('[All Files] Could not load ChildSubject columns from source eForm item.', err);
+      return [];
+    }
+  }
+
+  private parseSharePointListNameFromUrl(url: string): string {
+    return this.formConfigService.parseSharePointListNameFromUrl(url);
+  }
+
+  /** Level-2 All Files dropdown uses ChildSubject and ChildSubject2 only. */
+  private isChildSubjectColumn(columnName: string): boolean {
+    const normalized = String(columnName ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (normalized === 'childsubject' || normalized === 'childsubject2') return true;
+    // SharePoint encoded internal names, e.g. Child_x0020_Subject / Child_x0020_Subject2
+    return /^childx0020subject2?$/.test(normalized);
+  }
+
+
+  // ============================================================
+  // DATE SEARCH HELPER
+  // ============================================================
+  private getDateSearchTokens(dateStr: string): string {
+    if (!dateStr) return '';
+    const dt = new Date(dateStr);
+    if (isNaN(dt.getTime())) return dateStr.toLowerCase();
+
+    const day = dt.getDate().toString();
+    const dayPadded = dt.toLocaleDateString('en-GB', { day: '2-digit' });
+    const month2 = dt.toLocaleDateString('en-GB', { month: '2-digit' });
+    const monthShort = dt.toLocaleDateString('en-GB', { month: 'short' }).toLowerCase();
+    const monthLong = dt.toLocaleDateString('en-GB', { month: 'long' }).toLowerCase();
+    const year = dt.getFullYear().toString();
+
+    return [
+      `${dayPadded}/${month2}/${year}`,
+      `${day}/${month2}/${year}`,
+      `${month2}/${year}`,
+      `${monthShort} ${year}`,
+      `${monthLong} ${year}`,
+      `${day} ${monthShort}`,
+      `${day} ${monthLong}`,
+      monthShort,
+      monthLong,
+      year,
+      day,
+    ].join(' ');
+  }
+
+  private filterCommentItems(): Array<typeof this.commentItems[0]> {
+    let filtered = this.commentItems;
+    if (this.selectedSubmitter && !this.showAllFilesSection) {
+      filtered = filtered.filter(item => {
+        const matchesEFormList = !this.selectedEFormListId || (
+          (String(item.eFormDetails?.eFormListId ?? '').trim() || 'Unknown eForm') === this.selectedEFormListId
+        );
+        if (!matchesEFormList) {
+          return false;
+        }
+
+        const isCommentEntry = this.isCommentTypeItem(item);
+        const selectedTaskId = String(this.selectedTask?.Id ?? '').trim();
+        const groupTaskIds = new Set(this.selectedGroupTaskIds);
+
+        if (!isCommentEntry) {
+          const matchesEFormTitle = !this.selectedEFormTitle || (
+            this.getTaskEFormTitle(item) === this.selectedEFormTitle
+          );
+          if (!matchesEFormTitle) {
+            return false;
+          }
+        } else if (this.isSyntheticCommentCard(item)) {
+          const cardTaskId = this.extractCommentCardTaskId(item.id);
+          if (!cardTaskId) {
+            return true;
+          }
+          if (groupTaskIds.size > 0) {
+            return groupTaskIds.has(cardTaskId);
+          }
+          if (selectedTaskId && cardTaskId !== selectedTaskId) {
+            return false;
+          }
+        }
+
+        if (this.showToDoSection && !this.superiorMode) {
+          if (isCommentEntry) {
+            return true;
+          }
+          if (!this.isItemSubmittedBy(item, this.selectedSubmitter)) {
+            return false;
+          }
+          // When a submitter is selected in the To Do view, the Comments panel should
+          // show the submitter's full eForm history (Pending + Completed), not only
+          // items currently assigned to the logged-in user.
+          return true;
+        }
+
+        if (this.showToDoSection && this.superiorMode && this.selectedSubmitter) {
+          if (isCommentEntry) {
+            return true;
+          }
+          return this.isItemAssignedToSubordinate(item, this.selectedSubmitter);
+        }
+
+        return true;
+      });
+    }
+
+    if (this.searchQuery.trim()) {
+      const query = this.searchQuery.toLowerCase().trim();
+      filtered = filtered.filter(item => {
+        const details = item.eFormDetails ?? {};
+        const searchableValues = [
+          item.name,
+          item.description,
+          item.submittedBy,
+          item.status,
+          this.getDateSearchTokens(item.submittedDate ?? ''),
+          details.type,
+          details.status,
+          details.submitter,
+          details.listName,
+          details.approver1,
+          details.approver2,
+          details.approver3,
+          details.reason,
+          details.stage,
+          details.section,
+          details.body,
+          details.comment,
+          details.category,
+          details.taskOutcome,
+          details.assignedTo,
+          details.fromDate,
+          details.toDate,
+          details.eFormListId,
+          details.employeeName,
+          details.comment,
+          details.commentHtml,
+          details.eFormListId,
+          details.eFormCategory,
+          details.eFormProgress,
+          details.eFormListId,
+          details.eFormListId,
+        ];
+
+        return searchableValues.some(value => String(value ?? '').toLowerCase().includes(query));
+      });
+    }
+
+    if (!this.showAllFilesSection && this.selectedTaskFilter) {
+      const normalize = (v: string) => v.toLowerCase().replace(/\s+/g, '');
+      const tf = normalize(this.selectedTaskFilter);
+      filtered = filtered.filter(item => {
+        const type = normalize(String(item.eFormDetails?.type ?? ''));
+        const list = normalize(String(item.eFormDetails?.listName ?? ''));
+        return type.includes(tf) || list.includes(tf);
+      });
+    }
+
+    if (this.selectedApprovalFilter) {
+      filtered = filtered.filter(item => this.matchesApprovalFilter(item, this.selectedApprovalFilter));
+    }
+
+    if (this.showAllFilesSection) {
+      const folderName = String(this.selectedFolderName ?? '').trim();
+      if (folderName && this.extractTrailingFolderId(folderName)) {
+        filtered = filtered.filter(item => this.doesMappedHrTaskMatchFolder(item, folderName));
+      }
+    }
+
+    if (this.isHrPersonalFilesContext()) {
+      filtered = filtered.filter(item => !this.isCommentTypeItem(item));
+    }
+
+    return filtered;
+  }
+
+  /** Same title resolution used by todo-list Level-2 grouping. */
+  private getTaskEFormTitle(item: { eFormDetails?: Record<string, unknown>; name?: unknown }): string {
+    const details = item.eFormDetails ?? {};
+    const rawFields = (details['rawFields'] ?? {}) as Record<string, unknown>;
+    const raw =
+      rawFields['Title'] ??
+      details['Title'] ??
+      details['title'];
+    return String(raw ?? '').trim() || 'Unknown Title';
+  }
+
+  private getPrimaryItemAssignee(item: { eFormDetails?: Record<string, unknown>; assignedTo?: unknown }): string {
+    const details = item.eFormDetails ?? {};
+    const raw = String(details['assignedTo'] ?? item.assignedTo ?? '').trim();
+    return this.userService.parseAssignees(raw)[0] ?? '';
+  }
+
+  private getSubordinateItemAssigneeValues(item: { eFormDetails?: Record<string, unknown>; assignedTo?: unknown }): string[] {
+    const primary = this.getPrimaryItemAssignee(item);
+    return primary ? [primary] : [];
+  }
+
+  private isItemSubmittedBy(
+    item: { submittedBy?: string; eFormDetails?: Record<string, unknown> },
+    submitterName: string | null
+  ): boolean {
+    if (!submitterName) return true;
+
+    const candidates = [
+      item.submittedBy,
+      item.eFormDetails?.['submitter'],
+      item.eFormDetails?.['submittedBy'],
+    ]
+      .map(value => String(value ?? '').trim().toLowerCase())
+      .filter(Boolean);
+
+    const target = submitterName.trim().toLowerCase();
+    return candidates.some(candidate =>
+      candidate === target || candidate.includes(target) || target.includes(candidate)
+    );
+  }
+
+  private isItemAssignedToSubordinate(item: { eFormDetails?: Record<string, unknown>; assignedTo?: unknown }, subordinateName: string): boolean {
+    const assigneeValues = this.getSubordinateItemAssigneeValues(item);
+    if (!assigneeValues.length) {
+      return false;
+    }
+
+    const subordinate = this.subordinaryTaskService.getCachedSubordinates().find(employee =>
+      employee.FullName === subordinateName ||
+      employee.ADmail === subordinateName
+    );
+
+    if (!subordinate) {
+      return false;
+    }
+
+    return assigneeValues.some(value =>
+      this.subordinaryTaskService.isTaskAssignedToEmployeeForDomainUser(value, subordinate)
+    );
+  }
+
+  // Alias used by the template
+  protected get attachmentItems() { return this.userFiles; }
+
+  // ============================================================
+  // FOLDER MAP  cached, rebuilt only when userFiles changes
+  // ============================================================
+  private _folderMap = new Map<string, typeof this.userFiles>();
+  private _folderMapDirty = true;
+
+  private refreshAttachmentFolderMap(): void {
+    if (!this._folderMapDirty) return;
+    this._folderMap.clear();
+    for (const f of this.userFiles) {
+      const key = f.parentId ?? '';
+      if (!this._folderMap.has(key)) this._folderMap.set(key, []);
+      this._folderMap.get(key)!.push(f);
+    }
+    this._folderMapDirty = false;
+  }
+
+  protected get visibleFiles() {
+    this.refreshAttachmentFolderMap();
+    const key = this.currentFolderId ?? this.userRootFolderId ?? '';
+    return this._folderMap.get(key) ?? [];
+  }
+
+  /** Show Back while browsing an opened folder tree. */
+  protected get showBackButtonInAttachments(): boolean {
+    return this.showUserFile && !!this.attachmentBrowsingRoot;
+  }
+
+  /** True when Back can move up to a parent folder within the opened tree. */
+  protected get canGoBackInAttachments(): boolean {
+    return this.folderStack.length > 0;
+  }
+
+  private get hasLoadedPersonalFiles(): boolean {
+    return !this.isUsingHrTaskList && this.userRootFolderId !== null;
+  }
+
+  // ============================================================
+  // GRAPH API SCOPES & LIBRARY CONFIG
+  // ============================================================
+  private readonly targetLibraryName = sharePointConfig.hrPersonalListDisplayName || 'HRPersonal';
+
+  // ============================================================
+  // CACHING
+  // ============================================================
+  private cachedDriveId: string | null = null;
+  private hrPersonalDriveId: string | null = null;
+  private cachedSiteId: string | null = null;
+  private cachedSiteWebUrl: string = '';
+  private cachedSiteLists: any[] = [];
+  private cachedUserInformationListId: string | null = null;
+  /** SharePoint User Information List Id keyed by lowercase email. */
+  private readonly sharePointUserLookupIdByEmail = new Map<string, string>();
+  /**
+   * Per-list Graph $filter field viability: true = filterable, false = previously 400'd.
+   * Avoids re-probing known-bad columns on every folder/task load (console flood).
+   * Also persisted to localStorage so a refresh does not re-spam DevTools with 400s.
+   */
+  private readonly listFilterFieldStatus = new Map<string, Map<string, boolean>>();
+  private listFilterStatusHydrated = false;
+  /** Person/group columns discovered via Graph columns API (avoids filter probes that 400). */
+  private readonly listPersonColumnsCache = new Map<string, Array<{ name: string; allowMultiple: boolean }>>();
+  /** Lists where AssignedToLookupId filter already returned 400  skip on future To Do loads. */
+  private readonly assigneeLookupBlockedListIds = new Set<string>();
+
+  /**
+   * Where each To Do list's paging stopped, keyed by list name. Normally empty after a
+   * full load (every nextLink drained). A non-null cursor means a rare partial remaining
+   * for the "Load remaining tasks" retry.
+   */
+  private readonly todoListCursors = new Map<string, string | null>();
+
+  /**
+   * Newest `lastModifiedDateTime` already ingested per list. The manual refresh pages
+   * newest-first and stops at the first row at or below this mark, so it downloads only
+   * what changed since the last look instead of re-collecting and re-filtering the lot.
+   */
+  private readonly todoListWatermarks = new Map<string, string>();
+  protected isLoadingMoreTodoTasks = false;
+  /** Interval that picks up external SharePoint task edits into Redis while signed in. */
+  private sharePointCachePollTimer: ReturnType<typeof setInterval> | null = null;
+  private lastFolderCommentsPollMs = 0;
+  private readonly onDocumentVisibilityForCachePoll = (): void => {
+    if (document.visibilityState === 'visible') {
+      this.startSharePointCachePoll();
+      void this.pollSharePointTaskCaches();
+    } else {
+      this.stopSharePointCachePollTimerOnly();
+    }
+  };
+
+  /** True while any To Do list still has unfetched older rows. */
+  protected get hasMoreTodoTasks(): boolean {
+    for (const cursor of this.todoListCursors.values()) {
+      if (cursor) return true;
+    }
+    return false;
+  }
+
+  /** True while a procurement list still has Progress=Pending pages left to fetch. */
+  private hasMoreProcurementTodoCursors(): boolean {
+    for (const [listName, cursor] of this.todoListCursors.entries()) {
+      if (cursor && this.isTodoProcurementTaskList(listName)) return true;
+    }
+    return false;
+  }
+  /** True after a full To Do fetch (HR + procurement lists) has populated the task cache. */
+  private todoScopeCacheValid = false;
+  private readonly folderCache = new Map<string, { id: string; name: string; webUrl?: string }>();
+
+
+  // ============================================================
+  // PRIVATE RUNTIME STATE
+  // ============================================================
+  private userFileLoadingTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  private hrOlderHistoryLoadInProgress = false;
+  private selectedHrPersonalTaskFolder = '';
+  /** Survives tab switches so HR Files Comments can restore from cache instantly. */
+  private lastHrFilesCommentsFolder = '';
+
+  // Batches multiple refreshView() calls into one detectChanges()
+  private viewUpdatePending = false;
+
+  // ============================================================
+  // ATTACHMENT SEARCH
+  // ============================================================
+  attachmentSearch = '';
+
+  get filteredAttachments() {
+    // For HR Task lists (All Files), show all userFiles directly
+    if (this.isUsingHrTaskList) return this.userFiles;
+
+    // Library browsing loads one folder level at a time via Graph  userFiles is already scoped
+    const source = this.currentLibraryDriveId ? this.userFiles : this.visibleFiles;
+    return this.applyAttachmentSearch(source);
+  }
+
+  private applyAttachmentSearch(source: typeof this.userFiles) {
+    if (!this.attachmentSearch.trim()) return source;
+    const query = this.attachmentSearch.toUpperCase().trim();
+    return source.filter(item => {
+      if (item.isFolder) return false;
+      if (item.name?.toUpperCase().includes(query.toUpperCase())) return true;
+      if (item.modifiedBy?.toUpperCase().includes(query.toUpperCase())) return true;
+      return false;
+    });
+  }
+
+  // ============================================================
+  // TRACKING
+  // ============================================================
+  protected getAssignees(assignedTo: string | undefined | null): string[] {
+    return this.userService.parseAssignees(assignedTo);
+  }
+
+  /** Assigned To text for comment cards  rebuilds from raw SharePoint fields when blank. */
+  protected getAssignedToDisplay(eform: { eFormDetails?: any; assignedTo?: string } | null | undefined): string {
+    const details = eform?.eFormDetails ?? {};
+    const direct = String(details.assignedTo ?? eform?.assignedTo ?? '').trim();
+    if (direct) return direct;
+
+    const rawFields = details.rawFields;
+    if (rawFields && typeof rawFields === 'object') {
+      return this.collectTaskAssigneeValues(rawFields as Record<string, any>).join(', ');
+    }
+    return '';
+  }
+
+  // ============================================================
+  // LIFECYCLE
+  // ============================================================
+  async ngOnInit(): Promise<void> {
+    this.taskFilterForms$ = this.formConfigService.hrForms$;
+    this.documentLibraryTaskMapSub = this.formConfigService.documentLibraryTaskMap$
+      .subscribe((map) => { this.documentLibraryTaskMap = map ?? {}; });
+    await this.checkLoginOnStart();
+    try {
+      const tasks = await this.taskService.loadTaskLists();
+      this.allowedHrTaskLists = tasks;
+      console.log('Loaded SharePoint Tasks', tasks);
+    } catch (error) {
+      console.warn('Could not load SharePoint task lists.', error);
+      this.allowedHrTaskLists = [];
+    }
+  }
+
+  ngOnDestroy(): void {
+    this.documentLibraryTaskMapSub?.unsubscribe();
+    this.stopSharePointCachePoll();
+    if (this.folderPrefetchTimer) {
+      clearTimeout(this.folderPrefetchTimer);
+      this.folderPrefetchTimer = null;
+    }
+    if (this.hrTaskPrefetchTimer) {
+      clearTimeout(this.hrTaskPrefetchTimer);
+      this.hrTaskPrefetchTimer = null;
+    }
+  }
+
+  // ============================================================
+  // BATCHED VIEW UPDATE
+  // ============================================================
+  protected refreshView(): void {
+    if (this.viewUpdatePending) return;
+    this.viewUpdatePending = true;
+    queueMicrotask(() => {
+      this.viewUpdatePending = false;
+      this.cdr.detectChanges();
+    });
+  }
+
+  // ============================================================
+  // SSO INITIALIZATION
+  // ============================================================
+  protected async checkLoginOnStart(): Promise<void> {
+    try {
+      await this.authService.initialize();
+      let response = null;
+      try {
+        response = await this.authService.handleRedirect();
+      } catch (error) {
+        if (error instanceof InteractionRequiredAuthError) {
+          await this.beginSignInRedirect('login');
+          return;
+        }
+        throw error;
+      }
+      if (response) {
+        this.authService.setActiveAccount(response.account);
+        await this.loadCurrentUserProfile(response.accessToken);
+        this.statusMessage = `Signed in as ${this.currentUser?.username || 'User'}`;
+        this.authService.restorePostLoginPathIfNeeded();
+        return;
+      }
+      await this.trySilentSignIn();
+    } catch {
+      await this.beginSignInRedirect();
+    }
+  }
+
+  private async trySilentSignIn(): Promise<void> {
+    let account = this.authService.getActiveAccount();
+    const cachedAccounts = this.authService.getAllAccounts();
+    if (!account && cachedAccounts.length > 0) {
+      account = cachedAccounts[0];
+      this.authService.setActiveAccount(account);
+    }
+
+    if (!account) {
+      await this.beginSignInRedirect();
+      return;
+    }
+
+    try {
+      this.authService.setActiveAccount(account);
+      const token = await this.authService.acquireGraphToken();
+      await this.loadCurrentUserProfile(token);
+      this.formConfigService.load().subscribe();
+      this.statusMessage = `Signed in as ${this.currentUser?.username || 'User'}`;
+    } catch (error) {
+      const prompt = error instanceof InteractionRequiredAuthError ? 'login' : 'none';
+      await this.beginSignInRedirect(prompt);
+    }
+  }
+
+  private async beginSignInRedirect(prompt: 'none' | 'login' = 'none'): Promise<void> {
+    if (this.isConnecting) return;
+    this.errorMessage = '';
+    this.isConnecting = true;
+    this.statusMessage = 'Redirecting to Microsoft sign-in...';
+    try {
+      await this.authService.loginRedirect(prompt);
+    } catch {
+      this.isConnecting = false;
+      this.statusMessage = 'Could not start Microsoft sign-in. Please refresh the page.';
+    }
+  }
+
+  private async loadCurrentUserProfile(token: string): Promise<void> {
+    await new Promise<void>(resolve => {
+      this.graphGet('/me?$select=userPrincipalName,mail,displayName,employeeId', token).subscribe({
+        next: async (user: any) => {
+          const previousUserPrincipalName = this.currentUser?.userPrincipalName ?? '';
+          const nextUserPrincipalName = user.userPrincipalName || user.mail || '';
+          if (previousUserPrincipalName && previousUserPrincipalName !== nextUserPrincipalName) {
+            this.clearUserScopedSharePointState();
+          }
+
+          this.currentUser = {
+            email: user.mail || user.userPrincipalName || 'N/A',
+            username: user.displayName || user.userPrincipalName || 'User',
+            userPrincipalName: nextUserPrincipalName,
+            employeeId: user.employeeId || undefined,
+          };
+
+          // Set current user in UserService for other components to use
+          this.userService.setCurrentUser(this.currentUser);
+
+          // Hydrate personal + shared Redis crawl cache so All Files / HR Files
+          // paint instantly after a tab restart (including other users' folder crawls).
+          await this.fileCrawlCache.bindToUser(nextUserPrincipalName);
+
+          // Warm shared site/list metadata once before To Do / folder lookups compete.
+          try {
+            const spToken = await this.getSharePointToken();
+            await this.ensureSiteMetadata(
+              sharePointConfig.siteHostName,
+              sharePointConfig.sitePath,
+              spToken,
+            );
+          } catch {
+            // To Do / HR Files will retry via their own ensureSiteMetadata calls.
+          }
+
+          // To Do first  primary Graph consumer after login.
+          this.initializeToDoOnLogin();
+
+          // Defer HR folder name + delegates so they don't race the first To Do wave.
+          setTimeout(() => {
+            void this.loadHrPersonalFolderName();
+            void this.delegateService.loadDelegates();
+          }, 750);
+          resolve();
+        },
+        error: () => {
+          this.currentUser = null;
+          this.hrPersonalFolderName = null;
+          this.userService.setCurrentUser(null);
+          void this.delegateService.loadDelegates();
+          resolve();
+        },
+      });
+    });
+  }
+
+  private clearUserScopedSharePointState(): void {
+    this.showUserFile = false;
+    this.userFiles = [];
+    this.hrPersonalRootFolders = [];
+    this.userRootFolderId = null;
+    this.currentFolderId = null;
+    this.currentFolderWebUrl = '';
+    this.currentFolderName = '';
+    this.folderStack = [];
+    this.attachmentBrowsingRoot = null;
+    this.currentLibraryDriveId = null;
+    this.currentLibraryName = null;
+    this.hrPersonalDriveId = null;
+    this.hrPersonalFolderName = null;
+    this.selectedFolderName = '';
+    this.selectedAllFilesParentFolderName = '';
+    this.selectedAllFilesFolderId = null;
+    this.childSubjectSourceFetchedForFolderId = null;
+    this.childSubjectNamesByLibraryEFormId.clear();
+    this.selectedHrPersonalTaskFolder = '';
+    this.commentItems = [];
+    this.commentsMessage = '';
+    this.userHrTasksLoaded = false;
+    this.todoFirstPassComplete = false;
+    this.todoProcurementDrainActive = false;
+    this.todoScopeCacheValid = false;
+    this.fileCrawlCache.invalidate(AppComponent.HR_USER_TASKS_CACHE_KEY);
+    this.userFileError = '';
+    this.userFileWarning = '';
+    this.userFileProgressMessage = '';
+    this._folderMapDirty = true;
+    this.folderCache.clear();
+    this.clearLocalStorageFolderCache();
+    this.invalidateCommentFilters();
+  }
+
+  protected logout(): void {
+    this.hrPersonalFolderName = null;
+    this.stopSharePointCachePoll();
+    // Wipe memory + IndexedDB so a shared machine keeps nothing after sign-out.
+    this.fileCrawlCache.clearAll();
+    this.clearLocalStorageFolderCache();
+    this.cachedSiteId = null;
+    this.cachedSiteWebUrl = '';
+    this.cachedSiteLists = [];
+    this.cachedDriveId = null;
+    this.driveResolveInFlight = null;
+    this.cachedUserInformationListId = null;
+    this.sharePointUserLookupIdByEmail.clear();
+    this.listFilterFieldStatus.clear();
+    this.assigneeLookupBlockedListIds.clear();
+    this.listPersonColumnsCache.clear();
+    this.listFilterStatusHydrated = false;
+    this.todoFirstPassComplete = false;
+    this.todoProcurementDrainActive = false;
+    this.todoScopeCacheValid = false;
+    this.todoListCursors.clear();
+    this.todoListWatermarks.clear();
+    this.siteMetadataService.reset();
+    this.authService.logoutRedirect();
+    this.hrPersonalFolderName = null;
+  }
+
+  private async getSharePointToken(): Promise<string> {
+    return this.authService.acquireSharePointToken();
+  }
+
+  // ============================================================
+  // FILTER EVENT HANDLERS
+  // ============================================================
+  /** Turns a PascalCase/camelCase eForm title (e.g. "SickLeaveByAppointment") into spaced words ("Sick Leave By Appointment"). */
+  protected formatFormTitle(title: string | null | undefined): string {
+    return (title ?? '')
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+      .trim();
+  }
+
+  protected onTaskFilterChange(value: string): void {
+    this.selectedTaskFilter = value;
+    this.invalidateCommentFilters();
+    this.refreshView();
+  }
+
+  protected onApprovalFilterChange(value: string): void {
+    this.selectedApprovalFilter = value;
+    this.invalidateCommentFilters();
+    this.refreshView();
+  }
+
+  protected onSearchChange(event: Event): void {
+    this.searchQuery = (event.target as HTMLInputElement).value;
+    this.invalidateCommentFilters();
+    this.refreshView();
+  }
+
+  protected onAttachmentSearchChange(event: Event): void {
+    this.attachmentSearch = (event.target as HTMLInputElement).value;
+    this.refreshView();
+  }
+
+  protected toggleUserInfo(): void {
+    if (!this.isUserLoggedIn) { return; }
+    this.cancelBackgroundTodoLoad();
+    this.leaveAllFilesTaskView();
+    this.showToDoSection = false;
+    this.showAllFilesSection = false;
+    this.hideComments = false;
+    this.selectedSubmitter = null;
+    this.selectedEFormListId = null;
+    this.selectedEFormTitle = null;
+    Object.assign(this, getTaskTabMobileState());
+    this.invalidateCommentFilters();
+    this.syncMobileSearchInput();
+    if (this.hrPersonalRootFolders.length === 0 && !this.isLoadingHrFilesList) {
+      this.loadHrFilesInFirstSection();
+    } else if (this.hrPersonalRootFolders.length > 0) {
+      // Warm Comments cache for visible people while the user browses the list.
+      this.scheduleHrFolderTasksPrefetch(this.hrPersonalRootFolders);
+    }
+    // Instantly restore the last HR person Comments from cache after To Do / All Files.
+    this.restoreHrFilesCommentsFromCache();
+    this.refreshView();
+  }
+
+  /** Rehydrate Comments for the last opened HR Files person without a Graph crawl. */
+  private restoreHrFilesCommentsFromCache(): void {
+    const folder = String(this.lastHrFilesCommentsFolder || '').trim();
+    if (!folder) return;
+    const cached =
+      this.fileCrawlCache.get(this.hrFolderTaskCacheKey(folder)) ??
+      this.fileCrawlCache.getStale(this.hrFolderTaskCacheKey(folder));
+    if (!Array.isArray(cached)) return;
+
+    this.selectedFolderName = folder;
+    this.selectedHrPersonalTaskFolder = folder;
+    this.hideComments = false;
+    this.publishFolderTaskProgress(this.applyAllFilesFolderSubmitter(cached), {
+      done: true,
+      emptyMessage: 'No tasks found.',
+    });
+  }
+
+  /** Open To Do as the default section after sign-in instead of preloading HR Files. */
+  private initializeToDoOnLogin(): void {
+    this.showToDoSection = true;
+    this.showAllFilesSection = false;
+    this.hideComments = true;
+    Object.assign(this, getTodoTabMobileState());
+    void this.loadTodoTasksForCurrentUser();
+    // Prefetch HRPersonal group membership (SharePoint REST  does not use Graph slots).
+    void this.isUserInHrPersonalAllAccessGroup();
+    this.startSharePointCachePoll();
+    this.refreshView();
+  }
+
+  protected toggleToDoSection(): void {
+    // Drop HR Files / All Files folder scope so My Tasks comments are not loaded
+    // for the last person opened in HR Files.
+    this.leaveAllFilesTaskView();
+    this.showToDoSection = true;
+    this.showAllFilesSection = false;
+    this.hideComments = true;
+    this.selectedSubmitter = null;
+    this.selectedEFormListId = null;
+    this.selectedEFormTitle = null;
+    Object.assign(this, getTodoTabMobileState());
+    this.invalidateCommentFilters();
+    this.syncMobileSearchInput();
+    // Instant paint from cache, then finish any interrupted load (never treat a
+    // partial/cancelled snapshot as final  that caused intermittent missing tasks).
+    this.restoreTodoTasksFromCache();
+    if (!this.isLoadingTodoTasks) {
+      this.ensureTodoLoadComplete();
+    }
+    this.refreshView();
+  }
+
+  /**
+   * Pull the next slice of older rows from every To Do list that still has a cursor.
+   * Nothing is re-fetched: each list resumes exactly where its first pass stopped.
+   */
+  protected async loadMoreTodoTasks(): Promise<void> {
+    if (this.isLoadingMoreTodoTasks || !this.hasMoreTodoTasks) return;
+
+    this.isLoadingMoreTodoTasks = true;
+    this.refreshView();
+
+    try {
+      await this.fetchMoreTodoFromCursors(AppConstants.todoLoadMorePagesPerList);
+    } catch {
+      // Best effort  the button stays available so the user can retry.
+    } finally {
+      this.isLoadingMoreTodoTasks = false;
+      this.refreshView();
+    }
+  }
+
+  /** Resume list cursors for `pagesPerList` more Graph pages and merge into To Do. */
+  private async fetchMoreTodoFromCursors(
+    pagesPerList: number,
+    options: { procurementOnly?: boolean } = {},
+  ): Promise<void> {
+    if (!this.hasMoreTodoTasks) return;
+
+    const token = await this.getSharePointToken();
+    const siteId = this.cachedSiteId;
+    const siteListsArr = this.cachedSiteLists;
+    if (!siteId || siteListsArr.length === 0) return;
+
+    const siteWebUrl = this.cachedSiteWebUrl;
+    const userEmail = (this.currentUser?.email ?? '').toLowerCase();
+    const userUpn = (this.currentUser?.userPrincipalName ?? '').toLowerCase();
+
+    const pendingLists = [...this.todoListCursors.entries()]
+      .filter((entry): entry is [string, string] => !!entry[1])
+      .filter(([listName]) =>
+        !options.procurementOnly || this.isTodoProcurementTaskList(listName),
+      );
+
+    if (pendingLists.length === 0) return;
+
+    const fetchOne = async ([listName, cursor]: [string, string]): Promise<any[]> => {
+      const list = siteListsArr.find(
+        (l: any) =>
+          (l.name ?? '').toLowerCase() === listName.toLowerCase() ||
+          (l.displayName ?? '').toLowerCase() === listName.toLowerCase(),
+      );
+      if (!list?.id) {
+        this.todoListCursors.delete(listName);
+        return [];
+      }
+
+      try {
+        const raw = this.isTodoProcurementTaskList(listName)
+          ? await this.fetchProcurementTodoPendingItems(
+              siteId, list.id, token, listName, cursor, pagesPerList,
+            )
+          : await this.fetchTodoScanPages(
+              siteId, list.id, token, listName, cursor, pagesPerList,
+            );
+
+        const mapped: any[] = [];
+        for (const item of raw ?? []) {
+          const shaped = this.mapSharePointItemToHrTask(
+            item, listName, list, siteWebUrl, userEmail, userUpn, false, false,
+          );
+          if (shaped) mapped.push(shaped);
+        }
+        return mapped;
+      } catch {
+        // Drop the cursor so a transient Graph error cannot stall the drain forever.
+        this.todoListCursors.delete(listName);
+        return [];
+      }
+    };
+
+    const fetched: any[] = [];
+    const concurrency = AppConstants.hrTasksTodoListConcurrency;
+    for (let i = 0; i < pendingLists.length; i += concurrency) {
+      const batch = pendingLists.slice(i, i + concurrency);
+      const results = await Promise.all(batch.map(entry => fetchOne(entry)));
+      fetched.push(...results.flat());
+    }
+
+    if (fetched.length > 0) {
+      const existing = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
+      const merged = this.mergeHrTasks(existing, fetched);
+      this.fileCrawlCache.set(AppComponent.HR_USER_TASKS_CACHE_KEY, merged);
+      this.todoService.setTasksFromSharePoint(this.getHrTasksForTodoList(merged), { clearLoading: false });
+      this.userHrTasksLoaded = true;
+      this.refreshView();
+    }
+  }
+
+  /** Restore To Do from cache (memory or persisted snapshot)  instant when switching back or reopening the tab. */
+  private restoreTodoTasksFromCache(): boolean {
+    const cached = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY);
+    if (!Array.isArray(cached) || cached.length === 0) return false;
+
+    this.todoService.setTasksFromSharePoint(this.getHrTasksForTodoList(cached));
+    this.userHrTasksLoaded = true;
+    // Keep spinner state if a load is still running; only clear when idle.
+    if (!this.isLoadingTodoTasks) {
+      this.todoService.setLoading(false);
+    }
+    return true;
+  }
+
+  /**
+   * After painting cache, finish an interrupted To Do load without a full re-fan-out when possible.
+   * - First pass incomplete ? full reload.
+   * - First pass done but Proc* pages remain ? resume drain only.
+   * - Fully complete ? no Graph.
+   */
+  private ensureTodoLoadComplete(): void {
+    if (this.isLoadingTodoTasks || this.todoProcurementDrainActive) {
+      return;
+    }
+
+    if (this.todoScopeCacheValid && !this.hasMoreProcurementTodoCursors()) {
+      return;
+    }
+
+    if (this.todoFirstPassComplete && this.hasMoreProcurementTodoCursors()) {
+      void this.resumeTodoProcurementDrain();
+      return;
+    }
+
+    void this.loadTodoTasksForCurrentUser({ forceRefresh: true });
+  }
+
+  /** Resume Progress=Pending procurement cursors left over after a tab switch cancel. */
+  private async resumeTodoProcurementDrain(): Promise<void> {
+    if (!this.hasMoreProcurementTodoCursors()) {
+      this.todoScopeCacheValid = this.todoFirstPassComplete;
+      return;
+    }
+
+    const loadSeq = ++this.todoTaskLoadSeq;
+    // Background only  do not re-show "Loading more tasks..." over an already painted list.
+    this.pauseFolderPrefetch();
+    this.refreshView();
+    try {
+      await this.drainProcurementTodoInBackground(loadSeq);
+      if (!this.isStaleTodoTaskLoad(loadSeq) && this.todoFirstPassComplete) {
+        this.todoScopeCacheValid = !this.hasMoreProcurementTodoCursors();
+        void this.warmHrPersonalRootFoldersCache();
+      }
+    } finally {
+      if (!this.isStaleTodoTaskLoad(loadSeq)) {
+        this.folderPrefetchPaused = false;
+        this.refreshView();
+      }
+    }
+  }
+
+  /** Load HR tasks assigned to the logged-in user into the To Do list. */
+  protected async loadTodoTasksForCurrentUser(options: { forceRefresh?: boolean } = {}): Promise<void> {
+    if (!this.currentUser) return;
+
+    const forceRefresh = options.forceRefresh === true;
+    // Stale (even day-old, persisted) tasks paint instantly; the fetch below refreshes them.
+    const cached = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY);
+    const hasCachedTasks = Array.isArray(cached) && cached.length > 0;
+
+    if (hasCachedTasks && !forceRefresh) {
+      this.restoreTodoTasksFromCache();
+      this.refreshView();
+    }
+
+    const loadSeq = ++this.todoTaskLoadSeq;
+    this.isLoadingTodoTasks = true;
+    this.todoFirstPassComplete = false;
+    this.todoScopeCacheValid = false;
+    // Yield Graph capacity to To Do  idle folder children crawls compete for the same budget.
+    this.pauseFolderPrefetch();
+    // A fresh load re-pages each list from the top, so old continuations are stale.
+    this.todoListCursors.clear();
+
+    if (hasCachedTasks) {
+      this.todoService.setTasksFromSharePoint(this.getHrTasksForTodoList(cached));
+      this.userHrTasksLoaded = true;
+      this.refreshView();
+    } else {
+      this.todoService.setLoading(true);
+      this.refreshView();
+    }
+
+    try {
+      await this.ensureFormConfigLoaded();
+      if (this.isStaleTodoTaskLoad(loadSeq)) return;
+
+      const since = new Date();
+      since.setUTCDate(since.getUTCDate() - AppConstants.hrTasksRecentFetchDays);
+      const sinceIso = since.toISOString();
+
+      // Always progressive + capped Proc* first slice so multiple Pr- tasks paint as they arrive.
+      await this.loadHrTasksFromLists(
+        false,
+        { createdSinceIso: sinceIso },
+        {
+          updateTodo: true,
+          updateCommentItems: false,
+          kickoffOlderBackfill: false,
+          skipCache: true,
+          progressiveTodo: true,
+          todoLoadSeq: loadSeq,
+          todoAssigneeOnly: true,
+          todoScope: true,
+        }
+      );
+      if (this.isStaleTodoTaskLoad(loadSeq)) return;
+
+      // First slice may already show recent assigned rows. Clear the empty-state
+      // spinner once progressive paint has started; older Proc* matches still
+      // arrive via the background drain without keeping "Loading more tasks...".
+      this.userHrTasksLoaded = true;
+      this.refreshView();
+
+      // Limited fallback for lists that reject AssignedToLookupId (not procurement).
+      if (this.assigneeLookupBlockedListIds.size > 0) {
+        const fallbackItems = await this.loadHrTasksFromLists(
+          false,
+          { createdSinceIso: sinceIso },
+          {
+            updateTodo: false,
+            updateCommentItems: false,
+            kickoffOlderBackfill: false,
+            skipCache: true,
+            progressiveTodo: false,
+            todoLoadSeq: loadSeq,
+            todoAssigneeOnly: false,
+            restrictToAssigneeBlockedLists: true,
+            fastLoadPageLimit: AppConstants.hrTasksTodoLoadPageLimit,
+            todoScope: true,
+          }
+        );
+        if (!this.isStaleTodoTaskLoad(loadSeq) && fallbackItems.length > 0) {
+          const cachedItems = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
+          const merged = this.mergeHrTasks(cachedItems, fallbackItems);
+          this.fileCrawlCache.set(AppComponent.HR_USER_TASKS_CACHE_KEY, merged);
+          this.todoService.setTasksFromSharePoint(this.getHrTasksForTodoList(merged), { clearLoading: false });
+          this.refreshView();
+        }
+      }
+
+      if (!this.isStaleTodoTaskLoad(loadSeq)) {
+        const folderAssigned = this.collectAssignedProcTasksFromFolderCaches();
+        if (folderAssigned.length > 0) {
+          const cachedItems = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
+          const merged = this.mergeHrTasks(cachedItems, folderAssigned);
+          this.fileCrawlCache.set(AppComponent.HR_USER_TASKS_CACHE_KEY, merged);
+          this.todoService.setTasksFromSharePoint(this.getHrTasksForTodoList(merged), { clearLoading: false });
+          this.refreshView();
+        }
+      }
+
+      if (this.isStaleTodoTaskLoad(loadSeq)) return;
+
+      // First Graph pass done  paint without holding "Loading more tasks...".
+      // Remaining Proc* pages continue in the background drain below.
+      this.todoFirstPassComplete = true;
+      this.isLoadingTodoTasks = false;
+      this.todoService.setLoading(false);
+      this.refreshView();
+
+      await this.drainProcurementTodoInBackground(loadSeq);
+      if (!this.isStaleTodoTaskLoad(loadSeq)) {
+        this.todoScopeCacheValid = !this.hasMoreProcurementTodoCursors();
+        this.userHrTasksLoaded = true;
+        // Warm HR Files people list only after To Do Graph work settles.
+        void this.warmHrPersonalRootFoldersCache();
+      }
+    } catch {
+      if (!this.isStaleTodoTaskLoad(loadSeq)) {
+        this.todoService.setLoading(false);
+      }
+    } finally {
+      if (!this.isStaleTodoTaskLoad(loadSeq)) {
+        this.isLoadingTodoTasks = false;
+        this.todoService.setLoading(false);
+        this.folderPrefetchPaused = false;
+        this.refreshView();
+      }
+    }
+  }
+
+  /** Continue Progress=Pending procurement cursors without holding the To Do spinner. */
+  private async drainProcurementTodoInBackground(loadSeq: number): Promise<void> {
+    this.todoProcurementDrainActive = true;
+    try {
+      while (!this.isStaleTodoTaskLoad(loadSeq) && this.hasMoreProcurementTodoCursors()) {
+        await this.fetchMoreTodoFromCursors(AppConstants.todoProcBackgroundPagesPerChunk, {
+          procurementOnly: true,
+        });
+      }
+    } catch {
+      // Background only.
+    } finally {
+      if (loadSeq === this.todoTaskLoadSeq) {
+        this.todoProcurementDrainActive = false;
+      }
+    }
+  }
+
+  private isStaleTodoTaskLoad(loadSeq: number): boolean {
+    return loadSeq !== this.todoTaskLoadSeq;
+  }
+
+  /** Stop in-flight To Do fetches so HR Files / All Files get Graph quota. */
+  private cancelBackgroundTodoLoad(): void {
+    const interrupted =
+      this.isLoadingTodoTasks ||
+      this.todoProcurementDrainActive ||
+      !this.todoFirstPassComplete ||
+      this.hasMoreProcurementTodoCursors() ||
+      !this.todoScopeCacheValid;
+    this.todoTaskLoadSeq++;
+    this.todoProcurementDrainActive = false;
+    if (interrupted) {
+      // Keep todoFirstPassComplete + cursors so returning to To Do can resume drain
+      // instead of treating a partial Redis snapshot as complete.
+      this.todoScopeCacheValid = false;
+    }
+    if (this.isLoadingTodoTasks) {
+      this.isLoadingTodoTasks = false;
+      this.todoService.setLoading(false);
+      this.refreshView();
+    }
+  }
+
+  protected toggleAllFilesSection(): void {
+    this.cancelBackgroundTodoLoad();
+    this.cancelPendingFolderTaskLoads();
+    this.selectedHrPersonalTaskFolder = '';
+    this.allFilesMounted = true;
+    this.showAllFilesSection = true;
+    this.showToDoSection = false;
+    this.hideComments = true;
+    this.selectedSubmitter = null;
+    this.selectedEFormListId = null;
+    this.selectedEFormTitle = null;
+    this.selectedFolderName = '';
+    this.showUserFile = false;
+    this.userFiles = [];
+    this._folderMapDirty = true;
+    this.folderStack = [];
+    this.attachmentBrowsingRoot = null;
+    this.currentFolderId = null;
+    this.currentFolderWebUrl = '';
+    this.currentFolderName = '';
+    this.userRootFolderId = null;
+    Object.assign(this, getAllFilesTabMobileState());
+    this.invalidateCommentFilters();
+    this.syncMobileSearchInput();
+    this.refreshView();
+  }
+
+  protected onMobileSearchChange(term: string): void {
+    const result = resolveMobileSearchChange(
+      term,
+      this.showToDoSection,
+      this.showAllFilesSection
+    );
+    this.searchTerm = result.searchTerm;
+
+    if (result.section === 'allFiles') {
+      this.allFilesComponent?.searchFiles(this.searchTerm);
+      return;
+    }
+
+    if (result.section === 'todo') {
+      this.todoListComponent?.searchTasks(this.searchTerm);
+      return;
+    }
+
+    this.searchQuery = result.searchQuery ?? this.searchTerm;
+    this.invalidateCommentFilters();
+    if (result.navigateToComments) {
+      this.hideComments = false;
+      Object.assign(this, getCommentsTabMobileState());
+    }
+    this.refreshView();
+  }
+
+  private syncMobileSearchInput(): void {
+    this.searchTerm = syncMobileSearchTerm({
+      showToDoSection: this.showToDoSection,
+      showAllFilesSection: this.showAllFilesSection,
+      searchQuery: this.searchQuery,
+      todoSearchTerm: this.todoListComponent?.searchTerm,
+      allFilesSearchTerm: this.allFilesComponent?.searchTerm,
+    });
+  }
+
+  protected onSuperiorModeChange(checked: boolean): void {
+    this.superiorMode = checked;
+    this.selectedSubmitter = null;
+    this.selectedEFormListId = null;
+    this.selectedEFormTitle = null;
+    this.invalidateCommentFilters();
+    if (checked) {
+      void this.reloadTodoTasksWithSubordinates();
+    } else {
+      void this.loadTodoTasksForCurrentUser({ forceRefresh: true });
+    }
+    this.refreshView();
+  }
+
+  private async reloadTodoTasksWithSubordinates(): Promise<void> {
+    if (!this.currentUser) return;
+
+    const identifiers = [
+      this.currentUser.email,
+      this.currentUser.userPrincipalName,
+      this.currentUser.username,
+    ].map(value => (value ?? '').trim()).filter(Boolean);
+
+    if (!identifiers.length) return;
+
+    const loadSeq = ++this.todoTaskLoadSeq;
+    this.isLoadingTodoTasks = true;
+    this.pauseFolderPrefetch();
+    this.todoService.setLoading(true);
+    this.refreshView();
+
+    const since = new Date();
+    since.setUTCDate(since.getUTCDate() - AppConstants.hrTasksRecentFetchDays);
+
+    try {
+      await this.subordinaryTaskService.ensureSubordinatesForManager(identifiers, false);
+      if (this.isStaleTodoTaskLoad(loadSeq)) return;
+
+      await this.loadHrTasksFromLists(
+        false,
+        { createdSinceIso: since.toISOString() },
+        {
+          updateTodo: true,
+          updateCommentItems: false,
+          kickoffOlderBackfill: false,
+          subordinateTasksOnly: true,
+          fastLoadPageLimit: AppConstants.hrTasksSubordinateLoadPageLimit,
+          progressiveTodo: true,
+          todoLoadSeq: loadSeq,
+        }
+      );
+      if (this.isStaleTodoTaskLoad(loadSeq)) return;
+
+      this.userHrTasksLoaded = true;
+    } catch {
+      if (!this.isStaleTodoTaskLoad(loadSeq)) {
+        this.todoService.setLoading(false);
+      }
+    } finally {
+      if (!this.isStaleTodoTaskLoad(loadSeq)) {
+        this.isLoadingTodoTasks = false;
+        this.todoService.setLoading(false);
+        this.folderPrefetchPaused = false;
+        this.refreshView();
+      }
+    }
+  }
+
+  // Receives submitter + eFormListId + eFormTitle from todo-list after a grouped row is clicked.
+  protected onSubmitterSelected(selection: SubmitterSelection | null): void {
+    this.selectedSubmitter = selection?.name ?? null;
+    this.selectedEFormListId = selection?.eFormListId ?? null;
+    this.selectedEFormTitle = selection?.eFormTitle ?? null;
+    this.selectedGroupTaskIds = (selection?.taskIds ?? [])
+      .map(id => String(id ?? '').trim())
+      .filter(Boolean);
+
+    const rawTaskId = String(selection?.taskId ?? '').trim();
+    const numericTaskId = Number(rawTaskId);
+    this.selectedTask = rawTaskId
+      ? { Id: !Number.isNaN(numericTaskId) ? numericTaskId : rawTaskId }
+      : null;
+
+    const task = this.todoService.getTaskById(rawTaskId);
+    const commentItem = this.commentItems.find(item => String(item.id ?? '').trim() === rawTaskId);
+    const groupedItem = this.commentItems.find(
+      item =>
+        String(item.eFormDetails?.eFormListId ?? '').trim() ===
+        String(selection?.eFormListId ?? '').trim(),
+    );
+    this.selectedCommentListName =
+      String((commentItem as { listName?: string })?.listName ?? '').trim() ||
+      String(commentItem?.eFormDetails?.listName ?? '').trim() ||
+      String(groupedItem?.eFormDetails?.listName ?? (groupedItem as { listName?: string })?.listName ?? '').trim() ||
+      String(task?.eFormDetails?.listName ?? '').trim();
+
+    this.invalidateCommentFilters();
+    if (selection) {
+      if (this.showToDoSection) {
+        this.selectedHrPersonalTaskFolder = '';
+        this.selectedFolderName = '';
+      }
+      this.hideComments = false;
+      Object.assign(this, getCommentsTabMobileState());
+      this.closeFormViewer();
+      // Comments panel filters locally. Only hit Graph when we have nothing cached
+      // (every accordion click used to call loadHrTasks and re-fan-out all lists).
+      const hasLocalComments = this.commentItems.length > 0;
+      const cachedTasks = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY);
+      if (!hasLocalComments && Array.isArray(cachedTasks) && cachedTasks.length > 0) {
+        this.commentItems = this.sortCommentItemsByDateDesc(cachedTasks);
+        this.visibleItemCount = this.commentsInitialPageSize;
+        this.invalidateCommentFilters();
+        this.isLoadingComments = false;
+        this.commentsMessage = '';
+        this.userHrTasksLoaded = true;
+      } else if (!hasLocalComments && !this.userHrTasksLoaded && !this.isLoadingComments) {
+        this.loadHrTasks();
+      }
+    } else {
+      this.closeFormViewer();
+    }
+    this.refreshView();
+  }
+
+  /** Resolve the SharePoint tasks list name for a document library. */
+  private getTaskListForLibrary(libraryName: string): string | undefined {
+    const map = this.documentLibraryTaskMap;
+    if (!libraryName || !map) return undefined;
+
+    if (map[libraryName]) return map[libraryName];
+
+    // Case-insensitive fallback: DocLibraryName casing in the eForms list may differ
+    // from the SharePoint drive (library) name.
+    const target = libraryName.toLowerCase();
+    const matchKey = Object.keys(map).find((key) => key.toLowerCase() === target);
+    return matchKey ? map[matchKey] : undefined;
+  }
+
+  /**
+    this is for the proctasks in archive to load the tasks from the ProcTasksArchive list
+   */
+  private getArchiveCompanionTaskLists(listName: string): string[] {
+    const key = String(listName ?? '').trim().toLowerCase();
+    if (key === 'proctasks' || key === 'proctasks1') {
+      return ['ProcTasksArchive'];
+    }
+    return [];
+  }
+
+  private findCachedSiteListByName(listName: string): { id: string; name?: string; displayName?: string; webUrl?: string } | null {
+    const target = String(listName ?? '').trim().toLowerCase();
+    if (!target) return null;
+    return this.cachedSiteLists.find((l: any) =>
+      (l.name ?? '').toLowerCase() === target ||
+      (l.displayName ?? '').toLowerCase() === target
+    ) ?? null;
+  }
+
+  /** Show the Comments panel and load tasks for the clicked folder. */
+  private loadAllFilesTasksForLibrary(libraryName: string, folderLabel: string): void {
+    this.cancelPendingFolderTaskLoads();
+    const loadSeq = ++this.allFilesFolderTaskLoadSeq;
+    const loadFolder = String(folderLabel || '').trim();
+
+    this.selectedSubmitter = null;
+    this.selectedEFormListId = null;
+    this.selectedEFormTitle = null;
+    this.hideComments = false;
+    this.selectedFolderName = loadFolder;
+    if (normalizeName(libraryName) === normalizeName(this.targetLibraryName)) {
+      this.selectedHrPersonalTaskFolder = loadFolder;
+    } else {
+      this.selectedHrPersonalTaskFolder = '';
+    }
+    // Do not force Comments tab here  folder clicks open Attachments first so
+    // files appear immediately while tasks load in the background.
+
+    // Serve from cache when the same folder was crawled recently.
+    if (normalizeName(libraryName) === normalizeName(this.targetLibraryName)) {
+      this.lastHrFilesCommentsFolder = loadFolder;
+      const cacheKey = this.hrFolderTaskCacheKey(loadFolder);
+      const fresh = this.fileCrawlCache.get(cacheKey);
+      const cached = fresh ?? this.fileCrawlCache.getStale(cacheKey);
+      // Paint cache instantly, then soft-refresh from Graph so new tasks appear.
+      if (Array.isArray(cached) && cached.length > 0) {
+        this.applyCachedFolderTaskItems(cached, loadFolder, true);
+        void this.loadHrPersonalTasksForFolder(loadFolder, loadSeq, { softRefresh: true });
+        return;
+      }
+      if (Array.isArray(cached) && cached.length === 0) {
+        this.applyCachedFolderTaskItems(cached, loadFolder, true);
+        void this.loadHrPersonalTasksForFolder(loadFolder, loadSeq, { softRefresh: true });
+        return;
+      }
+
+      // Memory miss — shared Redis first (no spinner yet), then Graph.
+      void this.loadHrFolderTasksWithSharedCache(loadFolder, loadSeq);
+      return;
+    } else {
+      const mappedTaskList = this.getTaskListForLibrary(libraryName);
+      if (mappedTaskList) {
+        const cacheKey = this.libFolderTaskCacheKey(mappedTaskList, loadFolder);
+        const fresh = this.fileCrawlCache.get(cacheKey);
+        const cached = fresh ?? this.fileCrawlCache.getStale(cacheKey);
+        if (Array.isArray(cached)) {
+          this.applyCachedFolderTaskItems(cached, loadFolder);
+          return;
+        }
+
+        // Child folders: reuse parent task cache when Title still points at the parent.
+        const fromParent = this.tryReuseParentLibFolderTaskCache(mappedTaskList, loadFolder);
+        if (fromParent) {
+          this.applyCachedFolderTaskItems(fromParent, loadFolder);
+          return;
+        }
+
+        // Memory miss — shared Redis first (no spinner yet), then Graph.
+        void this.loadLibFolderTasksWithSharedCache(mappedTaskList, loadFolder, loadSeq);
+        return;
+      }
+    }
+
+    this.beginFolderTaskLoadingUi();
+
+    const mappedTaskList = this.getTaskListForLibrary(libraryName);
+    if (mappedTaskList) {
+      void this.loadDocumentLibraryTasksForFolder(mappedTaskList, loadFolder, loadSeq);
+      return;
+    }
+
+    if (loadSeq !== this.allFilesFolderTaskLoadSeq) return;
+    this.isLoadingComments = false;
+    this.commentsMessage = `No task list configured for ${libraryName}.`;
+    if (this.selectedAllFilesFolderId) {
+      this.allFilesComponent?.setChildSubjectFolderNames(this.selectedAllFilesFolderId, []);
+    }
+    this.refreshView();
+  }
+
+  private beginFolderTaskLoadingUi(): void {
+    // Keep already-painted Comments visible (seeded search hit or prior cache) —
+    // only full-screen spinner when the panel is empty.
+    if (this.commentItems.length === 0) {
+      this.commentsMessage = 'Loading tasks...';
+      this.isLoadingComments = true;
+      this.isLoadingMoreComments = false;
+    } else {
+      this.isLoadingComments = false;
+      this.isLoadingMoreComments = true;
+    }
+    this.refreshView();
+  }
+
+  /**
+   * Doc-lib folder tasks: try shared Redis (written by any signed-in user) before Graph.
+   * Spinner only after Redis miss so cached folders feel instant.
+   */
+  private async loadLibFolderTasksWithSharedCache(
+    listName: string,
+    folderName: string,
+    loadSeq: number,
+  ): Promise<void> {
+    const cacheKey = this.libFolderTaskCacheKey(listName, folderName);
+    const hydrated = await this.fileCrawlCache.hydrateFromPersistent<any[]>(cacheKey);
+    if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+
+    if (hydrated && Array.isArray(hydrated.data)) {
+      this.applyCachedFolderTaskItems(hydrated.data, folderName);
+      // Skip auto soft-refresh — Graph fan-out belongs on explicit refresh / cold miss.
+      return;
+    }
+
+    this.beginFolderTaskLoadingUi();
+    await this.loadDocumentLibraryTasksForFolder(listName, folderName, loadSeq);
+  }
+
+  /**
+   * HR Files person-folder tasks: try shared Redis before Graph.
+   * Spinner only after Redis miss so cached people feel instant (same as All Files).
+   */
+  private async loadHrFolderTasksWithSharedCache(
+    folderName: string,
+    loadSeq: number,
+  ): Promise<void> {
+    const cacheKey = this.hrFolderTaskCacheKey(folderName);
+    const hydrated = await this.fileCrawlCache.hydrateFromPersistent<any[]>(cacheKey);
+    if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+
+    // Array hit from shared Redis — paint then soft-refresh for newest tasks.
+    if (hydrated && Array.isArray(hydrated.data)) {
+      this.applyCachedFolderTaskItems(hydrated.data, folderName);
+      void this.loadHrPersonalTasksForFolder(folderName, loadSeq, { softRefresh: true });
+      return;
+    }
+
+    this.beginFolderTaskLoadingUi();
+    await this.loadHrPersonalTasksForFolder(folderName, loadSeq);
+  }
+
+  /**
+   * When opening a ChildSubject folder, parent Comments may already be cached.
+   * Filter those rows by the child's trailing eForm id instead of waiting on a full list scan.
+   */
+  private tryReuseParentLibFolderTaskCache(listName: string, childFolderName: string): any[] | null {
+    const parentName = String(this.selectedAllFilesParentFolderName ?? '').trim();
+    if (!parentName || normalizeName(parentName) === normalizeName(childFolderName)) {
+      return null;
+    }
+    const childEFormId = this.extractTrailingFolderId(childFolderName);
+    if (!childEFormId) return null;
+
+    const parentCached = this.fileCrawlCache.getStale(this.libFolderTaskCacheKey(listName, parentName));
+    if (!Array.isArray(parentCached) || parentCached.length === 0) return null;
+
+    const matched = parentCached.filter((item) => this.doesMappedHrTaskMatchFolder(item, childFolderName));
+    if (matched.length === 0) return null;
+
+    const sorted = this.sortCommentItemsByDateDesc(matched);
+    this.fileCrawlCache.set(this.libFolderTaskCacheKey(listName, childFolderName), sorted);
+    return sorted;
+  }
+
+  private isStaleAllFilesFolderTaskLoad(loadSeq: number): boolean {
+    return loadSeq !== this.allFilesFolderTaskLoadSeq;
+  }
+
+  /** Called when a file/folder is clicked in the All Files view. */
+  protected onAllFileSelected(file: any): void {
+    if (!file) return;
+    this.pendingCommentFocusId = null;
+    this.highlightedCommentId = null;
+    this.pendingAttachmentFocusId = null;
+    this.highlightedAttachmentId = null;
+
+    // Folder click: load that folder's children into Attachments (not the whole library).
+    if (file.isfolder) {
+      const driveId = file.driveId ?? this.currentLibraryDriveId;
+      if (driveId) {
+        this.selectedAllFilesFolderId = String(file.id ?? '');
+        this.selectedAllFilesParentFolderName = String(file.parentFolderName ?? '').trim();
+        this.childSubjectSourceFetchedForFolderId = null;
+        this.allFilesComponent?.beginChildSubjectLoad(this.selectedAllFilesFolderId);
+        this.pauseFolderPrefetch();
+        this.currentLibraryDriveId = driveId;
+        this.attachmentBrowsingRoot = { id: file.id, name: file.name, webUrl: file.webUrl ?? '' };
+        this.folderStack = [];
+        this.currentFolderName = file.name;
+        // Show Attachments immediately  tasks load in the background for Comments.
+        this.hideComments = false;
+        Object.assign(this, getAttachmentsTabMobileState());
+        void this.loadDriveFolderContents(driveId, file.id, file.webUrl, file.name);
+
+        const libName = file.libraryName ?? this.currentLibraryName;
+        if (libName) {
+          this.selectedFolderModifiedBy = String(file.modifiedby ?? '').trim();
+          // ChildSubject accordion: fetch source eForm in parallel (don't wait for task scan).
+          void this.primeChildSubjectForFolder(libName, String(file.name || ''), this.selectedAllFilesFolderId);
+          this.loadAllFilesTasksForLibrary(libName, String(file.name || ''));
+        }
+
+        return;
+      }
+      this.userFiles = [{
+        id: file.id,
+        name: file.name,
+        webUrl: file.webUrl ?? '',
+        parentId: file.parentId ?? undefined,
+        isFolder: true,
+        modifiedBy: file.modifiedby,
+        fileExtension: file.fileExtension ?? undefined,
+        mimeType: '',
+        fileCategory: file.fileCategory ?? undefined,
+        fileIcon: file.fileIcon ?? undefined,
+      }];
+      this._folderMapDirty = true;
+      this.showUserFile = true;
+      this.refreshView();
+      return;
+    }
+
+    // Non-folder: show single file entry in attachments panel
+    this.userFiles = [{
+      id: file.id,
+      name: file.name,
+      webUrl: file.webUrl ?? '',
+      parentId: file.parentId ?? undefined,
+      lastModifiedDateTime: file.modified ?? file.lastModifiedDateTime,
+      size: file.size,
+      isFolder: !!file.isfolder,
+      modifiedBy: file.modifiedby,
+      fileExtension: file.fileExtension ?? undefined,
+      mimeType: '',
+      fileCategory: file.fileCategory ?? undefined,
+      fileIcon: file.fileIcon ?? undefined,
+
+    }];
+    this._folderMapDirty = true;
+    this.showUserFile = true;
+    this.refreshView();
+  }
+
+  /**
+   * All Files → Comments search row: open the related folder and focus that
+   * comment/task in the Comments panel (Live behaviour).
+   */
+  protected onAllFilesCommentSelected(hit: CommentSearchHit): void {
+    if (!hit?.folder) return;
+
+    const file = hit.folder;
+    const taskId = String(hit.taskId ?? '').trim();
+    const driveId = file.driveId ?? this.currentLibraryDriveId;
+    if (!driveId) return;
+
+    const libName = String(file.libraryName ?? this.currentLibraryName ?? '').trim();
+    const folderId = String(file.id ?? '');
+    const folderName = String(file.name || '');
+    const folderWebUrl = file.webUrl ?? '';
+
+    // Stop background Comments crawling so the click isn't competing with Graph.
+    this.allFilesComponent?.pauseCommentTasksWarm();
+
+    this.pendingCommentFocusId = taskId || null;
+    this.highlightedCommentId = taskId || null;
+    this.pendingAttachmentFocusId = null;
+    this.highlightedAttachmentId = null;
+    this.selectedAllFilesFolderId = folderId;
+    this.selectedAllFilesParentFolderName = String(file.parentFolderName ?? '').trim();
+    this.childSubjectSourceFetchedForFolderId = null;
+    this.currentLibraryDriveId = driveId;
+    this.attachmentBrowsingRoot = { id: file.id, name: file.name, webUrl: folderWebUrl };
+    this.folderStack = [];
+    this.currentFolderName = folderName;
+    this.selectedFolderModifiedBy = String(file.modifiedby ?? '').trim();
+    this.hideComments = false;
+    Object.assign(this, getCommentsTabMobileState());
+
+    // Paint only the clicked comment immediately — never scan the full search index here.
+    this.seedCommentsFromSearchHit(hit);
+    this.highlightedCommentId = taskId || null;
+    this.pendingCommentFocusId = taskId || null;
+    this.focusPendingCommentIfNeeded();
+    // Keep focus armed for when the full folder Comments list replaces the seed.
+    this.pendingCommentFocusId = taskId || null;
+
+    // Defer Attachments + full folder Comments so the UI stays responsive on click.
+    setTimeout(() => {
+      this.pauseFolderPrefetch();
+      this.allFilesComponent?.beginChildSubjectLoad(folderId);
+      void this.loadDriveFolderContents(driveId, folderId, folderWebUrl, folderName);
+      if (libName) {
+        void this.primeChildSubjectForFolder(libName, folderName, folderId);
+        this.loadAllFilesTasksForLibrary(libName, folderName);
+      }
+      // Resume indexing after the click-driven Graph work has had time to start.
+      setTimeout(() => this.allFilesComponent?.resumeCommentTasksWarm(), 2500);
+    }, 0);
+  }
+
+  /**
+   * All Files → Attachments search row: open the related folder and highlight
+   * that file in the Attachments panel (Live behaviour).
+   */
+  protected onAllFilesAttachmentSelected(hit: AttachmentSearchHit): void {
+    if (!hit?.folder) return;
+
+    const file = hit.folder;
+    const fileId = String(hit.fileId ?? '').trim();
+    const driveId = file.driveId ?? this.currentLibraryDriveId;
+    if (!driveId) return;
+
+    const libName = String(file.libraryName ?? this.currentLibraryName ?? '').trim();
+    const folderId = String(file.id ?? '');
+    const folderName = String(file.name || '');
+    const folderWebUrl = file.webUrl ?? '';
+
+    this.pendingCommentFocusId = null;
+    this.highlightedCommentId = null;
+    this.pendingAttachmentFocusId = fileId || null;
+    this.highlightedAttachmentId = fileId || null;
+    this.selectedAllFilesFolderId = folderId;
+    this.selectedAllFilesParentFolderName = String(file.parentFolderName ?? '').trim();
+    this.childSubjectSourceFetchedForFolderId = null;
+    this.currentLibraryDriveId = driveId;
+    this.attachmentBrowsingRoot = { id: file.id, name: file.name, webUrl: folderWebUrl };
+    this.folderStack = [];
+    this.currentFolderName = folderName;
+    this.selectedFolderModifiedBy = String(file.modifiedby ?? hit.author ?? '').trim();
+    this.hideComments = false;
+    Object.assign(this, getAttachmentsTabMobileState());
+
+    // Instant paint: show the clicked file while the full folder listing loads.
+    this.userFiles = [{
+      id: hit.fileId,
+      name: hit.fileName,
+      webUrl: hit.webUrl ?? '',
+      lastModifiedDateTime: hit.date || undefined,
+      isFolder: false,
+      modifiedBy: hit.author || undefined,
+      fileIcon: hit.fileIcon || undefined,
+    }];
+    this._folderMapDirty = true;
+    this.showUserFile = true;
+    this.isLoadingUserFiles = false;
+    this.refreshView();
+
+    setTimeout(() => {
+      this.pauseFolderPrefetch();
+      this.allFilesComponent?.beginChildSubjectLoad(folderId);
+      void this.loadDriveFolderContents(driveId, folderId, folderWebUrl, folderName).then(() => {
+        this.focusPendingAttachmentIfNeeded();
+      });
+      if (libName) {
+        void this.primeChildSubjectForFolder(libName, folderName, folderId);
+        this.loadAllFilesTasksForLibrary(libName, folderName);
+      }
+    }, 0);
+  }
+
+  private focusPendingAttachmentIfNeeded(): void {
+    const id = String(this.pendingAttachmentFocusId ?? '').trim();
+    if (!id) return;
+    this.highlightedAttachmentId = id;
+    this.pendingAttachmentFocusId = null;
+    this.refreshView();
+    setTimeout(() => {
+      const el = document.getElementById(`attachment-item-${id}`);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 50);
+  }
+
+  /** Instant Comments paint: only the clicked search hit (full folder load follows async). */
+  private seedCommentsFromSearchHit(hit: CommentSearchHit): void {
+    const folderName = String(hit.folder?.name ?? '').trim();
+    if (!folderName) return;
+
+    this.selectedSubmitter = null;
+    this.selectedEFormListId = null;
+    this.selectedEFormTitle = null;
+    this.selectedFolderName = folderName;
+    this.hideComments = false;
+
+    const libName = String(hit.folder?.libraryName ?? hit.libraryName ?? '').trim();
+    const listName = (libName && this.getTaskListForLibrary(libName)) || libName || 'Tasks';
+    const item = this.buildQuickCommentItemFromSearchHit(hit, listName);
+
+    this.isLoadingComments = false;
+    this.isLoadingMoreComments = false;
+    this.commentsMessage = '';
+    this.commentItems = [item];
+    this.visibleItemCount = this.commentsInitialPageSize;
+    this.invalidateCommentFilters(true);
+    this.refreshView();
+  }
+
+  private buildQuickCommentItemFromSearchHit(hit: CommentSearchHit, listName: string): any {
+    const body = String(hit.body ?? '').trim();
+    const author = String(hit.author ?? '').trim();
+    const date = String(hit.date ?? '').trim();
+    return {
+      id: hit.taskId,
+      name: hit.title || 'Comment',
+      webUrl: '',
+      lastModifiedDateTime: date,
+      isFolder: false,
+      status: '',
+      submittedBy: author,
+      submittedDate: date,
+      description: body,
+      listName,
+      isContentLoaded: true,
+      eFormDetails: {
+        type: hit.title || 'Comment',
+        status: '',
+        submitter: author,
+        listName,
+        submittedDate: date,
+        body,
+        comment: body,
+        commentHtml: body.replace(/\n/g, '<br>'),
+        customCreatedDate: date,
+        customModifiedDate: date,
+        customModifiedBy: author,
+      },
+    };
+  }
+
+  /**
+   * Quietly cache Comments for an All Files folder during Comments search.
+   * Does not change the open Comments panel — only warms tasks:lib/hr caches.
+   */
+  protected onEnsureFolderComments(req: { libraryName: string; folderName: string }): void {
+    const libraryName = String(req?.libraryName ?? '').trim();
+    const folderName = String(req?.folderName ?? '').trim();
+    if (!libraryName || !folderName) return;
+    void this.silentWarmFolderCommentsForSearch(libraryName, folderName);
+  }
+
+  /**
+   * Quietly cache Attachments for an All Files folder during Attachments search.
+   * Does not change the open Attachments panel — only warms files:folder caches.
+   */
+  protected onEnsureFolderAttachments(req: { driveId: string; folderId: string }): void {
+    const driveId = String(req?.driveId ?? '').trim();
+    const folderId = String(req?.folderId ?? '').trim();
+    if (!driveId || !folderId) return;
+    void this.silentWarmFolderAttachmentsForSearch(driveId, folderId);
+  }
+
+  private async silentWarmFolderAttachmentsForSearch(
+    driveId: string,
+    folderId: string,
+  ): Promise<void> {
+    const cacheKey = this.driveFolderCacheKey(driveId, folderId);
+    try {
+      const existing = this.fileCrawlCache.getStale(cacheKey);
+      if (Array.isArray(existing)) {
+        this.allFilesComponent?.refreshAttachmentSearchFromCaches();
+        return;
+      }
+
+      const hydrated = await this.fileCrawlCache.hydrateFromPersistent<any[]>(cacheKey);
+      if (hydrated && Array.isArray(hydrated.data)) {
+        this.fileCrawlCache.set(cacheKey, hydrated.data);
+        this.allFilesComponent?.refreshAttachmentSearchFromCaches();
+        if (hydrated.fresh) return;
+      }
+
+      if (this.folderPrefetchInFlight.has(cacheKey)) return;
+      this.folderPrefetchInFlight.add(cacheKey);
+      try {
+        const token = await this.getSharePointToken();
+        const mapped = await this.fetchDriveFolderChildrenMapped(driveId, folderId, token);
+        this.fileCrawlCache.set(cacheKey, mapped);
+        this.allFilesComponent?.refreshAttachmentSearchFromCaches();
+      } finally {
+        this.folderPrefetchInFlight.delete(cacheKey);
+      }
+    } catch (err) {
+      console.warn(`[Attachments search] Failed to warm folder ${folderId}`, err);
+    }
+  }
+
+  private async silentWarmFolderCommentsForSearch(
+    libraryName: string,
+    folderName: string,
+  ): Promise<void> {
+    try {
+      if (normalizeName(libraryName) === normalizeName(this.targetLibraryName)) {
+        const cacheKey = this.hrFolderTaskCacheKey(folderName);
+        const existing = this.fileCrawlCache.getStale(cacheKey);
+        if (Array.isArray(existing) && existing.length > 0) {
+          this.allFilesComponent?.refreshCommentSearchFromCaches();
+          return;
+        }
+        const hydrated = await this.fileCrawlCache.hydrateFromPersistent<any[]>(cacheKey);
+        if (hydrated && Array.isArray(hydrated.data)) {
+          this.fileCrawlCache.set(cacheKey, hydrated.data);
+          this.allFilesComponent?.refreshCommentSearchFromCaches();
+        }
+        // Skip Graph for HR during search warm — opening the folder loads Comments normally.
+        return;
+      }
+
+      const mappedTaskList = this.getTaskListForLibrary(libraryName);
+      if (!mappedTaskList) return;
+
+      const cacheKey = this.libFolderTaskCacheKey(mappedTaskList, folderName);
+      const existing = this.fileCrawlCache.getStale(cacheKey);
+      if (Array.isArray(existing) && existing.length > 0) {
+        this.allFilesComponent?.refreshCommentSearchFromCaches();
+        return;
+      }
+
+      const hydrated = await this.fileCrawlCache.hydrateFromPersistent<any[]>(cacheKey);
+      if (hydrated && Array.isArray(hydrated.data)) {
+        this.fileCrawlCache.set(cacheKey, hydrated.data);
+        this.allFilesComponent?.refreshCommentSearchFromCaches();
+        if (hydrated.fresh) return;
+      }
+
+      await this.loadDocumentLibraryTasksForFolder(
+        mappedTaskList,
+        folderName,
+        this.allFilesFolderTaskLoadSeq,
+        { silent: true },
+      );
+    } catch (err) {
+      console.warn(`[Comments search] Failed to warm "${folderName}"`, err);
+    }
+  }
+
+  /** Remember which library is active in All Files  do not preload attachments. */
+  protected onLibrarySelected(event: { name: string; driveId: string } | null): void {
+    if (!event) return;
+    const { name: libraryName, driveId } = event;
+
+    this.currentLibraryName = libraryName;
+    this.currentLibraryDriveId = driveId;
+    this.folderStack = [];
+    this.attachmentBrowsingRoot = null;
+    this.currentFolderId = null;
+    this.currentFolderWebUrl = '';
+    this.currentFolderName = '';
+    this.userRootFolderId = null;
+    this.showUserFile = false;
+    this.userFiles = [];
+    this._folderMapDirty = true;
+
+    // Tasks and attachments load only when a folder is clicked
+    this.selectedFolderName = '';
+    this.selectedFolderModifiedBy = '';
+    this.commentItems = [];
+    this.commentsMessage = '';
+    this.hideComments = true;
+    this.invalidateCommentFilters();
+    this.refreshView();
+  }
+
+
+  /** Load one-level children of a drive folder and show them in Attachments. */
+  protected async loadDriveFolderContents(
+    driveId: string,
+    folderId: string,
+    folderWebUrl?: string,
+    folderName?: string,
+    options: { skipCache?: boolean } = {},
+  ): Promise<void> {
+    if (!driveId || !folderId) return;
+    const seq = ++this.driveFolderLoadSeq;
+    const cacheKey = this.driveFolderCacheKey(driveId, folderId);
+
+    // Document-library browsing  do not mix with the HR Personal drive tree.
+    this.userRootFolderId = null;
+
+    let paintedFromStaleCache = false;
+    if (!options.skipCache) {
+      const cached = this.fileCrawlCache.get(cacheKey);
+      if (cached) {
+        if (seq !== this.driveFolderLoadSeq) return;
+        this.applyDriveFolderContentsToUi(cached, folderId, folderWebUrl, folderName);
+        this.schedulePrefetchChildFolders(driveId, cached);
+        return;
+      }
+      // Expired or persisted-from-last-session listing: paint it instantly,
+      // then fall through so fresh SharePoint data replaces it below.
+      const stale = this.fileCrawlCache.getStale(cacheKey);
+      if (stale) {
+        if (seq !== this.driveFolderLoadSeq) return;
+        this.applyDriveFolderContentsToUi(stale, folderId, folderWebUrl, folderName);
+        paintedFromStaleCache = true;
+      } else {
+        // Same as All Files / HR Comments: shared Redis before spinner + Graph.
+        const hydrated = await this.fileCrawlCache.hydrateFromPersistent<any[]>(cacheKey);
+        if (seq !== this.driveFolderLoadSeq) return;
+        if (hydrated && Array.isArray(hydrated.data)) {
+          this.applyDriveFolderContentsToUi(hydrated.data, folderId, folderWebUrl, folderName);
+          paintedFromStaleCache = true;
+          if (hydrated.fresh) {
+            this.schedulePrefetchChildFolders(driveId, hydrated.data);
+            return;
+          }
+        }
+      }
+    }
+
+    // If openHr already painted this folder from cache, never flash loading.
+    if (
+      !paintedFromStaleCache &&
+      this.currentFolderId === folderId &&
+      Array.isArray(this.userFiles) &&
+      this.userFiles.length > 0 &&
+      !this.isLoadingUserFiles
+    ) {
+      paintedFromStaleCache = true;
+    }
+
+    if (!paintedFromStaleCache) {
+      this.isLoadingUserFiles = true;
+      this.userFileProgressMessage = 'Loading folder contents...';
+    }
+    this.userFileError = '';
+    this.userFileWarning = '';
+    this.refreshView();
+    try {
+      const token = await this.getSharePointToken();
+      const mapped = await this.fetchDriveFolderChildrenMapped(driveId, folderId, token);
+      if (seq !== this.driveFolderLoadSeq) return;
+
+      this.fileCrawlCache.set(cacheKey, mapped);
+      this.applyDriveFolderContentsToUi(mapped, folderId, folderWebUrl, folderName);
+      this.schedulePrefetchChildFolders(driveId, mapped);
+    } catch (err: any) {
+      if (seq !== this.driveFolderLoadSeq) return;
+      this.userFileError = err?.message || 'Failed to load folder contents';
+    } finally {
+      if (seq !== this.driveFolderLoadSeq) return;
+      this.isLoadingUserFiles = false;
+      this.refreshView();
+    }
+  }
+
+  private applyDriveFolderContentsToUi(
+    mapped: any[],
+    folderId: string,
+    folderWebUrl?: string,
+    folderName?: string,
+  ): void {
+    this.userFiles = mapped;
+    this._folderMapDirty = true;
+    this.currentFolderId = folderId;
+    this.currentFolderWebUrl = folderWebUrl ?? '';
+    this.currentFolderName = folderName ?? this.currentFolderName ?? '';
+    this.showUserFile = true;
+    this.userFileProgressMessage = '';
+    this.isLoadingUserFiles = false;
+    this.userFileError = '';
+    if (folderId === this.selectedAllFilesFolderId) {
+      this.allFilesComponent?.refreshChildFoldersForFolder(folderId);
+    }
+    this.allFilesComponent?.refreshAttachmentSearchFromCaches();
+    this.focusPendingAttachmentIfNeeded();
+    this.refreshView();
+  }
+
+  private async fetchDriveFolderChildrenMapped(
+    driveId: string,
+    folderId: string,
+    token: string,
+  ): Promise<any[]> {
+    const path =
+      `/drives/${driveId}/items/${folderId}/children` +
+      `?$select=id,name,webUrl,lastModifiedDateTime,lastModifiedBy,size,file,folder,parentReference&$top=500`;
+    const resp: any = await graphGetWithRetry(
+      this.http,
+      path,
+      token,
+      AppConstants.graphFileListingTimeoutMs,
+    );
+    const items = resp?.value ?? [];
+    return items
+      .filter((item: any) => !!item.file || !!item.folder)
+      .map((item: any) => {
+        const ext = item.file ? getFileExtension(item.name) : '';
+        const category = item.file ? getFileCategory(ext) : '';
+        const icon = item.file ? getFileIcon(category, ext) : '';
+        return {
+          id: item.id,
+          name: item.name,
+          webUrl: item.webUrl ?? '',
+          parentId: item.parentReference?.id ?? folderId,
+          lastModifiedDateTime: item.lastModifiedDateTime,
+          size: item.size,
+          isFolder: !!item.folder,
+          modifiedBy:
+            item.lastModifiedBy?.user?.displayName ||
+            item.lastModifiedBy?.user?.email ||
+            undefined,
+          fileExtension: ext,
+          mimeType: item.file?.mimeType,
+          fileCategory: category,
+          fileIcon: icon,
+        };
+      });
+  }
+
+  /** Idle-prefetch visible All Files folders so the first click is often already cached. */
+  protected onFoldersForPrefetch(
+    folders: Array<{ driveId: string; folderId: string }>,
+  ): void {
+    // Disabled: idle prefetch was a major Graph spam source on every folder paint / click.
+    return;
+  }
+
+  private pauseFolderPrefetch(): void {
+    this.folderPrefetchPaused = true;
+    if (this.folderPrefetchTimer) {
+      clearTimeout(this.folderPrefetchTimer);
+      this.folderPrefetchTimer = null;
+    }
+    if (this.hrTaskPrefetchTimer) {
+      clearTimeout(this.hrTaskPrefetchTimer);
+      this.hrTaskPrefetchTimer = null;
+    }
+    // Resume after click-path work; stay paused while To Do still owns Graph quota.
+    setTimeout(() => {
+      if (this.isLoadingTodoTasks) return;
+      this.folderPrefetchPaused = false;
+    }, 8000);
+  }
+
+  /**
+   * Idle-prefetch Comments for visible HR Files people so the first click is often cached
+   * (same idea as All Files folder content prefetch).
+   */
+  private scheduleHrFolderTasksPrefetch(
+    folders: Array<{ name?: string }>,
+  ): void {
+    // Disabled: prefetching tasks for every visible HR person flooded Graph on tab clicks.
+    return;
+  }
+
+  /** Silently warm `tasks:hr-folder:*` without touching the Comments UI. */
+  private async prefetchHrFolderTasks(folderNames: string[]): Promise<void> {
+    if (this.folderPrefetchPaused || folderNames.length === 0) return;
+    if (this.isLoadingHrFilesList || this.isLoadingTodoTasks) return;
+
+    const pending = folderNames.filter(name => {
+      const key = this.hrFolderTaskCacheKey(name);
+      if (this.fileCrawlCache.get(key)) return false;
+      if (this.hrTaskPrefetchInFlight.has(key)) return false;
+      return true;
+    });
+    if (pending.length === 0) return;
+
+    let token: string;
+    try {
+      token = await this.getSharePointToken();
+    } catch {
+      return;
+    }
+
+    try {
+      await this.ensureFormConfigLoaded();
+      await this.ensureSiteMetadata(
+        sharePointConfig.siteHostName,
+        sharePointConfig.sitePath,
+        token,
+      );
+      if (!this.cachedSiteId) return;
+    } catch {
+      return;
+    }
+
+    const listsToQuery = this.getTaskListsToQuery(this.cachedSiteLists);
+    if (listsToQuery.length === 0) return;
+
+    const concurrency = AppConstants.hrFilesTaskPrefetchConcurrency;
+    for (let i = 0; i < pending.length; i += concurrency) {
+      if (this.folderPrefetchPaused) return;
+      if (this.isLoadingComments || this.isLoadingMoreComments) return;
+
+      const batch = pending.slice(i, i + concurrency);
+      await Promise.all(
+        batch.map(async folderName => {
+          const key = this.hrFolderTaskCacheKey(folderName);
+          if (this.fileCrawlCache.get(key) || this.hrTaskPrefetchInFlight.has(key)) return;
+
+          // Snapshot active load seq  abort if the user starts a real folder task load.
+          const loadSeq = this.allFilesFolderTaskLoadSeq;
+          this.hrTaskPrefetchInFlight.add(key);
+          try {
+            const mapped = await this.collectHrPersonalTasksFromLists(
+              listsToQuery,
+              folderName,
+              token,
+              loadSeq,
+              AppConstants.hrFilesTaskListPageLimit,
+              undefined,
+              {
+                onSeedComplete: (seedItems) => {
+                  if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+                  if (this.folderPrefetchPaused) return;
+                  // Cache seed early so a click during prefetch is already instant.
+                  if (!this.fileCrawlCache.get(key)) {
+                    this.fileCrawlCache.set(key, this.sortCommentItemsByDateDesc(seedItems));
+                  }
+                },
+              },
+            );
+            if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+            if (this.folderPrefetchPaused) return;
+            // Skip write if a click already cached this folder while we were fetching.
+            if (this.fileCrawlCache.get(key)) return;
+            this.fileCrawlCache.set(key, this.sortCommentItemsByDateDesc(mapped));
+          } catch {
+            // Prefetch failures are silent  click path will retry.
+          } finally {
+            this.hrTaskPrefetchInFlight.delete(key);
+          }
+        }),
+      );
+
+      if (i + concurrency < pending.length) {
+        await new Promise(resolve =>
+          setTimeout(resolve, AppConstants.hrFilesTaskPrefetchBatchGapMs),
+        );
+      }
+    }
+  }
+
+  private schedulePrefetchChildFolders(
+    driveId: string,
+    items: Array<{ id?: string; isFolder?: boolean }>,
+  ): void {
+    // Disabled  child-folder children crawls compounded click/nav Graph traffic.
+    return;
+  }
+
+  /** Silently warm the per-folder cache without touching Attachments UI. */
+  private async prefetchDriveFolders(driveId: string, folderIds: string[]): Promise<void> {
+    if (this.folderPrefetchPaused || this.isLoadingTodoTasks) return;
+    const pending = folderIds.filter(folderId => {
+      const key = this.driveFolderCacheKey(driveId, folderId);
+      if (this.fileCrawlCache.get(key)) return false;
+      if (this.folderPrefetchInFlight.has(key)) return false;
+      return true;
+    });
+    if (pending.length === 0) return;
+
+    let token: string;
+    try {
+      token = await this.getSharePointToken();
+    } catch {
+      return;
+    }
+
+    for (let i = 0; i < pending.length; i += this.folderPrefetchConcurrency) {
+      if (this.folderPrefetchPaused || this.isLoadingTodoTasks) return;
+      const batch = pending.slice(i, i + this.folderPrefetchConcurrency);
+      await Promise.all(
+        batch.map(async folderId => {
+          const key = this.driveFolderCacheKey(driveId, folderId);
+          if (this.fileCrawlCache.get(key) || this.folderPrefetchInFlight.has(key)) return;
+          this.folderPrefetchInFlight.add(key);
+          try {
+            const mapped = await this.fetchDriveFolderChildrenMapped(driveId, folderId, token);
+            this.fileCrawlCache.set(key, mapped);
+          } catch {
+            // Prefetch failures are silent  click path will retry.
+          } finally {
+            this.folderPrefetchInFlight.delete(key);
+          }
+        }),
+      );
+      // Pace batches so prefetch doesn't starve click / search traffic.
+      if (i + this.folderPrefetchConcurrency < pending.length) {
+        await new Promise(resolve => setTimeout(resolve, 400));
+      }
+    }
+  }
+
+  // ============================================================
+  // LOAD LOGGED-IN USER FILES (main entry point)
+  // ============================================================
+  protected openMyFiles(): void {
+    if (!this.currentUser) {
+      alert('You must log in first to access your profile.');
+      this.userFileError = 'Please log in first.';
+      this.showUserFile = false;
+      return;
+    }
+    if (this.isLoadingUserFiles) return;
+
+    // Attachments-only entry: do not reload Comments/tasks.
+    this.showUserFile = true;
+    this.isLoadingUserFiles = true;
+    this.currentFolderId = null;
+    this.currentFolderWebUrl = '';
+    this.currentFolderName = '';
+    this.folderStack = [];
+    this.attachmentBrowsingRoot = null;
+    this.currentLibraryDriveId = null;
+    this.currentLibraryName = null;
+    this.userRootFolderId = null;
+    this.userFileProgressMessage = 'Connecting to SharePoint...';
+    this.userFileError = '';
+    this.userFileWarning = '';
+    this.userFiles = [];
+    this._folderMapDirty = true;
+    this.startUserFileLoadingWatchdog();
+    this.refreshView();
+
+    void this.loadMyFilesFromDrive();
+  }
+
+  protected loadHrFilesInFirstSection(): void {
+    if (!this.currentUser) {
+      this.userFileError = 'Please log in first.';
+      return;
+    }
+    if (this.isLoadingHrFilesList) return;
+
+    this.cancelBackgroundTodoLoad();
+    clearGraphThrottleCooldown();
+    if (this.hrTaskPrefetchTimer) {
+      clearTimeout(this.hrTaskPrefetchTimer);
+      this.hrTaskPrefetchTimer = null;
+    }
+
+    this.userFileError = '';
+    this.userFileWarning = '';
+
+    // Instant paint from cache (memory / previous session) so the first open is not blank.
+    const cachedRoots =
+      this.fileCrawlCache.get<typeof this.hrPersonalRootFolders>(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY) ??
+      this.fileCrawlCache.getStale<typeof this.hrPersonalRootFolders>(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY);
+    if (Array.isArray(cachedRoots) && cachedRoots.length > 0) {
+      this.hrPersonalRootFolders = cachedRoots;
+      this.isLoadingHrFilesList = false;
+      this.userFileProgressMessage = '';
+      this.clearUserFileLoadingWatchdog();
+      this.refreshView();
+      // Top up from SharePoint without wiping the painted list.
+      void this.loadHrPersonalFilesForFirstSection({ softRefresh: true });
+      return;
+    }
+
+    this.isLoadingHrFilesList = true;
+    this.userFileProgressMessage = 'Connecting to SharePoint...';
+    this.hrPersonalRootFolders = [];
+    this.startUserFileLoadingWatchdog();
+    this.refreshView();
+
+    void this.loadHrPersonalFilesForFirstSection();
+  }
+
+  private showMyFilesPanel(): void {
+    this.showUserFile = true;
+    this.refreshView();
+  }
+
+  // ============================================================
+  // MANUAL REFRESH (refresh button)  reloads only the active section.
+  // ============================================================
+  protected onManualRefresh(): void {
+    if (!this.currentUser) {
+      this.showModal('Login Required', 'You must log in first to refresh.', 'error');
+      return;
+    }
+
+    if (this.showAllFilesSection) {
+      this.refreshAllFilesSection();
+      return;
+    }
+
+    if (this.showToDoSection) {
+      this.refreshToDoSection();
+      return;
+    }
+
+    this.refreshHrSection();
+  }
+
+  private refreshAllFilesSection(): void {
+    if (this.selectedFolderName && this.currentLibraryName) {
+      this.invalidateFolderTaskCache(this.currentLibraryName, this.selectedFolderName);
+    }
+    this.fileCrawlCache.invalidatePrefix('files:folder:');
+    void this.allFilesComponent?.refreshAllFilesData(true);
+
+    if (this.selectedFolderName && this.currentLibraryName) {
+      this.loadAllFilesTasksForLibrary(this.currentLibraryName, this.selectedFolderName);
+    }
+
+    const stackFolder = this.folderStack[this.folderStack.length - 1];
+    const folderId =
+      this.currentFolderId ||
+      this.attachmentBrowsingRoot?.id ||
+      stackFolder?.id ||
+      '';
+    const folderWebUrl =
+      this.currentFolderWebUrl ||
+      this.attachmentBrowsingRoot?.webUrl ||
+      stackFolder?.webUrl ||
+      '';
+    const folderName =
+      this.currentFolderName ||
+      this.attachmentBrowsingRoot?.name ||
+      stackFolder?.name ||
+      '';
+    if (this.currentLibraryDriveId && folderId) {
+      void this.loadDriveFolderContents(
+        this.currentLibraryDriveId,
+        folderId,
+        folderWebUrl,
+        folderName,
+        { skipCache: true },
+      );
+    }
+
+    this.refreshView();
+  }
+
+  private refreshToDoSection(): void {
+    // Subordinate view has its own load path and no per-list watermarks.
+    if (this.superiorMode) {
+      this.fileCrawlCache.invalidate(AppComponent.HR_USER_TASKS_CACHE_KEY);
+      void this.reloadTodoTasksWithSubordinates();
+      this.refreshView();
+      return;
+    }
+
+    // Nothing cached yet  nothing to top up, so do the normal first load.
+    if (this.todoListWatermarks.size === 0) {
+      void this.loadTodoTasksForCurrentUser({ forceRefresh: true });
+      this.refreshView();
+      return;
+    }
+
+    void this.refreshTodoTasksIncrementally();
+
+    if (this.selectedSubmitter) {
+      this.loadHrTasks();
+    }
+
+    this.refreshView();
+  }
+
+  /**
+   * Top up To Do with whatever changed since the last look, keeping everything already
+   * collected. Each list is read newest-first and stops at the first row already held,
+   * so no previously fetched row is downloaded, re-mapped or re-filtered a second time.
+   */
+  private async refreshTodoTasksIncrementally(): Promise<boolean> {
+    if (this.isLoadingMoreTodoTasks || this.isLoadingTodoTasks) return false;
+
+    this.isLoadingMoreTodoTasks = true;
+    this.refreshView();
+
+    try {
+      const token = await this.getSharePointToken();
+      const siteId = this.cachedSiteId;
+      const siteListsArr = this.cachedSiteLists;
+      if (!siteId || siteListsArr.length === 0) {
+        void this.loadTodoTasksForCurrentUser({ forceRefresh: true });
+        return false;
+      }
+
+      const siteWebUrl = this.cachedSiteWebUrl;
+      const userEmail = (this.currentUser?.email ?? '').toLowerCase();
+      const userUpn = (this.currentUser?.userPrincipalName ?? '').toLowerCase();
+      const watermarks = [...this.todoListWatermarks.entries()];
+
+      const refreshOne = async ([listName, watermark]: [string, string]): Promise<any[]> => {
+        const list = siteListsArr.find(
+          (l: any) =>
+            (l.name ?? '').toLowerCase() === listName.toLowerCase() ||
+            (l.displayName ?? '').toLowerCase() === listName.toLowerCase(),
+        );
+        if (!list?.id) return [];
+
+        const raw = await this.fetchTodoRowsNewerThanWatermark(
+          siteId, list.id, token, listName, watermark,
+        );
+        if (raw.length === 0) return [];
+
+        this.noteTodoWatermark(listName, raw);
+
+        const mapped: any[] = [];
+        for (const item of raw) {
+          const shaped = this.mapSharePointItemToHrTask(
+            item, listName, list, siteWebUrl, userEmail, userUpn, false, false,
+          );
+          if (shaped) mapped.push(shaped);
+        }
+        return mapped;
+      };
+
+      const fresh: any[] = [];
+      const concurrency = AppConstants.hrTasksTodoListConcurrency;
+      for (let i = 0; i < watermarks.length; i += concurrency) {
+        const batch = watermarks.slice(i, i + concurrency);
+        const results = await Promise.all(batch.map(entry => refreshOne(entry).catch(() => [])));
+        fresh.push(...results.flat());
+      }
+
+      // Merge on top of the cache so previously loaded pages (including anything pulled
+      // via "Load older tasks") survive the refresh.
+      const existing = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
+      const merged = fresh.length > 0 ? this.mergeHrTasks(existing, fresh) : existing;
+      if (fresh.length > 0) {
+        this.fileCrawlCache.set(AppComponent.HR_USER_TASKS_CACHE_KEY, merged);
+      }
+      this.todoService.setTasksFromSharePoint(this.getHrTasksForTodoList(merged));
+      this.userHrTasksLoaded = true;
+      return fresh.length > 0;
+    } catch {
+      // Refresh is best effort  the existing view stays as-is.
+      return false;
+    } finally {
+      this.isLoadingMoreTodoTasks = false;
+      this.refreshView();
+    }
+  }
+
+  /**
+   * While signed in, periodically top up To Do Redis from SharePoint watermarks and
+   * soft-refresh the open folder Comments cache so external SharePoint edits appear.
+   */
+  private startSharePointCachePoll(): void {
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.onDocumentVisibilityForCachePoll);
+      document.addEventListener('visibilitychange', this.onDocumentVisibilityForCachePoll);
+    }
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      return;
+    }
+    this.stopSharePointCachePollTimerOnly();
+    this.sharePointCachePollTimer = setInterval(() => {
+      void this.pollSharePointTaskCaches();
+    }, AppComponent.SHAREPOINT_CACHE_POLL_MS);
+  }
+
+  private stopSharePointCachePollTimerOnly(): void {
+    if (this.sharePointCachePollTimer) {
+      clearInterval(this.sharePointCachePollTimer);
+      this.sharePointCachePollTimer = null;
+    }
+  }
+
+  private stopSharePointCachePoll(): void {
+    this.stopSharePointCachePollTimerOnly();
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.onDocumentVisibilityForCachePoll);
+    }
+  }
+
+  private async pollSharePointTaskCaches(): Promise<void> {
+    if (!this.currentUser?.email) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    if (this.superiorMode) return;
+    // Do not compete with an active To Do / Comments Graph fan-out.
+    if (
+      this.isLoadingTodoTasks ||
+      this.todoProcurementDrainActive ||
+      this.isLoadingComments ||
+      this.isLoadingMoreComments ||
+      this.folderTaskGraphInFlight
+    ) {
+      return;
+    }
+
+    if (this.todoListWatermarks.size > 0) {
+      await this.refreshTodoTasksIncrementally();
+    }
+
+    const now = Date.now();
+    if (now - this.lastFolderCommentsPollMs < AppComponent.FOLDER_COMMENTS_POLL_MS) {
+      return;
+    }
+    this.lastFolderCommentsPollMs = now;
+    this.softRefreshOpenFolderTaskCache();
+  }
+
+  /** Soft-refresh the open folder Comments cache from Graph without wiping the painted UI. */
+  private softRefreshOpenFolderTaskCache(): void {
+    const folder = String(this.selectedFolderName || this.selectedHrPersonalTaskFolder || '').trim();
+    if (!folder) return;
+
+    const loadSeq = ++this.allFilesFolderTaskLoadSeq;
+
+    if (this.showAllFilesSection && this.currentLibraryName) {
+      if (normalizeName(this.currentLibraryName) === normalizeName(this.targetLibraryName)) {
+        void this.loadHrPersonalTasksForFolder(folder, loadSeq, { softRefresh: true });
+        return;
+      }
+      const mappedTaskList = this.getTaskListForLibrary(this.currentLibraryName);
+      if (mappedTaskList) {
+        void this.loadDocumentLibraryTasksForFolder(mappedTaskList, folder, loadSeq, {
+          softRefresh: true,
+        });
+      }
+      return;
+    }
+
+    if (this.isHrPersonalFilesContext()) {
+      void this.loadHrPersonalTasksForFolder(folder, loadSeq, { softRefresh: true });
+    }
+  }
+
+  private refreshHrSection(): void {
+    if (this.selectedFolderName) {
+      this.invalidateFolderTaskCache(this.targetLibraryName, this.selectedFolderName);
+    }
+
+    this.fileCrawlCache.invalidate(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY);
+    this.hrPersonalRootFolders = [];
+    this.loadHrFilesInFirstSection();
+
+    const stackFolder = this.folderStack[this.folderStack.length - 1];
+    const folderId =
+      this.currentFolderId ||
+      this.attachmentBrowsingRoot?.id ||
+      stackFolder?.id ||
+      '';
+    const folderWebUrl =
+      this.currentFolderWebUrl ||
+      this.attachmentBrowsingRoot?.webUrl ||
+      stackFolder?.webUrl ||
+      '';
+    if (this.hrPersonalDriveId && this.currentLibraryDriveId === this.hrPersonalDriveId && folderId) {
+      this.fileCrawlCache.invalidate(this.driveFolderCacheKey(this.hrPersonalDriveId, folderId));
+      if (this.selectedFolderName) {
+        this.loadAllFilesTasksForLibrary(this.targetLibraryName, this.selectedFolderName);
+      }
+      void this.loadDriveFolderContents(
+        this.hrPersonalDriveId,
+        folderId,
+        folderWebUrl,
+        this.currentFolderName || this.attachmentBrowsingRoot?.name || stackFolder?.name,
+        { skipCache: true },
+      );
+    } else if (
+      this.showUserFile &&
+      this.userRootFolderId &&
+      !this.currentLibraryDriveId &&
+      !this.isLoadingUserFiles
+    ) {
+      this.isLoadingUserFiles = true;
+      this.userFileProgressMessage = 'Refreshing attachments...';
+      this.userFileError = '';
+      this.userFileWarning = '';
+      this.startUserFileLoadingWatchdog();
+      this.refreshView();
+      void this.loadMyFilesFromDrive();
+    }
+
+    this.refreshView();
+  }
+
+  protected get isManualRefreshLoading(): boolean {
+    return (
+      this.isLoadingComments ||
+      this.isLoadingUserFiles ||
+      this.isLoadingTodoTasks ||
+      this.isLoadingHrFilesList ||
+      !!this.allFilesComponent?.isLoading ||
+      !!this.allFilesComponent?.isLoadingAllLibraries ||
+      !!this.allFilesComponent?.isLoadingCommentTasks ||
+      !!this.allFilesComponent?.isSearchingMoreAttachments
+    );
+  }
+
+  private async loadMyFilesFromDrive(): Promise<void> {
+    try {
+      const token = await this.getSharePointToken();
+      const targetDriveId = await this.getTargetDriveId(token);
+
+      if (!targetDriveId) {
+        const site = await this.siteMetadataService.resolve(token);
+        const drives: any = await graphGetWithRetry(
+          this.http,
+          `/sites/${site.siteId}/drives?$select=id,name,webUrl`,
+          token,
+        );
+        const available = drives?.value?.map((x: any) => x.name).join(', ') || 'none';
+        this.userFileError = `Could not find "${this.targetLibraryName}". Available libraries: ${available}`;
+        this.refreshView();
+        return;
+      }
+
+      await this.loadCurrentUserPersonalFolderFiles(targetDriveId, token);
+    } catch (error: unknown) {
+      this.handleUserFilesError(error);
+    } finally {
+      if (this.isLoadingUserFiles) {
+        this.isLoadingUserFiles = false;
+        this.clearUserFileLoadingWatchdog();
+        this.refreshView();
+      }
+    }
+  }
+
+  private async loadHrPersonalFilesForFirstSection(
+    options: { softRefresh?: boolean } = {},
+  ): Promise<void> {
+    const softRefresh = !!options.softRefresh;
+    try {
+      const token = await this.getSharePointToken();
+      if (!softRefresh) {
+        this.userFileProgressMessage = 'Loading HR Files...';
+        this.refreshView();
+      }
+
+      // Drive resolve (Graph) and group membership (SharePoint REST) run in parallel 
+      // the old serial path waited for both before the first children page could start.
+      const [targetDriveId, allAccess] = await Promise.all([
+        this.getTargetDriveId(token),
+        this.isUserInHrPersonalAllAccessGroup(),
+      ]);
+
+      if (!targetDriveId) {
+        if (!softRefresh) {
+          this.userFileError = `Could not find "${this.targetLibraryName}".`;
+          this.refreshView();
+        }
+        return;
+      }
+      this.hrPersonalDriveId = targetDriveId;
+
+      // All-access: list root immediately. Skip the separate canList probe  it cost an
+      // extra Graph RTT and the real children fetch already proves access (403 -> personal).
+      if (allAccess) {
+        try {
+          this.hrPersonalRootFolders = await this.fetchHrPersonalRootFolders(
+            targetDriveId,
+            token,
+            (partial: Array<{ id: string; name: string; webUrl: string; isFolder: boolean }>) => {
+              this.hrPersonalRootFolders = partial;
+              this.fileCrawlCache.set(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY, partial);
+              this.isLoadingHrFilesList = false;
+              this.userFileProgressMessage = '';
+              this.clearUserFileLoadingWatchdog();
+              this.refreshView();
+              this.scheduleHrFolderTasksPrefetch(partial);
+            },
+          );
+          this.fileCrawlCache.set(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY, this.hrPersonalRootFolders);
+          this.scheduleHrFolderTasksPrefetch(this.hrPersonalRootFolders);
+          return;
+        } catch (err: any) {
+          const status = err?.status ?? err?.error?.status;
+          if (status !== 403 && status !== 401) throw err;
+          // Not actually allowed to list root  fall through to personal folder.
+        }
+      }
+
+      const userFolder = await this.findUserFolder(targetDriveId, token);
+      if (!userFolder?.id) {
+        if (!softRefresh) {
+          this.userFileError =
+            `Could not find a personal folder for ${this.currentUser?.username || 'the logged-in user'} in "${this.targetLibraryName}".`;
+          this.refreshView();
+        }
+        return;
+      }
+
+      this.hrPersonalFolderName = userFolder.name;
+      this.hrPersonalRootFolders = [{ ...userFolder, webUrl: userFolder.webUrl ?? '', isFolder: true }];
+      this.fileCrawlCache.set(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY, this.hrPersonalRootFolders);
+      this.scheduleHrFolderTasksPrefetch(this.hrPersonalRootFolders);
+    } catch (error: unknown) {
+      if (!softRefresh) {
+        this.handleUserFilesError(error);
+      }
+    } finally {
+      if (this.isLoadingHrFilesList) {
+        this.isLoadingHrFilesList = false;
+        this.clearUserFileLoadingWatchdog();
+        this.refreshView();
+      }
+    }
+  }
+
+  // Intentionally removed: hardcoded allow-list for HRPersonal root browsing.(updated)
+
+  private hrPersonalGroupChecked = false;
+  private hrPersonalGroupAllowsAllAccess = false;
+  private readonly hrPersonalAllAccessGroupId = 3;
+
+  private async isUserInHrPersonalAllAccessGroup(): Promise<boolean> {
+    if (this.hrPersonalGroupChecked) return this.hrPersonalGroupAllowsAllAccess;
+    this.hrPersonalGroupChecked = true;
+    this.hrPersonalGroupAllowsAllAccess = false;
+
+    const email = (this.currentUser?.email ?? '').trim().toLowerCase();
+    const upn = (this.currentUser?.userPrincipalName ?? '').trim().toLowerCase();
+    if (!email && !upn) return false;
+
+    try {
+      const token = await this.authService.acquireSharePointRestWriteToken();
+      const url =
+        `https://${sharePointConfig.siteHostName}/${sharePointConfig.sitePath}` +
+        `/_api/web/sitegroups/getbyid(${this.hrPersonalAllAccessGroupId})/users?$select=Email,UserPrincipalName,LoginName,Title`;
+
+      const resp: any = await firstValueFrom(
+        this.http.get(url, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/json;odata=nometadata',
+          },
+        })
+      );
+
+      const users: any[] = resp?.value ?? resp?.d?.results ?? [];
+      this.hrPersonalGroupAllowsAllAccess = users.some(u => {
+        const uEmail = String(u?.Email ?? '').trim().toLowerCase();
+        const uUpn = String(u?.UserPrincipalName ?? '').trim().toLowerCase();
+        const login = String(u?.LoginName ?? '').trim().toLowerCase();
+        return (
+          (email && (uEmail === email || uUpn === email)) ||
+          (upn && (uEmail === upn || uUpn === upn)) ||
+          (email && login.includes(email)) ||
+          (upn && login.includes(upn))
+        );
+      });
+    } catch {
+      this.hrPersonalGroupAllowsAllAccess = false;
+    }
+
+    return this.hrPersonalGroupAllowsAllAccess;
+  }
+
+
+  /** Background-only: resolve HRPersonal root folders into cache without touching the HR Files UI. */
+  private async warmHrPersonalRootFoldersCache(): Promise<void> {
+    if (!this.currentUser) return;
+    if (this.isLoadingHrFilesList) return;
+    if (this.fileCrawlCache.get(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY)) return;
+
+    try {
+      const token = await this.getSharePointToken();
+      const targetDriveId = await this.getTargetDriveId(token);
+      if (!targetDriveId) return;
+      this.hrPersonalDriveId = targetDriveId;
+
+      if (!(await this.isUserInHrPersonalAllAccessGroup())) {
+        const userFolder = await this.findUserFolder(targetDriveId, token);
+        if (!userFolder?.id) return;
+        this.hrPersonalFolderName = userFolder.name;
+        const single = [{ ...userFolder, webUrl: userFolder.webUrl ?? '', isFolder: true as const }];
+        this.fileCrawlCache.set(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY, single);
+        return;
+      }
+
+      const folders = await this.fetchHrPersonalRootFolders(targetDriveId, token, (partial) => {
+        this.fileCrawlCache.set(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY, partial);
+      });
+      this.fileCrawlCache.set(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY, folders);
+    } catch {
+      // Warm is best-effort  first HR Files open will fetch normally.
+    }
+  }
+
+  private async fetchHrPersonalRootFolders(
+    driveId: string,
+    token: string,
+    onPage?: (
+      folders: Array<{ id: string; name: string; webUrl: string; isFolder: boolean }>
+    ) => void,
+  ): Promise<Array<{ id: string; name: string; webUrl: string; isFolder: boolean }>> {
+    const folders: Array<{ id: string; name: string; webUrl: string; isFolder: boolean }> = [];
+    // Smaller pages so the first HR Files paint does not wait for the full library root.
+    let nextPath: string | null =
+      `/drives/${driveId}/root/children?$select=id,name,webUrl,folder&$top=50`;
+
+    while (nextPath) {
+      const page: any = await graphGetWithRetry(
+        this.http, nextPath, token, AppConstants.graphFileListingTimeoutMs,
+      );
+      folders.push(
+        ...(page?.value ?? [])
+          .filter((item: any) => !!item.folder)
+          .map((item: any) => ({
+            id: item.id,
+            name: item.name,
+            webUrl: item.webUrl ?? '',
+            isFolder: true,
+          }))
+      );
+      onPage?.(folders.slice());
+      nextPath = toGraphPath(page?.['@odata.nextLink']);
+    }
+
+    return folders;
+  }
+
+  private async loadCurrentUserPersonalFolderFiles(targetDriveId: string, token: string): Promise<void> {
+    this.userFileProgressMessage = 'Locating your Personal folder/Files...';
+    this.refreshView();
+
+    const userFolder = await this.findUserFolder(targetDriveId, token);
+    if (!userFolder?.id) {
+      this.userFileError =
+        `Could not find a personal folder for ${this.currentUser?.username || 'the logged-in user'} in "${this.targetLibraryName}".`;
+      this.refreshView();
+      return;
+    }
+
+    this.userRootFolderId = userFolder.id;
+    this.hrPersonalFolderName = userFolder.name;
+
+    const driveLoadResult = await this.getAllDriveItems(targetDriveId, token, userFolder.id, progress => {
+      this.userFileProgressMessage = progress;
+      this.refreshView();
+    });
+
+    this.applyDriveItems(driveLoadResult.items, userFolder.id);
+
+    if (driveLoadResult.wasTruncated) {
+      this.userFileWarning = 'SharePoint scan limit reached; showing partial results.';
+    }
+  }
+  //Folder Name LOOKUP(runs at login,lightweight lookup)
+  private async loadHrPersonalFolderName(): Promise<void> {
+    if (!this.currentUser) return;
+    this.refreshView();
+    try {
+      const token = await this.getSharePointToken();
+      const targetDriveId = await this.getTargetDriveId(token);
+      if (!targetDriveId) return;
+      const userFolder = await this.findUserFolder(targetDriveId, token);
+      if (!userFolder?.id) return;
+      this.hrPersonalFolderName = userFolder.name;
+    } catch {
+      //silent ignore -- card will show fallback text
+    } finally {
+      this.refreshView();
+    }
+  }
+
+  private applyDriveItems(items: any[], rootFolderId: string): void {
+    this.userFiles = items
+      .filter((item: any) => !!item.file || !!item.folder)
+      .map((item: any) => {
+        const ext = item.file ? getFileExtension(item.name) : '';
+        const category = item.file ? getFileCategory(ext) : '';
+        const icon = item.file ? getFileIcon(category, ext) : '';
+        const parentPath = item.parentReference?.path ?? '';
+        const isRootChild = rootFolderId === 'root' && /\/root:?$/i.test(parentPath);
+        return {
+          id: item.id,
+          name: item.name,
+          webUrl: item.webUrl ?? '',
+          parentId: isRootChild ? rootFolderId : item.parentReference?.id ?? rootFolderId,
+          lastModifiedDateTime: item.lastModifiedDateTime,
+          size: item.size,
+          isFolder: !!item.folder,
+          modifiedBy:
+            item.lastModifiedBy?.user?.displayName ||
+            item.lastModifiedBy?.user?.email ||
+            undefined,
+          fileExtension: ext,
+          mimeType: item.file?.mimeType,
+          fileCategory: category,
+          fileIcon: icon,
+        };
+      });
+
+    this._folderMapDirty = true;
+  }
+
+  // ============================================================
+  // FOLDER NAVIGATION
+  // ============================================================
+  protected openFolder(item: { id: string; name: string; webUrl: string }): void {
+    this.attachmentSearch = '';
+
+    // All Files / library browsing: fetch subfolder contents from SharePoint
+    if (this.currentLibraryDriveId) {
+      this.pushCurrentFolderOntoStack();
+      void this.loadDriveFolderContents(
+        this.currentLibraryDriveId,
+        item.id,
+        item.webUrl,
+        item.name,
+      );
+
+      // Doc-library folders map Title ? tasks. HRPersonal subfolders must NOT
+      // reload Comments (tasks stay scoped to the person root already open).
+      if (this.shouldReloadTasksForAttachmentFolder(item.name)) {
+        this.loadAllFilesTasksForLibrary(this.currentLibraryName!, String(item.name || ''));
+      }
+      return;
+    }
+
+    // Personal files: full tree already loaded  filter locally by parentId
+    this.pushCurrentFolderOntoStack();
+    this.currentFolderId = item.id;
+    this.currentFolderWebUrl = item.webUrl;
+    this.currentFolderName = item.name;
+    this.refreshView();
+  }
+
+  /** True when drilling into an Attachments subfolder should also refresh Comments tasks. */
+  private shouldReloadTasksForAttachmentFolder(folderName: string): boolean {
+    const libName = String(this.currentLibraryName ?? '').trim();
+    if (!libName || !String(folderName ?? '').trim()) return false;
+    // HRPersonal person tree: Comments already loaded for the root person.
+    if (normalizeName(libName) === normalizeName(this.targetLibraryName)) {
+      return false;
+    }
+    // All Files document libraries: folder name is the task Title key.
+    return this.showAllFilesSection && !!this.getTaskListForLibrary(libName);
+  }
+
+  private pushCurrentFolderOntoStack(): void {
+    if (!this.currentFolderId) return;
+    this.folderStack.push({
+      id: this.currentFolderId,
+      name: this.currentFolderName || this.selectedFolderName || '',
+      webUrl: this.currentFolderWebUrl,
+    });
+  }
+
+  protected openHrFileListItem(item: { id: string; name: string; webUrl: string; isFolder: boolean }): void {
+    if (item.isFolder) {
+      void this.openHrFileListItemAsync(item);
+      return;
+    }
+
+    if (item.webUrl) {
+      window.open(item.webUrl, '_blank', 'noopener,noreferrer');
+    }
+  }
+
+  private async openHrFileListItemAsync(item: { id: string; name: string; webUrl: string; isFolder: boolean }): Promise<void> {
+    if (!(await this.ensureHrPersonalDriveId())) {
+      this.userFileError = 'HRPersonal library is not loaded yet. Wait for HR Files to finish loading, then try again.';
+      this.refreshView();
+      return;
+    }
+
+    // Free Graph capacity for this person's click-path load.
+    this.cancelBackgroundTodoLoad();
+    clearGraphThrottleCooldown();
+    this.pauseFolderPrefetch();
+
+    this.showUserFile = true;
+    this.hideComments = false;
+    this.showToDoSection = false;
+    this.showAllFilesSection = false;
+    this.currentLibraryDriveId = this.hrPersonalDriveId;
+    this.currentLibraryName = this.targetLibraryName;
+    this.attachmentBrowsingRoot = { id: item.id, name: item.name, webUrl: item.webUrl };
+    this.currentFolderId = item.id;
+    this.currentFolderWebUrl = item.webUrl;
+    this.currentFolderName = item.name;
+    this.folderStack = [];
+    this.userRootFolderId = null;
+    this.selectedFolderName = item.name;
+    this.selectedHrPersonalTaskFolder = item.name;
+    this.lastHrFilesCommentsFolder = item.name;
+
+    // Same-session instant return: paint memory/stale BEFORE any async work so
+    // navigating away and back never flashes the loading state for cached people.
+    const driveId = this.hrPersonalDriveId!;
+    const filesKey = this.driveFolderCacheKey(driveId, item.id);
+    const cachedFiles =
+      this.fileCrawlCache.get<any[]>(filesKey) ??
+      this.fileCrawlCache.getStale<any[]>(filesKey);
+    if (Array.isArray(cachedFiles)) {
+      this.applyDriveFolderContentsToUi(cachedFiles, item.id, item.webUrl, item.name);
+    } else {
+      this.userFiles = [];
+      this._folderMapDirty = true;
+      this.isLoadingUserFiles = true;
+      this.userFileProgressMessage = 'Loading folder contents...';
+    }
+
+    const tasksKey = this.hrFolderTaskCacheKey(item.name);
+    const cachedTasks =
+      this.fileCrawlCache.get<any[]>(tasksKey) ??
+      this.fileCrawlCache.getStale<any[]>(tasksKey);
+    // Allow empty arrays — a completed crawl with 0 tasks is still a valid hit.
+    if (Array.isArray(cachedTasks)) {
+      this.commentItems = this.sortCommentItemsByDateDesc(
+        this.applyAllFilesFolderSubmitter(cachedTasks),
+      );
+      this.commentsMessage = cachedTasks.length ? '' : 'No tasks found.';
+      this.isLoadingComments = false;
+      this.isLoadingMoreComments = cachedTasks.length > 0;
+    } else {
+      this.commentItems = [];
+      this.commentsMessage = '';
+    }
+    this.invalidateCommentFilters();
+    // Attachments first — tasks continue in the background for Comments.
+    Object.assign(this, getAttachmentsTabMobileState());
+    this.refreshView();
+    void this.loadDriveFolderContents(driveId, item.id, item.webUrl, item.name);
+    this.loadAllFilesTasksForLibrary(this.targetLibraryName, item.name);
+  }
+
+  protected goBackToParent(): void {
+    this.navigateToParentFolder();
+  }
+
+  private navigateToParentFolder(): void {
+    this.attachmentSearch = '';
+
+    if (this.currentLibraryDriveId) {
+      if (this.folderStack.length > 0) {
+        const parent = this.folderStack.pop()!;
+        void this.loadDriveFolderContents(
+          this.currentLibraryDriveId,
+          parent.id,
+          parent.webUrl,
+          parent.name,
+        );
+        // Only re-sync Comments for All Files doc-library folders  not HRPersonal.
+        if (this.shouldReloadTasksForAttachmentFolder(parent.name)) {
+          this.loadAllFilesTasksForLibrary(this.currentLibraryName!, String(parent.name || ''));
+        }
+        return;
+      }
+
+      this.resetToAttachmentBrowsingRoot();
+      return;
+    }
+
+    if (this.folderStack.length > 0) {
+      const parent = this.folderStack.pop()!;
+      this.currentFolderId = parent.id;
+      this.currentFolderWebUrl = parent.webUrl;
+      this.currentFolderName = parent.name;
+      this.refreshView();
+      return;
+    }
+
+    if (this.attachmentBrowsingRoot) {
+      this.currentFolderId = this.attachmentBrowsingRoot.id;
+      this.currentFolderWebUrl = this.attachmentBrowsingRoot.webUrl;
+      this.currentFolderName = this.attachmentBrowsingRoot.name;
+      this.refreshView();
+      return;
+    }
+
+    this.currentFolderId = null;
+    this.currentFolderWebUrl = '';
+    this.currentFolderName = '';
+    this.refreshView();
+  }
+
+  /** At the entry folder, close attachments; otherwise reload that folder's contents. */
+  private resetToAttachmentBrowsingRoot(): void {
+    if (!this.attachmentBrowsingRoot || !this.currentLibraryDriveId) {
+      this.currentFolderId = null;
+      this.currentFolderWebUrl = '';
+      this.currentFolderName = '';
+      this.refreshView();
+      return;
+    }
+
+    if (this.currentFolderId === this.attachmentBrowsingRoot.id) {
+      return;
+    }
+
+    void this.loadDriveFolderContents(
+      this.currentLibraryDriveId,
+      this.attachmentBrowsingRoot.id,
+      this.attachmentBrowsingRoot.webUrl,
+      this.attachmentBrowsingRoot.name,
+    );
+
+    // Only re-sync Comments for All Files doc-library folders  not HRPersonal.
+    if (this.shouldReloadTasksForAttachmentFolder(this.attachmentBrowsingRoot.name)) {
+      this.loadAllFilesTasksForLibrary(
+        this.currentLibraryName!,
+        String(this.attachmentBrowsingRoot.name || ''),
+      );
+    }
+  }
+
+  // ============================================================
+  // HR TASK LIST SELECTION
+  // ============================================================
+  protected onHrTaskListSelected(listName: string): void {
+    if (listName && this.allowedHrTaskLists.includes(listName)) {
+      this.selectedHrTaskList = listName;
+      // Show the file panel when a list is selected
+      this.showUserFile = true;
+      this.refreshView();
+    }
+  }
+
+  protected loadHrTaskListItems(): void {
+    if (!this.currentUser || !this.selectedHrTaskList) {
+      this.userFileError = 'Please log in and select an HR Task list first.';
+      this.showUserFile = false;
+      return;
+    }
+    if (this.isLoadingUserFiles) return;
+
+    this.showUserFile = true;
+    this.isLoadingUserFiles = true;
+    this.currentFolderId = null;
+    this.currentFolderWebUrl = '';
+    this.userFileProgressMessage = `Loading items from ${this.selectedHrTaskList}...`;
+    this.userFileError = '';
+    this.userFileWarning = '';
+    this.userFiles = [];
+    this._folderMapDirty = true;
+    this.startUserFileLoadingWatchdog();
+    this.refreshView();
+
+    void this.loadHrTaskListItemsInternal();
+  }
+
+  private async loadHrTaskListItemsInternal(): Promise<void> {
+    try {
+      const token = await this.getSharePointToken();
+      const siteHost = sharePointConfig.siteHostName;
+      const sitePath = sharePointConfig.sitePath;
+      const listName = this.selectedHrTaskList;
+
+      if (!listName || !this.allowedHrTaskLists.includes(listName)) {
+        this.userFileError = 'Invalid HR task list selected.';
+        this.refreshView();
+        return;
+      }
+
+      const site = await this.siteMetadataService.resolve(token);
+      if (!site?.siteId) throw new Error('Could not find site');
+
+      this.userFileProgressMessage = `Finding ${listName} list...`;
+      this.refreshView();
+
+      // Match by name (more reliable than $filter) against the shared list metadata.
+      const allLists = site.lists;
+      const targetList = allLists.find((l: any) =>
+        (l.name ?? '').toLowerCase() === listName.toLowerCase() ||
+        (l.displayName ?? '').toLowerCase() === listName.toLowerCase()
+      );
+
+      if (!targetList?.id) {
+        this.userFileError = `Could not find list "${listName}". Available lists: ${allLists.map((l: any) => l.name).join(', ')}`;
+        this.refreshView();
+        return;
+      }
+
+      this.userFileProgressMessage = `Loading items from ${listName}...`;
+      this.refreshView();
+
+      // Load items with pagination (hard cap  never drain a multi-thousand-item list here)
+      const allItems: any[] = [];
+      let nextUrl: string | null = `/sites/${site.siteId}/lists/${targetList.id}/items?$expand=fields&$top=200`;
+      let pages = 0;
+      const maxPages = 10;
+
+      while (nextUrl && pages < maxPages) {
+        this.userFileProgressMessage = `Loading items from ${listName}... (${allItems.length} loaded)`;
+        this.refreshView();
+
+        const page: any = await graphGetWithRetry(
+          this.http, nextUrl, token, AppConstants.graphFileListingTimeoutMs,
+        );
+
+        if (page?.value) {
+          allItems.push(...page.value);
+        }
+
+        nextUrl = toGraphPath(page?.['@odata.nextLink']);
+        pages += 1;
+      }
+
+      this.userFiles = allItems.map((item: any) => {
+        const fields = item.fields || {};
+        const title = fields.Title || fields.Title0 || fields.Name || fields.Description || `Item ${item.id}`;
+        return {
+          id: item.id,
+          name: title,
+          webUrl: `${site.siteWebUrl}/Lists/${targetList.name}/DispForm.aspx?ID=${item.id}`,
+          lastModifiedDateTime: fields.Modified || fields.Created,
+          isFolder: false,
+        };
+      });
+
+      this._folderMapDirty = true;
+      this.userFileProgressMessage = '';
+      this.userFileError = '';
+      if (this.userFiles.length === 0) {
+        this.userFileWarning = `No items found in "${listName}".`;
+      }
+      this.refreshView();
+    } catch (error: unknown) {
+      this.handleUserFilesError(error);
+    } finally {
+      if (this.isLoadingUserFiles) {
+        this.isLoadingUserFiles = false;
+        this.clearUserFileLoadingWatchdog();
+        this.refreshView();
+      }
+    }
+  }
+
+  // ============================================================
+  // KNOWN HR TASK LIST NAMES
+  // ============================================================
+  private readonly hrTaskListNames: string[] = [
+    'HRTaskChangeOfShiftIESC', 'HRTaskTeleworkReports', 'HRTaskTelework',
+    'HRTaskRest', 'HRTaskSickLeaveByAppointment', 'HRTaskProbation', 'HRTaskMissingPunch',
+  ];
+
+  /**
+   * Extra HR lists to always query for person history / To Do discovery.
+   * Sick Certificate tasks live on SickCertificateUploader_Tasks (not HRTask*).
+   */
+  private readonly hrSourceEFormListNames: string[] = [
+    'SickCertificateUploader_Tasks',
+  ];
+
+  /** Procurement / SAP lists  queried for To Do only, not HR Files person folders. */
+  private readonly todoExtraTaskListNames: string[] = [
+    'ProcTasks', 'ProcTasks1', 'ECTasks',
+  ];
+
+  /** True for procurement/SAP task lists included in the To Do scope. */
+  private isTodoProcurementTaskList(listName: string): boolean {
+    const key = String(listName ?? '').trim().toLowerCase();
+    if (key === 'proctasksarchive') return true;
+    return this.todoExtraTaskListNames.some(name => name.toLowerCase() === key);
+  }
+
+  /** Pull assignee-matched procurement tasks already loaded via All Files folder views. */
+  private collectAssignedProcTasksFromFolderCaches(): any[] {
+    const matchName = this.currentUser?.username ?? this.currentUser?.userPrincipalName ?? '';
+    const matchEmail = (this.currentUser?.email ?? this.currentUser?.userPrincipalName ?? '').toLowerCase();
+    if (!matchName && !matchEmail) return [];
+
+    const byKey = new Map<string, any>();
+    for (const entry of this.fileCrawlCache.getEntriesByPrefix('tasks:lib:v7:')) {
+      if (!/proctasks/i.test(entry.key)) continue;
+      const items = entry.data;
+      if (!Array.isArray(items)) continue;
+
+      for (const item of items) {
+        if (!this.isTodoProcurementTaskList(String(item?.listName ?? ''))) continue;
+        if (!this.isMappedTaskAssignedToLoggedInUser(item, matchName, matchEmail)) continue;
+        byKey.set(this.getHrTaskKey(item), {
+          ...item,
+          isAssignedToCurrentUser: true,
+        });
+      }
+    }
+    return [...byKey.values()];
+  }
+
+  private isMappedTaskAssignedToLoggedInUser(
+    item: any,
+    matchName: string,
+    matchEmail: string,
+  ): boolean {
+    const assignedTo = String(item?.eFormDetails?.assignedTo ?? item?.assignedTo ?? '').trim();
+    if (assignedTo && this.userService.matchesAssigneeField(assignedTo, matchName, matchEmail)) {
+      return true;
+    }
+
+    const rawFields = item?.eFormDetails?.rawFields;
+    if (rawFields && typeof rawFields === 'object') {
+      return this.isAssignedToUserFromFields(rawFields as Record<string, any>, matchName, matchEmail);
+    }
+
+    return false;
+  }
+
+  /** Task lists from eForms config, hard-coded names, and HRTask* auto-detect. */
+  private getTaskListsToQuery(
+    siteLists: Array<{ name?: string }>,
+    options?: { includeAllWorkflows?: boolean; includeArchiveCompanions?: boolean },
+  ): string[] {
+    const autoDetected = siteLists
+      .filter((l) => (l.name ?? '').toLowerCase().startsWith('hrtask'))
+      .map((l) => l.name as string);
+
+    // HR Files: TaskListName + source eForm lists (URL/Prefix) so Sick Certificate
+    // submissions appear in person Comments. To Do: all workflows' task + source lists.
+    const fromEForms = options?.includeAllWorkflows
+      ? this.formConfigService.getAllQueryListNames()
+      : this.formConfigService.getHrQueryListNames();
+
+    let names = [...new Set([
+      ...this.hrTaskListNames,
+      ...this.hrSourceEFormListNames,
+      ...autoDetected,
+      ...fromEForms,
+    ])];
+
+    if (options?.includeAllWorkflows) {
+      names = [...new Set([
+        ...names,
+        ...this.todoExtraTaskListNames,
+        ...this.formConfigService.getAllQueryListNames(),
+      ])];
+    }
+
+    if (options?.includeArchiveCompanions) {
+      names = this.expandTaskListsWithArchiveCompanions(names);
+    }
+
+    return names;
+  }
+
+  /** Add archive companion lists (e.g. ProcTasksArchive for procurement). */
+  private expandTaskListsWithArchiveCompanions(listNames: string[]): string[] {
+    const expanded = new Set(listNames);
+    for (const name of listNames) {
+      for (const archive of this.getArchiveCompanionTaskLists(name)) {
+        expanded.add(archive);
+      }
+    }
+    return [...expanded];
+  }
+
+  private async ensureFormConfigLoaded(): Promise<void> {
+    if (this.formConfigService.snapshot.length > 0) {
+      return;
+    }
+    await firstValueFrom(this.formConfigService.load());
+  }
+
+  // ============================================================
+  // HR TASK HELPERS  merge, older backfill
+  // ============================================================
+  private getHrTaskKey(item: any): string {
+    return `${item.listName ?? 'unknown'}:${item.id}`;
+  }
+
+  /** User-created comment cards (not SharePoint HR tasks)  must not appear in the todo list. */
+  private isSyntheticCommentCard(item: { id?: unknown }): boolean {
+    return String(item.id ?? '').startsWith('comment:');
+  }
+
+  private static readonly COMMENT_ENTRY_TITLES = new Set([
+    'general comment',
+    'new attachment',
+    'request for action',
+  ]);
+
+  private static readonly STATUSLESS_COMMENT_TITLES = new Set([
+    'general comment',
+    'new attachment',
+    'request for action',
+  ]);
+
+  private isCommentEntryTitle(title: string): boolean {
+    return this.matchesCommentLabel(title, AppComponent.COMMENT_ENTRY_TITLES);
+  }
+
+  private isStatuslessCommentTitle(title: string): boolean {
+    return this.matchesCommentLabel(title, AppComponent.STATUSLESS_COMMENT_TITLES);
+  }
+
+  /** Matches exact labels plus SharePoint variants like "New Attachment/s". */
+  private matchesCommentLabel(value: string, labels: Set<string>): boolean {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) return false;
+    if (labels.has(normalized)) return true;
+
+    return [...labels].some(entry => {
+      if (normalized === entry || normalized.startsWith(`${entry}:`)) return true;
+      // "New Attachment/s", "New Attachments", "General Comments", etc.
+      if (normalized.startsWith(entry)) return true;
+      const withoutSlashS = normalized.replace(/\/s\b/g, 's');
+      return (
+        withoutSlashS === entry ||
+        withoutSlashS === `${entry}s` ||
+        withoutSlashS.startsWith(entry)
+      );
+    });
+  }
+
+  /** Hide status badge for general comments, attachments, and request-for-action cards. */
+  protected shouldHideCommentStatus(item: {
+    id?: unknown;
+    name?: unknown;
+    eFormDetails?: Record<string, unknown>;
+  }): boolean {
+    return this.getCommentEntryKind(item) !== null;
+  }
+
+  /** Returns which comment-entry type an item is, or null for normal eForm tasks. */
+  private getCommentEntryKind(item: {
+    id?: unknown;
+    name?: unknown;
+    eFormDetails?: Record<string, unknown>;
+  }): 'general' | 'attachment' | 'action' | null {
+    const details = item.eFormDetails ?? {};
+    const commentCategory = String(details['commentCategory'] ?? '').trim().toLowerCase();
+    if (commentCategory === 'general') return 'general';
+    if (commentCategory === 'attachment') return 'attachment';
+    if (commentCategory === 'action') return 'action';
+
+    const candidates = [
+      details['category'],
+      details['type'],
+      item.name,
+      (details['rawFields'] as Record<string, unknown> | undefined)?.['Title'],
+      (details['rawFields'] as Record<string, unknown> | undefined)?.['Category'],
+    ];
+
+    for (const value of candidates) {
+      const title = String(value ?? '');
+      if (this.matchesCommentLabel(title, new Set(['general comment']))) return 'general';
+      if (this.matchesCommentLabel(title, new Set(['new attachment']))) return 'attachment';
+      if (this.matchesCommentLabel(title, new Set(['request for action']))) return 'action';
+    }
+
+    // Synthetic comment cards without a resolvable category still count as comment entries.
+    if (this.isSyntheticCommentCard(item)) return 'general';
+    return null;
+  }
+
+  private matchesApprovalFilter(
+    item: {
+      id?: unknown;
+      name?: unknown;
+      status?: unknown;
+      eFormDetails?: Record<string, unknown>;
+    },
+    filter: string
+  ): boolean {
+    const kind = this.getCommentEntryKind(item);
+
+    switch (filter) {
+      case 'approved': {
+        if (kind) return false;
+        const s = String(item.eFormDetails?.['status'] ?? item.status ?? '').toLowerCase();
+        return s.includes('approv') || s.includes('complet');
+      }
+      case 'pending': {
+        if (kind) return false;
+        const s = String(item.eFormDetails?.['status'] ?? item.status ?? '').toLowerCase();
+        const isApproved = s.includes('approv') || s.includes('complet');
+        return !isApproved;
+      }
+      case 'general-comments':
+        return kind === 'general';
+      case 'new-attachments':
+        return kind === 'attachment';
+      case 'rfa':
+        return kind === 'action';
+      default:
+        return true;
+    }
+  }
+
+  /** Comment rows and user-added comment cards linked by eFormListId. */
+  private isCommentTypeItem(item: {
+    id?: unknown;
+    name?: unknown;
+    eFormDetails?: Record<string, unknown>;
+  }): boolean {
+    return this.getCommentEntryKind(item) !== null;
+  }
+
+  private isHrPersonalFilesContext(): boolean {
+    return !!String(this.selectedHrPersonalTaskFolder ?? '').trim();
+  }
+
+  /** True when Comments is scoped to a folder (HR Files person or All Files folder). */
+  private isFolderTaskCommentsViewActive(): boolean {
+    if (this.showAllFilesSection && !!String(this.selectedFolderName ?? '').trim()) {
+      return true;
+    }
+    return this.isHrPersonalFilesContext();
+  }
+
+  /** Cancel in-flight folder/global task fetches so a new folder click wins. */
+  private cancelPendingFolderTaskLoads(): void {
+    this.allFilesFolderTaskLoadSeq++;
+    this.hrCommentsLoadSeq++;
+  }
+
+  /** Leave HR Files tab context  drop All Files navigation without losing hrPersonalDriveId. */
+  private leaveAllFilesTaskView(): void {
+    if (
+      !this.hrPersonalDriveId &&
+      this.currentLibraryDriveId &&
+      normalizeName(this.currentLibraryName ?? '') === normalizeName(this.targetLibraryName)
+    ) {
+      this.hrPersonalDriveId = this.currentLibraryDriveId;
+    }
+
+    this.cancelPendingFolderTaskLoads();
+    this.currentLibraryDriveId = null;
+    this.currentLibraryName = null;
+    this.currentFolderId = null;
+    this.currentFolderWebUrl = '';
+    this.currentFolderName = '';
+    this.folderStack = [];
+    this.attachmentBrowsingRoot = null;
+    this.selectedFolderName = '';
+    this.selectedFolderModifiedBy = '';
+    this.selectedHrPersonalTaskFolder = '';
+    this.showUserFile = false;
+    this.userFiles = [];
+    this._folderMapDirty = true;
+    this.commentItems = [];
+    this.commentsMessage = '';
+    this.isLoadingComments = false;
+    this.isLoadingMoreComments = false;
+    this.invalidateCommentFilters();
+  }
+
+  private async ensureHrPersonalDriveId(): Promise<boolean> {
+    if (this.hrPersonalDriveId) return true;
+
+    if (
+      this.currentLibraryDriveId &&
+      normalizeName(this.currentLibraryName ?? '') === normalizeName(this.targetLibraryName)
+    ) {
+      this.hrPersonalDriveId = this.currentLibraryDriveId;
+      return true;
+    }
+
+    try {
+      const token = await this.getSharePointToken();
+      const driveId = await this.getTargetDriveId(token);
+      if (!driveId) return false;
+      this.hrPersonalDriveId = driveId;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** HR Files shows only submitted eForm tasks  not comments, attachments, or action requests. */
+  private isHrFilesVisibleItem(
+    item: { id?: unknown; name?: unknown; submittedBy?: string; eFormDetails?: Record<string, unknown> },
+    folderName: string,
+  ): boolean {
+    if (this.isCommentTypeItem(item)) {
+      return false;
+    }
+    return this.isItemSubmittedByFolderPerson(item, folderName);
+  }
+
+  private isSharePointCommentEntry(item: any): boolean {
+    const fields = item.fields ?? item;
+    return this.isCommentEntryTitle(String(fields.Title ?? '').trim());
+  }
+
+  /** True for Sick Certificate / source eForm submission lists (vs standard HRTask*). */
+  private isHrSourceEFormList(listName: string): boolean {
+    const key = String(listName ?? '').trim().toLowerCase();
+    if (!key) return false;
+    if (this.hrSourceEFormListNames.some(name => name.toLowerCase() === key)) return true;
+    if (key.includes('sickcertificate')) return true;
+    return /_eform$/i.test(key) || /eform$/i.test(key.replace(/[^a-z0-9]/g, ''));
+  }
+
+  /** True when the mapped HR task was submitted by the person represented by an HR Files folder. */
+  private isItemSubmittedByFolderPerson(
+    item: { submittedBy?: string; eFormDetails?: Record<string, unknown> },
+    folderName: string
+  ): boolean {
+    const rawFields = (item.eFormDetails?.['rawFields'] ?? {}) as Record<string, unknown>;
+    return this.candidatesMatchFolderPerson([
+      item.submittedBy,
+      item.eFormDetails?.['submitter'],
+      item.eFormDetails?.['submittedBy'],
+      item.eFormDetails?.['commentSubmittedBy'],
+      rawFields['Requestor'],
+      rawFields['SubmittedBy'],
+      rawFields['Submitter'],
+      rawFields['Author'],
+      rawFields['CreatedBy'],
+      rawFields['commentSubmittedBy'],
+      rawFields['EmployeeName'],
+      rawFields['Employee'],
+      rawFields['EmployeeEmail'],
+    ], folderName);
+  }
+
+  private extractCommentCardTaskId(id: unknown): string {
+    const raw = String(id ?? '').trim();
+    if (!raw.startsWith('comment:')) return '';
+    const parts = raw.split(':');
+    return parts.length >= 2 ? parts[1].trim() : '';
+  }
+
+  private getHrTasksForTodoList<T extends { id?: unknown }>(items: T[]): T[] {
+    return items.filter(item => !this.isSyntheticCommentCard(item));
+  }
+
+  /**
+   * Remove a completed/delegated task from the To Do Redis snapshot (`tasks:hr-user`)
+   * so the next instant paint does not bring it back.
+   */
+  private removeTaskFromTodoCache(taskId: string): void {
+    const id = String(taskId ?? '').trim();
+    if (!id) return;
+
+    const cached = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY);
+    if (!Array.isArray(cached) || cached.length === 0) return;
+
+    const next = cached.filter((item: any) => String(item?.id ?? '').trim() !== id);
+    if (next.length === cached.length) return;
+
+    this.fileCrawlCache.set(AppComponent.HR_USER_TASKS_CACHE_KEY, next);
+  }
+
+  /** Merge field updates into the To Do Redis snapshot for one task id. */
+  private patchTaskInTodoCache(taskId: string, patch: (item: any) => any): void {
+    const id = String(taskId ?? '').trim();
+    if (!id) return;
+
+    const cached = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY);
+    if (!Array.isArray(cached) || cached.length === 0) return;
+
+    let changed = false;
+    const next = cached.map((item: any) => {
+      if (String(item?.id ?? '').trim() !== id) return item;
+      changed = true;
+      return patch(item);
+    });
+    if (!changed) return;
+
+    this.fileCrawlCache.set(AppComponent.HR_USER_TASKS_CACHE_KEY, next);
+  }
+
+  /** Remove a task from every in-memory folder-task snapshot (HR + All Files). */
+  private removeTaskFromFolderCaches(taskId: string): void {
+    this.mapTaskInFolderCaches(taskId, () => null);
+  }
+
+  /** Patch a task inside every in-memory folder-task snapshot that contains it. */
+  private patchTaskInFolderCaches(taskId: string, patch: (item: any) => any): void {
+    this.mapTaskInFolderCaches(taskId, patch);
+  }
+
+  /**
+   * Walk HR / lib folder-task caches. Return `null` from `mapFn` to remove the item.
+   */
+  private mapTaskInFolderCaches(taskId: string, mapFn: (item: any) => any | null): void {
+    const id = String(taskId ?? '').trim();
+    if (!id) return;
+
+    for (const prefix of ['tasks:hr-folder:', 'tasks:lib:v7:'] as const) {
+      for (const { key, data } of this.fileCrawlCache.getStaleEntriesByPrefix(prefix)) {
+        if (!Array.isArray(data) || data.length === 0) continue;
+
+        let changed = false;
+        const next: any[] = [];
+        for (const item of data) {
+          if (String(item?.id ?? '').trim() !== id) {
+            next.push(item);
+            continue;
+          }
+          changed = true;
+          const mapped = mapFn(item);
+          if (mapped != null) next.push(mapped);
+        }
+        if (changed) {
+          this.fileCrawlCache.set(key, next);
+        }
+      }
+    }
+  }
+
+  private applyDueDatePatch(item: any, dueDate: string): any {
+    const details = { ...(item?.eFormDetails ?? {}) };
+    const rawFields = { ...(details.rawFields ?? {}) };
+    let wroteRaw = false;
+    for (const key of ['DueDate', 'DueDate0', 'Due', 'Due_x0020_Date'] as const) {
+      if (Object.prototype.hasOwnProperty.call(rawFields, key)) {
+        rawFields[key] = dueDate;
+        wroteRaw = true;
+        break;
+      }
+    }
+    if (!wroteRaw) rawFields['DueDate'] = dueDate;
+    details.dueDate = dueDate;
+    details.rawFields = rawFields;
+    return { ...item, dueDate, eFormDetails: details };
+  }
+
+  private applyAssigneePatch(item: any, assignedToName: string, assignedToEmail = ''): any {
+    const label = String(assignedToName || assignedToEmail || '').trim();
+    const details = { ...(item?.eFormDetails ?? {}) };
+    if (label) details.assignedTo = label;
+    const next: any = {
+      ...item,
+      assignedTo: label || item?.assignedTo,
+      eFormDetails: details,
+    };
+    if (typeof item?.isAssignedToCurrentUser === 'boolean') {
+      next.isAssignedToCurrentUser = this.isAssigneeCurrentUser(assignedToName, assignedToEmail);
+    }
+    return next;
+  }
+
+  private isAssigneeCurrentUser(assignedToName: string, assignedToEmail = ''): boolean {
+    const email = (this.currentUser?.email ?? '').toLowerCase();
+    const upn = (this.currentUser?.userPrincipalName ?? '').toLowerCase();
+    const name = (this.currentUser?.username ?? '').toLowerCase();
+    const candEmail = String(assignedToEmail ?? '').trim().toLowerCase();
+    const candName = String(assignedToName ?? '').trim().toLowerCase();
+    if (candEmail && (candEmail === email || candEmail === upn)) return true;
+    if (candName && name && candName === name) return true;
+    return false;
+  }
+
+  /** Best-effort folder key invalidation when list/folder can be inferred from the task. */
+  private invalidateRelatedFolderTaskCache(task: any): void {
+    const folder =
+      String(this.selectedFolderName ?? '').trim() ||
+      String(this.selectedHrPersonalTaskFolder ?? '').trim() ||
+      String(task?.submittedBy ?? task?.eFormDetails?.submittedBy ?? '').trim();
+    if (!folder) return;
+
+    const listName = String(
+      task?.listName ?? task?.eFormDetails?.listName ?? this.currentLibraryName ?? '',
+    ).trim();
+    if (listName) {
+      this.invalidateFolderTaskCache(listName, folder);
+    }
+    // HR person folders are keyed under HRPersonal regardless of the task list name.
+    this.invalidateFolderTaskCache(this.targetLibraryName, folder);
+  }
+
+  /**
+   * Keep Redis (and in-memory) task snapshots aligned after an app ? SharePoint write.
+   * Also drops the backend `/api/tasks` read-through key when list + email are known.
+   */
+  private syncTaskCachesAfterMutation(
+    task: any,
+    kind: 'complete' | 'dueDate' | 'delegate' | 'comment',
+    extras?: { dueDate?: string; assignedToName?: string; assignedToEmail?: string },
+  ): void {
+    const taskId = String(task?.id ?? task?.Id ?? '').trim();
+    if (!taskId) return;
+
+    if (kind === 'complete') {
+      this.removeTaskFromTodoCache(taskId);
+      this.removeTaskFromFolderCaches(taskId);
+      this.invalidateRelatedFolderTaskCache(task);
+    } else if (kind === 'dueDate' && extras?.dueDate) {
+      const dueDate = extras.dueDate;
+      this.patchTaskInTodoCache(taskId, (item) => this.applyDueDatePatch(item, dueDate));
+      this.patchTaskInFolderCaches(taskId, (item) => this.applyDueDatePatch(item, dueDate));
+    } else if (kind === 'delegate') {
+      const name = String(extras?.assignedToName ?? '').trim();
+      const email = String(extras?.assignedToEmail ?? '').trim();
+      if (!this.isAssigneeCurrentUser(name, email)) {
+        this.removeTaskFromTodoCache(taskId);
+      } else {
+        this.patchTaskInTodoCache(taskId, (item) => this.applyAssigneePatch(item, name, email));
+      }
+      this.patchTaskInFolderCaches(taskId, (item) => this.applyAssigneePatch(item, name, email));
+      this.invalidateRelatedFolderTaskCache(task);
+    } else if (kind === 'comment') {
+      // Action comments may change assignee (handled via delegate); still refresh folder snapshots.
+      this.invalidateRelatedFolderTaskCache(task);
+    }
+
+    this.invalidateBackendTasksCache(task);
+  }
+
+  /** Fire-and-forget invalidate of the Node `/api/tasks` Redis read-through entry. */
+  private invalidateBackendTasksCache(task: any): void {
+    const list = String(task?.listName ?? task?.eFormDetails?.listName ?? '').trim();
+    const email = String(
+      task?.userEmail ??
+        task?.eFormDetails?.submittedByEmail ??
+        this.currentUser?.email ??
+        '',
+    ).trim();
+    if (!list || !email) return;
+    void this.backendApi.invalidateTasksForPerson(email, list).catch(() => {});
+  }
+
+  private countAssignedHrTasks(): number {
+    const cached = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
+    return cached.filter((item: any) => item?.isAssignedToCurrentUser === true).length;
+  }
+
+  private mergeHrTasks(existing: any[], incoming: any[]): any[] {
+    const byKey = new Map<string, any>();
+    for (const it of existing) byKey.set(this.getHrTaskKey(it), it);
+    for (const it of incoming) byKey.set(this.getHrTaskKey(it), it);
+    return [...byKey.values()].sort(
+      (a, b) =>
+        new Date(b.submittedDate || 0).getTime() - new Date(a.submittedDate || 0).getTime()
+    );
+  }
+
+  private async loadOlderHrTasks(cutoffIso: string): Promise<void> {
+    if (this.hrOlderHistoryLoadInProgress) return;
+    this.hrOlderHistoryLoadInProgress = true;
+    this.refreshView();
+    try {
+      const older = await this.loadHrTasksFromLists(false, { createdBeforeIso: cutoffIso });
+      if (!older.length || this.isFolderTaskCommentsViewActive()) return;
+      this.commentItems = this.mergeHrTasks(this.commentItems, older);
+      this.invalidateCommentFilters();
+      this.todoService.setTasksFromSharePoint(this.getHrTasksForTodoList(this.commentItems));
+    } catch { /* ignore */ }
+    finally {
+      this.hrOlderHistoryLoadInProgress = false;
+      this.refreshView();
+    }
+  }
+
+  // ============================================================
+  // LOAD HR TASKS  public entry point
+  // ============================================================
+  protected loadHrTasks(): void {
+    if (!this.currentUser) {
+      this.showModal('Login Required', 'You must log in first to view HR Tasks.', 'error');
+      this.commentsMessage = 'Please log in first.';
+      return;
+    }
+
+    if (!this.showToDoSection && this.isFolderTaskCommentsViewActive()) {
+      const folder = String(this.selectedHrPersonalTaskFolder || this.selectedFolderName || '').trim();
+      const library = this.showAllFilesSection
+        ? String(this.currentLibraryName ?? '').trim()
+        : this.targetLibraryName;
+      if (folder && library) {
+        this.loadAllFilesTasksForLibrary(library, folder);
+        return;
+      }
+    }
+
+    const cached = this.fileCrawlCache.get(AppComponent.HR_USER_TASKS_CACHE_KEY);
+    if (cached?.length) {
+      this.commentItems = this.sortCommentItemsByDateDesc(cached);
+      this.visibleItemCount = this.commentsInitialPageSize;
+      this.invalidateCommentFilters();
+      this.isLoadingComments = false;
+      this.isLoadingMoreComments = false;
+      this.commentsMessage = '';
+      this.userHrTasksLoaded = true;
+      this.refreshView();
+      return;
+    }
+
+    const loadSeq = ++this.hrCommentsLoadSeq;
+    this.isLoadingComments = true;
+    this.isLoadingMoreComments = false;
+    this.commentItems = [];
+    this.visibleItemCount = this.commentsInitialPageSize;
+    this.invalidateCommentFilters();
+    this.refreshView();
+    void this.loadHrTasksWithRecentWindow(loadSeq);
+  }
+
+  private isStaleHrCommentsLoad(loadSeq: number): boolean {
+    return loadSeq !== this.hrCommentsLoadSeq;
+  }
+
+  private async loadHrTasksWithRecentWindow(loadSeq: number): Promise<void> {
+    try {
+      await this.ensureFormConfigLoaded();
+      if (this.isStaleHrCommentsLoad(loadSeq)) return;
+
+      const since = new Date();
+      since.setUTCDate(since.getUTCDate() - AppConstants.hrTasksRecentFetchDays);
+      const sinceIso = since.toISOString();
+      await this.loadHrTasksFromLists(
+        true,
+        { createdSinceIso: sinceIso },
+        { hrCommentsLoadSeq: loadSeq }
+      );
+    } catch {
+      if (!this.isStaleHrCommentsLoad(loadSeq)) {
+        this.commentsMessage = 'Failed to load HR Tasks.';
+        this.isLoadingComments = false;
+        this.refreshView();
+      }
+    }
+  }
+
+  // ============================================================
+  // MODAL STATE
+  // ============================================================
+  modal = {
+    visible: false,
+    title: '',
+    message: '',
+    type: 'info' as 'info' | 'success' | 'warning' | 'error',
+    action: null,
+  };
+
+  showModal(
+    title: string,
+    message: string,
+    type: 'info' | 'success' | 'warning' | 'error' = 'info',
+  ): void {
+    this.modal = { visible: true, title, message, type, action: null };
+    this.refreshView();
+  }
+
+  closeModal(): void {
+    this.modal.visible = false;
+    this.modal.action = null;
+    this.refreshView();
+  }
+
+  // ============================================================
+  // LOAD HR TASKS  core async logic
+  // All SharePoint lists queried IN PARALLEL via Promise.all().
+  // Optional Graph $filter on list item createdDateTime reduces pages
+  // for the "recent" and silent-refresh paths.
+  // ============================================================
+  private async loadHrTasksFromLists(
+    updateComponentState = true,
+    range: { createdSinceIso?: string; createdBeforeIso?: string } | null = null,
+    options: {
+      kickoffOlderBackfill?: boolean;
+      updateTodo?: boolean;
+      updateCommentItems?: boolean;
+      subordinateTasksOnly?: boolean;
+      fastLoadPageLimit?: number;
+      hrCommentsLoadSeq?: number;
+      skipCache?: boolean;
+      progressiveTodo?: boolean;
+      todoLoadSeq?: number;
+      /** To Do fast path: AssignedToLookupId only  skip slow page-scan fallback. */
+      todoAssigneeOnly?: boolean;
+      /** Page-scan only lists where AssignedToLookupId filter previously failed. */
+      restrictToAssigneeBlockedLists?: boolean;
+      /** To Do panel: include SAP/procurement lists + archive companions (e.g. ProcTasksArchive). */
+      todoScope?: boolean;
+    } = {}
+  ): Promise<any[]> {
+    const updateCommentItems = options.updateCommentItems ?? updateComponentState;
+    const updateTodo = options.updateTodo ?? updateComponentState;
+    const kickoffOlderBackfill = options.kickoffOlderBackfill ?? updateComponentState;
+    const subordinateTasksOnly = options.subordinateTasksOnly === true;
+    const fastLoadPageLimit = options.fastLoadPageLimit;
+    const hrCommentsLoadSeq = options.hrCommentsLoadSeq;
+    const progressiveTodo = options.progressiveTodo === true;
+    const todoLoadSeq = options.todoLoadSeq;
+    const todoAssigneeOnly = options.todoAssigneeOnly === true;
+    const restrictToAssigneeBlockedLists = options.restrictToAssigneeBlockedLists === true;
+    const todoScope = options.todoScope === true;
+    const isStaleCommentsLoad = (): boolean =>
+      hrCommentsLoadSeq !== undefined && this.isStaleHrCommentsLoad(hrCommentsLoadSeq);
+    const isStaleTodoLoad = (): boolean =>
+      todoLoadSeq !== undefined && this.isStaleTodoTaskLoad(todoLoadSeq);
+
+    const publishPartialTodo = (partialItems: any[]): void => {
+      if (!updateTodo || !progressiveTodo || isStaleTodoLoad()) return;
+      if (partialItems.length === 0) return;
+      const existing = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
+      const merged = existing.length > 0
+        ? this.mergeHrTasks(existing, partialItems)
+        : [...partialItems];
+      const sorted = [...merged].sort(
+        (a: { submittedDate: any }, b: { submittedDate: any }) =>
+          new Date(b.submittedDate || 0).getTime() - new Date(a.submittedDate || 0).getTime()
+      );
+      this.fileCrawlCache.set(AppComponent.HR_USER_TASKS_CACHE_KEY, sorted);
+      this.todoService.setTasksFromSharePoint(this.getHrTasksForTodoList(sorted), { clearLoading: false });
+      this.userHrTasksLoaded = true;
+      this.refreshView();
+    };
+
+    const isCacheableRecentUserLoad =
+      !subordinateTasksOnly &&
+      !!range?.createdSinceIso &&
+      !range?.createdBeforeIso;
+
+    // Serve recent user tasks from cache unless this is a forced network refresh.
+    if (isCacheableRecentUserLoad && !options.skipCache) {
+      const cached = this.fileCrawlCache.get(AppComponent.HR_USER_TASKS_CACHE_KEY);
+      const cacheOk = !todoScope || this.todoScopeCacheValid;
+      if (cached?.length && cacheOk) {
+        if (updateCommentItems && !isStaleCommentsLoad()) {
+          if (!this.isFolderTaskCommentsViewActive()) {
+            this.commentItems = cached;
+            this.invalidateCommentFilters();
+            this.commentsMessage = '';
+            this.isLoadingComments = false;
+            this.userHrTasksLoaded = true;
+            this.refreshView();
+          } else {
+            this.isLoadingComments = false;
+            this.refreshView();
+          }
+        }
+        if (updateTodo) {
+          this.todoService.setTasksFromSharePoint(this.getHrTasksForTodoList(cached));
+          this.userHrTasksLoaded = true;
+        }
+        return cached;
+      }
+    }
+
+    try {
+      const token = await this.getSharePointToken();
+      const siteHost = sharePointConfig.siteHostName;
+      const sitePath = sharePointConfig.sitePath;
+
+      await this.ensureSiteMetadata(siteHost, sitePath, token);
+
+      const siteId: string = this.cachedSiteId!;
+      const siteWebUrl: string = this.cachedSiteWebUrl;
+      const siteListsArr: any[] = this.cachedSiteLists;
+
+      const userEmail = (this.currentUser?.email ?? '').toLowerCase();
+      const userUpn = (this.currentUser?.userPrincipalName ?? '').toLowerCase();
+
+      if (subordinateTasksOnly) {
+        await this.subordinaryTaskService.ensureSubordinatesForManager([
+          this.currentUser?.email ?? '',
+          this.currentUser?.userPrincipalName ?? '',
+          this.currentUser?.username ?? '',
+        ].map(value => value.trim()).filter(Boolean), true);
+      }
+
+      let listsToQuery = this.getTaskListsToQuery(siteListsArr, {
+        includeAllWorkflows: todoScope,
+        includeArchiveCompanions: todoScope,
+      })
+        .filter((listName: string) =>
+          siteListsArr.some((l: any) =>
+            (l.name ?? '').toLowerCase() === listName.toLowerCase() ||
+            (l.displayName ?? '').toLowerCase() === listName.toLowerCase()
+          )
+        );
+
+      if (restrictToAssigneeBlockedLists) {
+        listsToQuery = listsToQuery.filter((listName: string) => {
+          // Procurement lists are already covered by the pending/newest-first pass;
+          // re-scanning them here would just page through their oldest rows again.
+          if (this.isTodoProcurementTaskList(listName)) return false;
+          const list = siteListsArr.find((l: any) =>
+            (l.name ?? '').toLowerCase() === listName.toLowerCase() ||
+            (l.displayName ?? '').toLowerCase() === listName.toLowerCase()
+          );
+          return !!list?.id && this.assigneeLookupBlockedListIds.has(list.id);
+        });
+      } else {
+        listsToQuery = listsToQuery.sort((a: string, b: string) => {
+          const rank = (name: string): number => {
+            const key = name.toLowerCase();
+            if (key === 'proctasksarchive') return -1;
+            if (this.isTodoProcurementTaskList(name)) return 0;
+            const list = siteListsArr.find((l: any) =>
+              (l.name ?? '').toLowerCase() === name.toLowerCase() ||
+              (l.displayName ?? '').toLowerCase() === name.toLowerCase()
+            );
+            if (!list?.id) return 3;
+            if (this.getListFilterFieldStatus(list.id, 'AssignedToLookupId') === true) return 1;
+            if (this.assigneeLookupBlockedListIds.has(list.id)) return 3;
+            return 2;
+          };
+          return rank(a) - rank(b);
+        });
+      }
+
+      if (listsToQuery.length === 0) {
+        return [];
+      }
+
+      const assigneeLookupId = !subordinateTasksOnly
+        ? await this.resolveSharePointUserLookupId(userEmail || userUpn, token)
+        : null;
+
+      const listResults: any[] = [];
+      const listConcurrency = todoAssigneeOnly || progressiveTodo
+        ? AppConstants.hrTasksTodoListConcurrency
+        : AppConstants.hrFilesTaskListConcurrency;
+
+      const fetchOneList = (listName: string) =>
+        this.fetchItemsForList(
+          listName,
+          siteListsArr,
+          siteId,
+          siteWebUrl,
+          token,
+          userEmail,
+          userUpn,
+          range,
+          subordinateTasksOnly,
+          fastLoadPageLimit,
+          assigneeLookupId,
+          todoAssigneeOnly,
+          todoAssigneeOnly || restrictToAssigneeBlockedLists,
+        );
+
+      if (todoAssigneeOnly && progressiveTodo) {
+        const merged: any[] = [];
+        let nextIndex = 0;
+        const workers = Array.from(
+          { length: Math.min(listConcurrency, listsToQuery.length) },
+          async () => {
+            while (true) {
+              const index = nextIndex++;
+              if (index >= listsToQuery.length) break;
+              const items = await fetchOneList(listsToQuery[index]);
+              merged.push(...items);
+              publishPartialTodo(merged);
+            }
+          },
+        );
+        await Promise.all(workers);
+        listResults.push(merged);
+      } else {
+        for (let i = 0; i < listsToQuery.length; i += listConcurrency) {
+          const batch = listsToQuery.slice(i, i + listConcurrency);
+          const batchResults = await Promise.all(batch.map(listName => fetchOneList(listName)));
+          listResults.push(...batchResults);
+          publishPartialTodo(listResults.flat());
+          if (i + listConcurrency < listsToQuery.length && !progressiveTodo) {
+            await this.sleep(AppComponent.HR_TASK_LIST_BATCH_GAP_MS);
+          }
+        }
+      }
+
+      const allItems = listResults.flat();
+
+      allItems.sort(
+        (a: { submittedDate: any; }, b: { submittedDate: any; }) =>
+          new Date(b.submittedDate || 0).getTime() - new Date(a.submittedDate || 0).getTime()
+      );
+
+      if (isCacheableRecentUserLoad) {
+        if (todoScope) {
+          if (allItems.length > 0) {
+            // Always merge  never replace an earlier pass with a later subset.
+            const existing = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
+            this.fileCrawlCache.set(
+              AppComponent.HR_USER_TASKS_CACHE_KEY,
+              existing.length > 0 ? this.mergeHrTasks(existing, allItems) : allItems,
+            );
+          }
+          // Do NOT set todoScopeCacheValid here  progressive To Do still has Proc*
+          // drain / blocked-list fallback after this pass. Callers mark complete.
+        } else if (allItems.length > 0) {
+          const existing = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
+          const procItems = existing.filter((item: any) =>
+            this.isTodoProcurementTaskList(String(item.listName ?? ''))
+          );
+          this.fileCrawlCache.set(
+            AppComponent.HR_USER_TASKS_CACHE_KEY,
+            this.mergeHrTasks(allItems, procItems),
+          );
+        }
+      }
+
+      if (updateCommentItems) {
+        if (isStaleCommentsLoad()) return allItems;
+        if (this.isFolderTaskCommentsViewActive()) {
+          this.isLoadingComments = false;
+          this.refreshView();
+          return allItems;
+        }
+        this.commentItems = allItems;
+        this.invalidateCommentFilters();
+        this.commentsMessage = '';
+        this.isLoadingComments = false;
+        this.userHrTasksLoaded = true;
+        this.refreshView();
+        if (kickoffOlderBackfill && range?.createdSinceIso && !isStaleCommentsLoad()) {
+          void this.loadOlderHrTasks(range.createdSinceIso);
+        }
+      }
+
+      if (updateTodo) {
+        if (!isStaleTodoLoad()) {
+          if (allItems.length > 0) {
+            const existing = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
+            const merged = existing.length > 0 ? this.mergeHrTasks(existing, allItems) : allItems;
+            this.todoService.setTasksFromSharePoint(this.getHrTasksForTodoList(merged), {
+              clearLoading: !progressiveTodo,
+            });
+          }
+          this.userHrTasksLoaded = true;
+        }
+      }
+
+      return allItems;
+    } catch (error: unknown) {
+      if (updateCommentItems) {
+        if (!isStaleCommentsLoad()) {
+          this.commentsMessage = `Failed to load HR Tasks: ${(error as any)?.message || 'Unknown error'}.`;
+          this.isLoadingComments = false;
+          this.refreshView();
+        }
+      }
+      if (updateTodo) {
+        this.todoService.setLoading(false);
+      }
+      return [];
+    }
+  }
+  // ============================================================
+  // FETCH ITEMS FOR ONE LIST (paginated)
+  // ============================================================
+  private buildHrTaskFilterQuery(
+    range: { createdSinceIso?: string; createdBeforeIso?: string } | null
+  ): string {
+    const filterParts: string[] = [];
+    if (range?.createdSinceIso) {
+      // Important: HR "recent" visibility should be based on *last change*
+      // (Approver actions, uploads, edits) not only SharePoint "createdDateTime".
+      // Otherwise tasks completed/modified after the cutoff are missed.
+      filterParts.push(`lastModifiedDateTime ge ${range.createdSinceIso}`);
+    }
+    if (range?.createdBeforeIso) {
+      filterParts.push(`lastModifiedDateTime lt ${range.createdBeforeIso}`);
+    }
+    return filterParts.length > 0
+      ? `&$filter=${encodeURIComponent(filterParts.join(' and '))}`
+      : '';
+  }
+
+  /** True when a SharePoint list item belongs to the clicked document-library folder. */
+  private doesSharePointTaskMatchFolder(item: any, folderName: string): boolean {
+    const folderTokens = this.getHrPersonalFolderMatchTokens(folderName);
+    if (folderTokens.length === 0) return false;
+
+    const f = item.fields ?? item;
+    const folderEFormId = this.extractTrailingFolderId(folderName);
+    if (folderEFormId) {
+      const taskTitle = String(f.Title ?? f.Name ?? '').trim();
+      const taskEFormId = this.extractTaskEFormListId(f);
+      const taskTitleId = this.extractTrailingFolderId(taskTitle);
+
+      if (taskEFormId === folderEFormId) return true;
+      if (taskTitleId === folderEFormId) return true;
+
+      // Child rows often reuse the parent folder Title but carry a different eFormListId.
+      if (taskEFormId && taskEFormId !== folderEFormId) return false;
+      if (taskTitleId && taskTitleId !== folderEFormId) return false;
+
+      // Legacy rows without numeric ids  exact folder title only.
+      if (normalizeName(taskTitle) === normalizeName(folderName)) return true;
+      return false;
+    }
+
+    const candidates = [
+      f.Title,
+      f.Name,
+      f.Folder,
+      f.FolderName,
+      f.DocumentFolder,
+      f.RelatedFolder,
+      f.FileLeafRef,
+      f.FileDirRef,
+      f.Path,
+      f.Requestor,
+      f.SubmittedBy,
+      f.Author,
+      f.CreatedBy,
+      f.AssignedTo,
+      f.Assigned,
+      f.AssignedToSuperior1,
+      f.AssignedToSuperior2,
+      f.EmployeeName,
+      f.Employee,
+      f.Email,
+      f.ADmail,
+      f.Comment,
+      f.Notes,
+      f.ResolvedSubmitter,
+    ];
+
+    for (const value of candidates) {
+      if (value == null || value === '') continue;
+      const text = this.stringifyTaskFieldValue(value);
+      const normalizedText = this.normalizeTaskMatchText(text);
+      if (folderTokens.some(token => normalizedText.includes(token))) return true;
+
+      const segments = text.split(/[/\\]/).map((s: string) => this.normalizeTaskMatchText(s));
+      if (segments.some(segment => folderTokens.some(token => segment.includes(token)))) return true;
+    }
+
+    return false;
+  }
+
+  private extractTrailingFolderId(folderName: string): string {
+    return String(folderName ?? '').trim().match(/(?:^|[-_\s])(\d+)\s*$/)?.[1] ?? '';
+  }
+
+  private extractTaskEFormListId(fields: Record<string, unknown>): string {
+    const field11 = String(fields['field_11'] ?? '').trim();
+    return String(
+      fields['eFormListId'] ?? fields['ListId'] ?? (/^\d+$/.test(field11) ? field11 : '')
+    ).trim();
+  }
+
+  /** Final guard for mapped Comments cards in All Files folder view. */
+  private doesMappedHrTaskMatchFolder(item: any, folderName: string): boolean {
+    const folderEFormId = this.extractTrailingFolderId(folderName);
+    if (!folderEFormId) return true;
+
+    const rawFields = item?.eFormDetails?.rawFields;
+    if (rawFields && typeof rawFields === 'object') {
+      return this.doesSharePointTaskMatchFolder({ fields: rawFields }, folderName);
+    }
+
+    const taskEFormId = String(item?.eFormDetails?.eFormListId ?? '').trim();
+    const taskTitle = String(item?.name ?? item?.eFormDetails?.type ?? '').trim();
+    const taskTitleId = this.extractTrailingFolderId(taskTitle);
+
+    if (taskEFormId === folderEFormId) return true;
+    if (taskTitleId === folderEFormId) return true;
+    if (taskEFormId && taskEFormId !== folderEFormId) return false;
+    if (taskTitleId && taskTitleId !== folderEFormId) return false;
+    return normalizeName(taskTitle) === normalizeName(folderName);
+  }
+
+  private filterTasksForSelectedAllFilesFolder(items: any[]): any[] {
+    if (!this.showAllFilesSection) return items;
+    const folderName = String(this.selectedFolderName ?? '').trim();
+    if (!folderName || !this.extractTrailingFolderId(folderName)) return items;
+    return items.filter(item => this.doesMappedHrTaskMatchFolder(item, folderName));
+  }
+
+  private stringifyTaskFieldValue(value: unknown): string {
+    if (value == null) return '';
+    if (Array.isArray(value)) return value.map(v => this.stringifyTaskFieldValue(v)).filter(Boolean).join(' ');
+    if (typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      return String(
+        record['LookupValue'] ??
+        record['Title'] ??
+        record['DisplayName'] ??
+        record['displayName'] ??
+        record['Email'] ??
+        record['email'] ??
+        record['UserPrincipalName'] ??
+        record['userPrincipalName'] ??
+        record['name'] ??
+        record['value'] ??
+        ''
+      );
+    }
+    return String(value);
+  }
+
+  private normalizeTaskMatchText(value: string): string {
+    return value.toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  /**
+   * Numeric employee IDs (e.g. "106") must match as whole tokens — never as a
+   * substring of "1106" / "5106" or random digits inside other fields.
+   */
+  private fieldMatchesFolderToken(normalizedText: string, token: string): boolean {
+    if (!normalizedText || !token) return false;
+    if (/^\d+$/.test(token)) {
+      if (normalizedText === token) return true;
+      if (normalizedText.startsWith(token) && normalizedText.length > token.length) {
+        const next = normalizedText.charAt(token.length);
+        if (next >= '0' && next <= '9') return false;
+        return true;
+      }
+      return false;
+    }
+    return normalizedText.includes(token);
+  }
+
+  /** Split a person/display string into discrete name parts (adrian ≠ adriana). */
+  private extractPersonNameParts(value: string): string[] {
+    return String(value ?? '')
+      .toLowerCase()
+      .split(/[\s,._@+\-]+/)
+      .map(part => this.normalizeTaskMatchText(part.trim()))
+      .filter(part => part.length >= 4 && !/^\d+$/.test(part));
+  }
+
+  private getHrPersonalFolderMatchTokens(folderName: string): string[] {
+    const raw = String(folderName ?? '').trim().toLowerCase();
+    if (!raw) return [];
+
+    const withoutLeadingNumber = raw.replace(/^\d+\s+/, '').trim();
+    const employeeId = raw.match(/^\d+/)?.[0] ?? '';
+    const emailMatch = raw.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i)?.[0] ?? '';
+    const emailLocal = emailMatch ? emailMatch.split('@')[0] : '';
+    const displayFromEmail = emailLocal.replace(/[._-]+/g, ' ');
+    const nameParts = this.extractPersonNameParts(withoutLeadingNumber);
+
+    return [...new Set(
+      [
+        withoutLeadingNumber,
+        ...nameParts,
+        emailMatch,
+        emailLocal,
+        displayFromEmail,
+        employeeId,
+      ]
+        .map(token => this.normalizeTaskMatchText(token))
+        .filter(token => token.length >= 4 || (/^\d+$/.test(token) && token.length >= 2))
+    )];
+  }
+
+  /**
+   * Person-folder match requires a real name/email hit.
+   * Employee id alone is not enough (caused Aidan rows under Alehandro via "106").
+   * Single first-name substrings are not enough either (adrian ≠ Adriana / Adrian-John).
+   */
+  private candidatesMatchFolderPerson(
+    candidates: unknown[],
+    folderName: string,
+  ): boolean {
+    const folderTokens = this.getHrPersonalFolderMatchTokens(folderName);
+    if (folderTokens.length === 0) return false;
+
+    const nameTokens = folderTokens.filter(token => !/^\d+$/.test(token));
+    const idTokens = folderTokens.filter(token => /^\d+$/.test(token));
+    const rawCandidates = candidates
+      .map(value => this.stringifyTaskFieldValue(value).trim())
+      .filter(Boolean);
+    if (rawCandidates.length === 0) return false;
+
+    const normalizedCandidates = rawCandidates
+      .map(value => this.normalizeTaskMatchText(value))
+      .filter(Boolean);
+    const candidateParts = new Set(rawCandidates.flatMap(value => this.extractPersonNameParts(value)));
+
+    const matchesLongToken = (token: string) =>
+      normalizedCandidates.some(text => this.fieldMatchesFolderToken(text, token));
+
+    if (nameTokens.length > 0) {
+      // Combined first+last / email-local (e.g. "adriankind") — precise enough alone.
+      if (nameTokens.some(token => token.length >= 8 && matchesLongToken(token))) {
+        return true;
+      }
+
+      // Individual parts must match as whole tokens so "adrian" does not hit "adriana".
+      const folderParts = this.extractPersonNameParts(
+        String(folderName ?? '').replace(/^\d+\s+/, ''),
+      );
+      if (folderParts.length === 0) return false;
+
+      const partHits = folderParts.filter(part => candidateParts.has(part));
+      const requiredHits = Math.min(2, folderParts.length);
+      return partHits.length >= requiredHits;
+    }
+
+    return idTokens.some(token =>
+      normalizedCandidates.some(text => this.fieldMatchesFolderToken(text, token)),
+    );
+  }
+
+  /** Match HR Files folder to submitter or current assignee (not superior fields). */
+  private getHrTaskPersonLookupIds(item: any): string[] {
+    const f = item?.fields ?? item ?? {};
+    const candidates = [
+      f.RequestorLookupId, f.AuthorLookupId, f.SubmittedByLookupId,
+      f.EmployeeLookupId, f.EmployeeNameLookupId, f.SubmitterLookupId,
+      f.AssignedToLookupId, f.AssignedLookupId,
+      f.Requestor?.LookupId, f.Author?.LookupId, f.SubmittedBy?.LookupId,
+      f.Employee?.LookupId, f.EmployeeName?.LookupId, f.Submitter?.LookupId,
+      f.AssignedTo?.LookupId, f.Assigned?.LookupId,
+      f.CreatedByLookupId, f.CreatedBy?.LookupId,
+      item?.createdBy?.user?.id,
+    ];
+    return [...new Set(
+      candidates
+        .map(value => String(value ?? '').trim())
+        .filter(Boolean),
+    )];
+  }
+
+  private doesHrTaskMatchPersonLookupId(item: any, lookupId: string | null): boolean {
+    if (!lookupId) return false;
+    return this.getHrTaskPersonLookupIds(item).includes(lookupId);
+  }
+
+  /**
+   * Seed/supplement membership for an HR person folder.
+   * When the row has person LookupIds, trust those over loose name text so
+   * "Adrian Kind" does not pick up Adriana / Adrian-John rows from newest-page scans.
+   */
+  private doesHrTaskBelongToFolderPerson(
+    item: any,
+    listName: string,
+    folderName: string,
+    personLookupId: string | null,
+    folderMatchHints: string[],
+  ): boolean {
+    const lookupIds = this.getHrTaskPersonLookupIds(item);
+    if (personLookupId && lookupIds.length > 0) {
+      return lookupIds.includes(personLookupId);
+    }
+    return (
+      this.doesHrTaskMatchPersonLookupId(item, personLookupId) ||
+      this.doesHrTaskMatchFolderPerson(item, listName, folderName) ||
+      this.doesHrTaskMatchFolderHints(item, listName, folderMatchHints)
+    );
+  }
+
+  /** Same rules after mapSharePointItemToHrTask (uses mapped + rawFields). */
+  private doesMappedHrTaskBelongToFolderPerson(
+    item: any,
+    folderName: string,
+    personLookupId: string | null,
+    folderMatchHints: string[],
+  ): boolean {
+    const raw = item?.eFormDetails?.rawFields;
+    const lookupSource = raw && typeof raw === 'object' ? { fields: raw } : item;
+    const lookupIds = this.getHrTaskPersonLookupIds(lookupSource);
+    if (personLookupId && lookupIds.length > 0) {
+      return lookupIds.includes(personLookupId);
+    }
+    return (
+      this.doesHrTaskMatchPersonLookupId(lookupSource, personLookupId) ||
+      this.isItemSubmittedByFolderPerson(item, folderName) ||
+      this.isItemSubmittedByFolderHints(item, folderMatchHints)
+    );
+  }
+
+  private doesHrTaskMatchFolderPerson(item: any, listName: string, folderName: string): boolean {
+    const f = item.fields ?? item;
+    const submitter = this.resolveTaskSubmitter(item, f, listName);
+    return this.candidatesMatchFolderPerson([
+      submitter,
+      f.Requestor,
+      f.SubmittedBy,
+      f.Submitter,
+      f.Author,
+      f.CreatedBy,
+      f.AssignedTo,
+      f.Assigned,
+      f.ResolvedSubmitter,
+      f.commentSubmittedBy,
+      f.EmployeeName,
+      f.Employee,
+      f.EmployeeEmail,
+      f.RequestorEmail,
+      item?.createdBy?.user?.displayName,
+      item?.createdBy?.user?.email,
+      item?.createdBy?.user?.userPrincipalName,
+    ], folderName);
+  }
+
+  /** Extra match path when folder email was resolved from AllDomainUsers (no email in folder name). */
+  private doesHrTaskMatchFolderHints(item: any, listName: string, hints: string[]): boolean {
+    if (!hints.length) return false;
+    const f = item.fields ?? item;
+    const submitter = this.resolveTaskSubmitter(item, f, listName);
+    return this.candidatesMatchFolderHints([
+      submitter,
+      f.Requestor,
+      f.SubmittedBy,
+      f.Submitter,
+      f.Author,
+      f.CreatedBy,
+      f.ResolvedSubmitter,
+      f.commentSubmittedBy,
+      f.EmployeeName,
+      f.Employee,
+      f.EmployeeEmail,
+      f.RequestorEmail,
+      item?.createdBy?.user?.displayName,
+      item?.createdBy?.user?.email,
+      item?.createdBy?.user?.userPrincipalName,
+    ], hints);
+  }
+
+  private isItemSubmittedByFolderHints(
+    item: { submittedBy?: string; eFormDetails?: Record<string, unknown> },
+    hints: string[],
+  ): boolean {
+    if (!hints.length) return false;
+    const rawFields = (item.eFormDetails?.['rawFields'] ?? {}) as Record<string, unknown>;
+    return this.candidatesMatchFolderHints([
+      item.submittedBy,
+      item.eFormDetails?.['submitter'],
+      item.eFormDetails?.['submittedBy'],
+      item.eFormDetails?.['commentSubmittedBy'],
+      rawFields['Requestor'],
+      rawFields['SubmittedBy'],
+      rawFields['Submitter'],
+      rawFields['Author'],
+      rawFields['CreatedBy'],
+      rawFields['commentSubmittedBy'],
+      rawFields['EmployeeName'],
+      rawFields['Employee'],
+      rawFields['EmployeeEmail'],
+    ], hints);
+  }
+
+  private candidatesMatchFolderHints(candidates: unknown[], hints: string[]): boolean {
+    const normalizedHints = hints
+      .map(hint => this.normalizeTaskMatchText(hint))
+      .filter(hint => hint.length >= 3);
+    if (normalizedHints.length === 0) return false;
+
+    const normalizedCandidates = candidates
+      .map(value => this.normalizeTaskMatchText(this.stringifyTaskFieldValue(value)))
+      .filter(Boolean);
+    if (normalizedCandidates.length === 0) return false;
+
+    return normalizedHints.some(hint =>
+      normalizedCandidates.some(text => this.fieldMatchesFolderToken(text, hint))
+    );
+  }
+
+  /** Loads HR tasks from SharePoint lists that belong to the person represented by folderName. */
+  private async loadHrPersonalTasksForFolder(
+    folderName: string,
+    loadSeq: number,
+    options: { softRefresh?: boolean } = {},
+  ): Promise<void> {
+    const softRefresh = !!options.softRefresh;
+    const folderCacheKey = this.hrFolderTaskCacheKey(folderName);
+    const mergeWithCachedFolderTasks = (incoming: any[]): any[] => {
+      if (!softRefresh) return incoming;
+      const cached = this.fileCrawlCache.getStale<any[]>(folderCacheKey);
+      if (!Array.isArray(cached) || cached.length === 0) return incoming;
+      return this.mergeHrTasks(cached, incoming);
+    };
+    try {
+      this.folderTaskGraphInFlight += 1;
+      // Do not wait for To Do — people with 800+ tasks were blocked for minutes
+      // before Comments even started. Folder click already cancelled To Do Graph.
+      const token = await this.getSharePointToken();
+      if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+
+      await this.ensureFormConfigLoaded();
+      if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+
+      await this.ensureSiteMetadata(
+        sharePointConfig.siteHostName,
+        sharePointConfig.sitePath,
+        token,
+      );
+
+      const listsToQuery = this.getTaskListsToQuery(this.cachedSiteLists).filter(listName =>
+        this.cachedSiteLists.some((l: any) =>
+          (l.name ?? '').toLowerCase() === listName.toLowerCase() ||
+          (l.displayName ?? '').toLowerCase() === listName.toLowerCase()
+        )
+      );
+      if (!softRefresh) {
+        this.commentsMessage = 'Loading tasks...';
+        this.refreshView();
+      }
+
+      // Paint progressively as lists return hits; finish when seed completes.
+      const fastMapped = await this.collectHrPersonalTasksFromLists(
+        listsToQuery,
+        folderName,
+        token,
+        loadSeq,
+        AppConstants.hrFilesTaskListPageLimit,
+        (partial) => {
+          if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+          if (softRefresh && partial.length === 0) return;
+          const items = this.applyAllFilesFolderSubmitter(mergeWithCachedFolderTasks(partial));
+          // Persist partial hits immediately so leaving mid-load still returns instant.
+          if (items.length > 0) {
+            this.fileCrawlCache.set(
+              folderCacheKey,
+              this.sortCommentItemsByDateDesc(items),
+            );
+          }
+          this.publishFolderTaskProgress(items, {
+            done: false,
+            emptyMessage: 'No tasks found.',
+          });
+        },
+        {
+          softRefresh,
+          onSeedComplete: (seedItems) => {
+            if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+            // Soft refresh: keep cached UI if this pass found nothing (transient miss).
+            if (softRefresh && seedItems.length === 0) return;
+            const items = this.applyAllFilesFolderSubmitter(mergeWithCachedFolderTasks(seedItems));
+            this.fileCrawlCache.set(
+              folderCacheKey,
+              this.sortCommentItemsByDateDesc(items),
+            );
+            this.lastHrFilesCommentsFolder = folderName;
+            this.publishFolderTaskProgress(items, {
+              done: true,
+              emptyMessage: 'No tasks found.',
+            });
+          },
+        },
+      );
+      if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+
+      if (softRefresh && fastMapped.length === 0) return;
+
+      const finalItems = this.applyAllFilesFolderSubmitter(mergeWithCachedFolderTasks(fastMapped));
+      this.fileCrawlCache.set(
+        folderCacheKey,
+        this.sortCommentItemsByDateDesc(finalItems),
+      );
+      this.lastHrFilesCommentsFolder = folderName;
+      this.publishFolderTaskProgress(finalItems, {
+        done: true,
+        emptyMessage: 'No tasks found.',
+      });
+    } catch (err: any) {
+      if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+      if (softRefresh) return;
+      console.error(`[HR Files] Failed loading tasks for "${folderName}"`, err);
+      this.isLoadingMoreComments = false;
+      this.commentItems = [];
+      this.invalidateCommentFilters();
+      this.commentsMessage = 'No tasks found.';
+      this.isLoadingComments = false;
+      this.refreshView();
+    } finally {
+      this.folderTaskGraphInFlight = Math.max(0, this.folderTaskGraphInFlight - 1);
+      if (!this.isStaleAllFilesFolderTaskLoad(loadSeq) && (this.isLoadingComments || this.isLoadingMoreComments)) {
+        this.isLoadingComments = false;
+        this.isLoadingMoreComments = false;
+        this.refreshView();
+      }
+    }
+  }
+
+  private mapHrFolderRawItems(
+    rawItems: any[],
+    listName: string,
+    listObj: any,
+    folderName: string,
+    personLookupId: string | null,
+    folderMatchHints: string[],
+    userEmail: string,
+    userUpn: string,
+  ): any[] {
+    return rawItems
+      .filter((item: any) => !this.isSharePointCommentEntry(item))
+      .filter((item: any) =>
+        this.doesHrTaskBelongToFolderPerson(
+          item,
+          listName,
+          folderName,
+          personLookupId,
+          folderMatchHints,
+        )
+      )
+      .map((item: any) => this.mapSharePointItemToHrTask(
+        item, listName, listObj, this.cachedSiteWebUrl, userEmail, userUpn, true,
+      ))
+      .filter((item): item is NonNullable<typeof item> => item !== null)
+      .filter((item: any) => !this.isCommentTypeItem(item))
+      .filter((item: any) =>
+        this.doesMappedHrTaskBelongToFolderPerson(
+          item,
+          folderName,
+          personLookupId,
+          folderMatchHints,
+        )
+      );
+  }
+
+  private async collectHrPersonalTasksFromLists(
+    listsToQuery: string[],
+    folderName: string,
+    token: string,
+    loadSeq: number,
+    maxPages: number,
+    onPartial?: (mapped: any[]) => void,
+    options?: {
+      /** Called once after all lists' seed (submitter) tasks are collected  use for fast first paint. */
+      onSeedComplete?: (mapped: any[]) => void;
+      /** Newest LookupId pages only — merge into the existing 800+ cache instead of re-reading it. */
+      softRefresh?: boolean;
+    },
+  ): Promise<any[]> {
+    const userEmail = (this.currentUser?.email ?? '').toLowerCase();
+    const userUpn = (this.currentUser?.userPrincipalName ?? '').toLowerCase();
+    const concurrency = AppConstants.hrFilesTaskListConcurrency;
+    const softRefresh = options?.softRefresh === true;
+    const folderEmail = await this.resolveHrFolderPersonEmail(folderName);
+    const personLookupId = folderEmail
+      ? await this.resolveSharePointUserLookupId(folderEmail, token)
+      : null;
+    const folderMatchHints = folderEmail
+      ? [folderEmail, folderEmail.split('@')[0] ?? '']
+      : [];
+    console.log(
+      `[HR Files] Person resolve "${folderName}" -> email=${folderEmail || '(none)'} lookupId=${personLookupId || '(none)'} lists=${listsToQuery.length} softRefresh=${softRefresh}`,
+    );
+
+    // listName -> mapped tasks belonging to / involving this person
+    const mappedByList = new Map<string, any[]>();
+    // listName -> list metadata for later related-eForm queries
+    const listObjByName = new Map<string, any>();
+
+    const publishListHits = (listName: string, mapped: any[]): void => {
+      if (mapped.length === 0) return;
+      const existing = mappedByList.get(listName) ?? [];
+      mappedByList.set(listName, this.mergeHrTasks(existing, mapped));
+      onPartial?.(this.flattenHrMappedByList(mappedByList));
+    };
+
+    for (let i = 0; i < listsToQuery.length; i += concurrency) {
+      if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) break;
+      const batch = listsToQuery.slice(i, i + concurrency);
+      await Promise.all(batch.map(async listName => {
+        const listObj = this.cachedSiteLists.find((l: any) =>
+          (l.name ?? '').toLowerCase() === listName.toLowerCase() ||
+          (l.displayName ?? '').toLowerCase() === listName.toLowerCase()
+        );
+        if (!listObj?.id) return;
+        listObjByName.set(listName, listObj);
+
+        const mapRaw = (raw: any[]) => this.mapHrFolderRawItems(
+          raw, listName, listObj, folderName, personLookupId, folderMatchHints, userEmail, userUpn,
+        );
+
+        let rawItems: any[] | null = null;
+        const isSourceEForm = this.isHrSourceEFormList(listName);
+        // Soft refresh: LookupId newest pages already catch new + updated rows.
+        // Skip the unfiltered company-wide scan so idle polls do not double Graph traffic.
+        const supplementPages = softRefresh
+          ? AppConstants.hrFilesSoftRefreshSupplementPages
+          : (isSourceEForm
+            ? AppConstants.hrFilesSourceEFormLookupSupplementPages
+            : AppConstants.hrFilesLookupSupplementPages);
+        const lookupMaxPages = softRefresh
+          ? AppConstants.hrFilesSoftRefreshLookupPages
+          : AppConstants.hrFilesPersonLookupMaxPages;
+
+        const supplementPromise = supplementPages <= 0
+          ? Promise.resolve([] as any[])
+          : this.fetchSharePointListPages(
+              this.cachedSiteId!,
+              listObj.id,
+              token,
+              AppConstants.hrTasksFastLoadPageSize,
+              supplementPages,
+              true,
+            );
+
+        const lookupPromise = personLookupId
+          ? this.fetchSharePointListItemsForPersonLookup(
+              this.cachedSiteId!,
+              listObj.id,
+              token,
+              personLookupId,
+              {
+                maxPages: lookupMaxPages,
+                onPage: (pageItems) => {
+                  if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+                  publishListHits(listName, mapRaw(pageItems));
+                },
+              },
+            )
+          : Promise.resolve(null);
+
+        const assigneePromise = personLookupId
+          ? this.fetchSharePointListItemsForAssigneeLookup(
+              this.cachedSiteId!,
+              listObj.id,
+              token,
+              personLookupId,
+              {
+                maxPages: lookupMaxPages,
+                onPage: (pageItems) => {
+                  if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+                  publishListHits(listName, mapRaw(pageItems));
+                },
+              },
+            )
+          : Promise.resolve(null);
+
+        const [lookupItems, assigneeItems, supplement] = await Promise.all([
+          lookupPromise,
+          assigneePromise,
+          supplementPromise,
+        ]);
+        if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+
+        const mergeRaw = (base: any[] | null, extra: any[] | null): any[] | null => {
+          if (!extra?.length) return base;
+          if (!base?.length) return extra;
+          const byId = new Map<string, any>();
+          for (const item of base) byId.set(String(item.id), item);
+          for (const item of extra) byId.set(String(item.id), item);
+          return [...byId.values()];
+        };
+
+        rawItems = mergeRaw(lookupItems, assigneeItems);
+
+        if (supplement.length > 0) {
+          publishListHits(listName, mapRaw(supplement));
+          rawItems = mergeRaw(rawItems, supplement);
+        }
+
+        if (rawItems == null || rawItems.length === 0) {
+          // LookupId unavailable or empty — capped newest-first scan + name match.
+          const scanPages = isSourceEForm
+            ? AppConstants.hrFilesSourceEFormScanPages
+            : maxPages;
+          if (scanPages <= 0) {
+            rawItems = [];
+          } else {
+            rawItems = await this.fetchSharePointListPages(
+              this.cachedSiteId!,
+              listObj.id,
+              token,
+              AppConstants.hrTasksFastLoadPageSize,
+              scanPages,
+              true,
+            );
+          }
+        }
+
+        const mapped = mapRaw(rawItems);
+        if (mapped.length > 0) {
+          publishListHits(listName, mapped);
+        }
+      }));
+
+      if (onPartial && mappedByList.size > 0) {
+        onPartial(this.flattenHrMappedByList(mappedByList));
+      }
+      if (i + concurrency < listsToQuery.length) {
+        await this.sleep(AppComponent.HR_TASK_LIST_BATCH_GAP_MS);
+      }
+    }
+
+    const seedItems = this.flattenHrMappedByList(mappedByList);
+    console.log(
+      `[HR Files] Seed for "${folderName}" -> ${seedItems.length} task(s) across ${mappedByList.size} list(s)`,
+    );
+    options?.onSeedComplete?.(seedItems);
+    if (softRefresh) {
+      return seedItems;
+    }
+
+    // Second pass: workflow siblings that share the same eForm ID AND the same task name.
+    const seedTasksForSiblings = this.preferCurrentUserSeedTasks(seedItems);
+    const eFormKeyToTaskNames = this.collectEFormKeyToTaskNames(seedTasksForSiblings);
+    if (eFormKeyToTaskNames.size > 0 && !this.isStaleAllFilesFolderTaskLoad(loadSeq)) {
+      const listsWithHits = [...mappedByList.keys()];
+      const backfillPages = AppConstants.hrFilesTaskListBackfillPageLimit;
+      for (let i = 0; i < listsWithHits.length; i += concurrency) {
+        if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) break;
+        const batch = listsWithHits.slice(i, i + concurrency);
+        await Promise.all(batch.map(async listName => {
+          const listObj = listObjByName.get(listName);
+          if (!listObj?.id) return;
+
+          const eFormKeys = new Set(eFormKeyToTaskNames.keys());
+          const relatedRaw = await this.fetchSharePointListItemsForEFormKeys(
+            this.cachedSiteId!,
+            listObj.id,
+            token,
+            eFormKeys,
+          );
+          // Optional fallback scan  off by default for speed (see hrFilesTaskListBackfillPageLimit).
+          const scannedRaw = backfillPages > 0
+            ? await this.fetchSharePointListPages(
+                this.cachedSiteId!,
+                listObj.id,
+                token,
+                AppConstants.hrTasksFastLoadPageSize,
+                backfillPages,
+                false,
+              )
+            : [];
+          const relatedCombined = [...relatedRaw, ...scannedRaw].filter(item =>
+            this.doesRawItemMatchSeedEFormIdAndTaskName(item, eFormKeyToTaskNames)
+          );
+          if (relatedCombined.length === 0) return;
+
+          const relatedMapped = relatedCombined
+            .filter((item: any) => !this.isSharePointCommentEntry(item))
+            .map((item: any) => this.mapSharePointItemToHrTask(item, listName, listObj, this.cachedSiteWebUrl, userEmail, userUpn, true))
+            .filter((item): item is NonNullable<typeof item> => item !== null)
+            .filter((item: any) => !this.isCommentTypeItem(item))
+            .filter((item: any) =>
+              this.doesMappedItemMatchSeedEFormIdAndTaskName(item, eFormKeyToTaskNames)
+            );
+
+          if (relatedMapped.length === 0) return;
+          const existing = mappedByList.get(listName) ?? [];
+          mappedByList.set(listName, this.mergeHrTasks(existing, relatedMapped));
+        }));
+
+        if (onPartial) {
+          onPartial(this.flattenHrMappedByList(mappedByList));
+        }
+        if (i + concurrency < listsWithHits.length) {
+          await this.sleep(AppComponent.HR_TASK_LIST_BATCH_GAP_MS);
+        }
+      }
+    }
+
+    return this.flattenHrMappedByList(mappedByList);
+  }
+
+  private flattenHrMappedByList(mappedByList: Map<string, any[]>): any[] {
+    return [...mappedByList.values()]
+      .flat()
+      .sort((a: any, b: any) =>
+        new Date(b.submittedDate || 0).getTime() - new Date(a.submittedDate || 0).getTime(),
+      );
+  }
+
+  private collectEFormKeysFromMappedTasks(items: any[], folderName?: string): Set<string> {
+    const folderEFormId = folderName ? this.extractTrailingFolderId(folderName) : '';
+    const keys = new Set<string>();
+    for (const item of items) {
+      for (const key of this.extractEFormKeysFromMappedItem(item)) {
+        if (folderEFormId && key !== folderEFormId) continue;
+        keys.add(key);
+      }
+    }
+    if (folderEFormId) keys.add(folderEFormId);
+    return keys;
+  }
+
+  /**
+   Prefer the logged-in user's own submissions as Pass-2 seeds.
+   If none are present (e.g. browsing another person's folder), fall back to all seed tasks.
+   */
+  private preferCurrentUserSeedTasks(seedTasks: any[]): any[] {
+    const own = seedTasks.filter(task => this.isMappedTaskSubmittedByCurrentUser(task));
+    return own.length > 0 ? own : seedTasks;
+  }
+
+  private isMappedTaskSubmittedByCurrentUser(item: any): boolean {
+    const email = (this.currentUser?.email ?? '').toLowerCase();
+    const upn = (this.currentUser?.userPrincipalName ?? '').toLowerCase();
+    const display = (this.currentUser?.username ?? '').toLowerCase();
+    const tokens = [email, upn, display].map(t => this.normalizeTaskMatchText(t)).filter(t => t.length >= 3);
+    if (tokens.length === 0) return false;
+
+    const submitterCandidates = [
+      item?.submittedBy,
+      item?.eFormDetails?.submitter,
+      item?.eFormDetails?.submittedBy,
+      item?.eFormDetails?.commentSubmittedBy,
+    ];
+    return submitterCandidates.some(value => {
+      const normalized = this.normalizeTaskMatchText(this.stringifyTaskFieldValue(value));
+      return !!normalized && tokens.some(token => normalized.includes(token) || token.includes(normalized));
+    });
+  }
+
+  /** Map each eForm id ? normalized task/form names from the seed submissions. */
+  private collectEFormKeyToTaskNames(seedTasks: any[]): Map<string, Set<string>> {
+    const map = new Map<string, Set<string>>();
+    for (const task of seedTasks) {
+      const chainName = this.getMappedHrTaskChainName(task);
+      if (!chainName) continue;
+      for (const key of this.extractEFormKeysFromMappedItem(task)) {
+        let names = map.get(key);
+        if (!names) {
+          names = new Set<string>();
+          map.set(key, names);
+        }
+        names.add(chainName);
+      }
+    }
+    return map;
+  }
+
+  /**
+   Normalize titles so "Please Approve Missing Punch eForm for - X" and
+   "Missing Punch Finalised" resolve to the same chain name.
+   */
+  private normalizeHrTaskChainName(value: string): string {
+    return String(value ?? '')
+      .toLowerCase()
+      .replace(/please\s+approve\s+/g, ' ')
+      .replace(/\bfinalis(?:ed|e|ation)?\b/g, ' ')
+      .replace(/\beforms?\b/g, ' ')
+      .replace(/\bfor\b\s*-?\s*.*$/g, ' ')
+      .replace(/\bid\s*[=:]\s*\d+\b/g, ' ')
+      .replace(/[^a-z0-9]+/g, '')
+      .trim();
+  }
+
+  private getMappedHrTaskChainName(item: any): string {
+    const details = item?.eFormDetails ?? {};
+    const rawFields = (details.rawFields ?? {}) as Record<string, unknown>;
+    const candidates = [
+      rawFields['Title'],
+      item?.name,
+      details.type,
+      details.listName,
+    ];
+    for (const candidate of candidates) {
+      const normalized = this.normalizeHrTaskChainName(String(candidate ?? ''));
+      if (normalized.length >= 4) return normalized;
+    }
+    return this.normalizeHrTaskChainName(String(item?.name ?? details.type ?? ''));
+  }
+
+  private getRawHrTaskChainName(item: any): string {
+    const f = item?.fields ?? item ?? {};
+    return this.normalizeHrTaskChainName(String(f.Title ?? f.ContentType ?? ''));
+  }
+
+  private hrTaskChainNamesMatch(seedName: string, candidateName: string): boolean {
+    if (!seedName || !candidateName) return false;
+    if (seedName === candidateName) return true;
+    return seedName.includes(candidateName) || candidateName.includes(seedName);
+  }
+
+  /** Related raw item must share an eForm id AND the same task/form name as that seed. */
+  private doesRawItemMatchSeedEFormIdAndTaskName(
+    item: any,
+    eFormKeyToTaskNames: Map<string, Set<string>>,
+  ): boolean {
+    if (!eFormKeyToTaskNames.size) return false;
+    const chainName = this.getRawHrTaskChainName(item);
+    if (!chainName) return false;
+
+    for (const [key, names] of eFormKeyToTaskNames) {
+      if (!this.doesRawItemReferenceEFormKeys(item, new Set([key]))) continue;
+      if ([...names].some(seedName => this.hrTaskChainNamesMatch(seedName, chainName))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private doesMappedItemMatchSeedEFormIdAndTaskName(
+    item: any,
+    eFormKeyToTaskNames: Map<string, Set<string>>,
+  ): boolean {
+    if (!eFormKeyToTaskNames.size) return false;
+    const chainName = this.getMappedHrTaskChainName(item);
+    if (!chainName) return false;
+
+    for (const key of this.extractEFormKeysFromMappedItem(item)) {
+      const names = eFormKeyToTaskNames.get(key);
+      if (!names?.size) continue;
+      if ([...names].some(seedName => this.hrTaskChainNamesMatch(seedName, chainName))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** eFormListId field values + IDs embedded in comment text (ID=9699 / ID: 9699). */
+  private extractEFormKeysFromMappedItem(item: any): string[] {
+    const keys = new Set<string>();
+    const details = item?.eFormDetails ?? {};
+    const fieldId = String(details.eFormListId ?? '').trim();
+    if (fieldId && fieldId.toLowerCase() !== 'unknown eform') {
+      keys.add(fieldId);
+    }
+
+    // SharePoint task item id is often the same ID shown in "ID=9699" footers.
+    const itemId = String(item?.id ?? '').trim();
+    if (/^\d+$/.test(itemId)) {
+      keys.add(itemId);
+    }
+
+    const text = [
+      item?.description,
+      details.comment,
+      details.commentHtml,
+      details.body,
+      item?.name,
+    ].map(v => String(v ?? '')).join(' ');
+
+    for (const match of text.matchAll(/\bID\s*[=:]\s*(\d+)\b/gi)) {
+      if (match[1]) keys.add(match[1]);
+    }
+    return [...keys];
+  }
+
+  private getListFilterFieldStatus(listId: string, field: string): boolean | undefined {
+    this.ensureListFilterStatusHydrated();
+    return this.listFilterFieldStatus.get(listId)?.get(field);
+  }
+
+  private markListFilterField(listId: string, field: string, works: boolean, persist = true): void {
+    this.ensureListFilterStatusHydrated();
+    let byField = this.listFilterFieldStatus.get(listId);
+    if (!byField) {
+      byField = new Map();
+      this.listFilterFieldStatus.set(listId, byField);
+    }
+    byField.set(field, works);
+    if (field === 'AssignedToLookupId' && works === false) {
+      this.assigneeLookupBlockedListIds.add(listId);
+    }
+    if (persist) this.persistListFilterStatus();
+  }
+
+  private listFilterStatusLsKey(): string {
+    return `${AppConstants.listFilterFieldLsPrefix}${sharePointConfig.siteId || 'default'}`;
+  }
+
+  private ensureListFilterStatusHydrated(): void {
+    if (this.listFilterStatusHydrated) return;
+    this.listFilterStatusHydrated = true;
+    try {
+      const raw = localStorage.getItem(this.listFilterStatusLsKey());
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as { fields?: Record<string, Record<string, boolean>> };
+      for (const [listId, byField] of Object.entries(parsed.fields ?? {})) {
+        for (const [field, ok] of Object.entries(byField)) {
+          this.markListFilterField(listId, field, ok === true, false);
+        }
+      }
+    } catch {
+      // Corrupt cache  ignore and rebuild from live probes / column metadata.
+    }
+  }
+
+  private persistListFilterStatus(): void {
+    try {
+      const fields: Record<string, Record<string, boolean>> = {};
+      for (const [listId, byField] of this.listFilterFieldStatus.entries()) {
+        fields[listId] = Object.fromEntries(byField.entries());
+      }
+      localStorage.setItem(this.listFilterStatusLsKey(), JSON.stringify({ fields }));
+    } catch {
+      // Quota / private mode  in-memory map still prevents repeat probes this session.
+    }
+  }
+
+  /** Known-good fields first, then untried; skip fields that already returned 400 for this list. */
+  private orderFilterableFields(listId: string, candidates: string[]): string[] {
+    const good: string[] = [];
+    const unknown: string[] = [];
+    for (const field of candidates) {
+      const status = this.getListFilterFieldStatus(listId, field);
+      if (status === false) continue;
+      if (status === true) good.push(field);
+      else unknown.push(field);
+    }
+    return [...good, ...unknown];
+  }
+
+  private async getListPersonColumns(
+    siteId: string,
+    listId: string,
+    token: string,
+  ): Promise<Array<{ name: string; allowMultiple: boolean }>> {
+    const cached = this.listPersonColumnsCache.get(listId);
+    if (cached) return cached;
+
+    try {
+      const resp: any = await firstValueFrom(
+        graphGet(
+          this.http,
+          `/sites/${siteId}/lists/${listId}/columns?$select=name,displayName,personOrGroup`,
+          token,
+        ),
+      );
+      const cols = (resp?.value ?? [])
+        .filter((col: any) => !!col?.personOrGroup && !!col?.name)
+        .map((col: any) => ({
+          name: String(col.name),
+          allowMultiple: col.personOrGroup.allowMultipleSelection === true,
+        }));
+      this.listPersonColumnsCache.set(listId, cols);
+      return cols;
+    } catch {
+      this.listPersonColumnsCache.set(listId, []);
+      return [];
+    }
+  }
+
+  private buildPersonLookupFilterExpr(
+    lookupField: string,
+    lookupId: string,
+    allowMultiple: boolean,
+  ): string {
+    const idLiteral = /^\d+$/.test(lookupId)
+      ? lookupId
+      : `'${String(lookupId).replace(/'/g, "''")}'`;
+    if (allowMultiple) {
+      return `fields/${lookupField}/any(a:a eq ${idLiteral})`;
+    }
+    return `fields/${lookupField} eq ${idLiteral}`;
+  }
+
+  /**
+   * Resolve AssignedTo (or Assigned / field_7) filter expression from column metadata.
+   * Returns null when the list has no assignee person column  avoids a Graph 400 probe.
+   */
+  private async resolveAssigneeLookupFilterExpr(
+    siteId: string,
+    listId: string,
+    token: string,
+    lookupId: string,
+  ): Promise<string | null> {
+    if (this.getListFilterFieldStatus(listId, 'AssignedToLookupId') === false) {
+      return null;
+    }
+
+    const personCols = await this.getListPersonColumns(siteId, listId, token);
+    const candidates = ['AssignedTo', 'Assigned', 'field_7'];
+    const match = candidates
+      .map(name => personCols.find(col => col.name.toLowerCase() === name.toLowerCase()))
+      .find((col): col is { name: string; allowMultiple: boolean } => !!col);
+
+    if (!match) {
+      this.markListFilterField(listId, 'AssignedToLookupId', false);
+      return null;
+    }
+
+    return this.buildPersonLookupFilterExpr(`${match.name}LookupId`, lookupId, match.allowMultiple);
+  }
+
+  /** Fetch workflow siblings that share an eForm id (manager finalised steps, etc.). */
+  private async fetchSharePointListItemsForEFormKeys(
+    siteId: string,
+    listId: string,
+    token: string,
+    eFormKeys: Set<string>,
+  ): Promise<any[]> {
+    const prefer = { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' };
+    const byId = new Map<string, any>();
+    const fieldNames = this.orderFilterableFields(listId, ['eFormListId', 'ListId', 'field_11']);
+    if (fieldNames.length === 0) return [];
+
+    for (const key of eFormKeys) {
+      const safeKey = key.replace(/'/g, "''");
+      for (const field of fieldNames) {
+        if (this.getListFilterFieldStatus(listId, field) === false) continue;
+        const filter = encodeURIComponent(`fields/${field} eq '${safeKey}'`);
+        let nextPath: string | null =
+          `/sites/${siteId}/lists/${listId}/items?$expand=fields&$top=100&$filter=${filter}`;
+        let pages = 0;
+        try {
+          while (nextPath && pages < 20) {
+            const page: any = await graphGetWithRetry(
+              this.http,
+              nextPath,
+              token,
+              AppConstants.graphFileListingTimeoutMs,
+              prefer,
+            );
+            this.markListFilterField(listId, field, true);
+            for (const item of page?.value ?? []) {
+              if (item?.id != null) byId.set(String(item.id), item);
+            }
+            nextPath = toGraphPath(page?.['@odata.nextLink']);
+            pages += 1;
+          }
+        } catch (err: any) {
+          const status = err?.status ?? err?.error?.status;
+          // 400 = not filterable; timeout/other = don't keep retrying this field forever.
+          if (status === 400 || status == null) {
+            this.markListFilterField(listId, field, false);
+          }
+          // Field not filterable on this list  try next field/key.
+        }
+      }
+    }
+
+    return [...byId.values()];
+  }
+
+  /** True when a raw SharePoint item references one of the known eForm IDs (field or comment text). */
+  private doesRawItemReferenceEFormKeys(item: any, eFormKeys: Set<string>): boolean {
+    if (!eFormKeys.size) return false;
+    const f = item?.fields ?? item ?? {};
+    const fieldVals = [f.eFormListId, f.ListId, f.field_11]
+      .map(v => String(v ?? '').trim())
+      .filter(Boolean);
+    if (fieldVals.some(v => eFormKeys.has(v))) return true;
+
+    const text = [f.Title, f.Comment, f.Notes, f.field_10]
+      .map(v => String(v ?? ''))
+      .join(' ');
+    for (const key of eFormKeys) {
+      if (new RegExp(`\\bID\\s*[=:]\\s*${key}\\b`, 'i').test(text)) return true;
+    }
+    return false;
+  }
+
+  private getEmailFromHrFolderName(folderName: string): string {
+    return String(folderName ?? '').match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i)?.[0]?.toLowerCase() ?? '';
+  }
+
+  /**
+   * Email for HR Files LookupId filtering: prefer the address embedded in the
+   * folder name, otherwise resolve PinNo / display name via AllDomainUsers.
+   */
+  private async resolveHrFolderPersonEmail(folderName: string): Promise<string> {
+    const fromFolder = this.getEmailFromHrFolderName(folderName);
+    if (fromFolder) return fromFolder;
+
+    try {
+      const user = await this.subordinaryTaskService.findUserForHrFolder(folderName);
+      const email = String(user?.ADmail ?? '').trim().toLowerCase();
+      if (email.includes('@')) return email;
+    } catch {
+      // Best-effort  caller falls back to page scanning.
+    }
+    return '';
+  }
+
+  /** Resolve SharePoint site-local user Id (LookupId) from email via User Information List. */
+  private async resolveSharePointUserLookupId(email: string, token: string): Promise<string | null> {
+    const emailLower = email.trim().toLowerCase();
+    if (!emailLower || !this.cachedSiteId) return null;
+    const cached = this.sharePointUserLookupIdByEmail.get(emailLower);
+    if (cached) return cached;
+
+    try {
+      if (!this.cachedUserInformationListId) {
+        const fromCache = this.cachedSiteLists.find((list: any) => {
+          const name = String(list.name ?? '').toLowerCase();
+          const display = String(list.displayName ?? '').toLowerCase();
+          return name === 'users' || display === 'user information list' || name === 'user information list';
+        });
+        if (fromCache?.id) {
+          this.cachedUserInformationListId = fromCache.id;
+        } else {
+          const listsResp: any = await graphGetWithRetry(
+            this.http,
+            `/sites/${this.cachedSiteId}/lists?$select=id,name,displayName,system`,
+            token,
+            AppConstants.graphFileListingTimeoutMs,
+          );
+          const userInfoList = (listsResp?.value ?? []).find((list: any) => {
+            const name = String(list.name ?? '').toLowerCase();
+            const display = String(list.displayName ?? '').toLowerCase();
+            return name === 'users' || display === 'user information list' || name === 'user information list';
+          });
+          this.cachedUserInformationListId = userInfoList?.id ?? null;
+        }
+      }
+      if (!this.cachedUserInformationListId) return null;
+
+      const userInfoListId = this.cachedUserInformationListId;
+      const emailFilterOk = this.getListFilterFieldStatus(userInfoListId, 'EMail');
+      if (emailFilterOk !== false) {
+        const prefer = { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' };
+        const filter = encodeURIComponent(`fields/EMail eq '${emailLower.replace(/'/g, "''")}'`);
+        try {
+          const filtered: any = await graphGetWithRetry(
+            this.http,
+            `/sites/${this.cachedSiteId}/lists/${userInfoListId}/items?$expand=fields($select=Id,EMail,Title)&$filter=${filter}&$top=5`,
+            token,
+            AppConstants.graphFileListingTimeoutMs,
+            prefer,
+          );
+          this.markListFilterField(userInfoListId, 'EMail', true);
+          const hit = filtered?.value?.[0];
+          // Graph item id is the site-local LookupId used by person columns.
+          const id = String(hit?.id ?? hit?.fields?.Id ?? '').trim();
+          if (id) {
+            this.sharePointUserLookupIdByEmail.set(emailLower, id);
+            return id;
+          }
+        } catch (err: any) {
+          const status = err?.status ?? err?.error?.status;
+          if (status === 400) {
+            this.markListFilterField(userInfoListId, 'EMail', false);
+          }
+          // Fall through to a short scan of the User Information List.
+        }
+      }
+
+      let nextPath: string | null =
+        `/sites/${this.cachedSiteId}/lists/${this.cachedUserInformationListId}/items?$expand=fields($select=Id,EMail,Title)&$top=200`;
+      let pages = 0;
+      while (nextPath && pages < 20) {
+        const page: any = await graphGetWithRetry(
+          this.http, nextPath, token, AppConstants.graphFileListingTimeoutMs,
+        );
+        const match = (page?.value ?? []).find((item: any) => {
+          const itemEmail = String(item.fields?.EMail ?? item.fields?.Email ?? '').toLowerCase();
+          return itemEmail === emailLower;
+        });
+        const id = String(match?.id ?? match?.fields?.Id ?? '').trim();
+        if (id) {
+          this.sharePointUserLookupIdByEmail.set(emailLower, id);
+          return id;
+        }
+        nextPath = toGraphPath(page?.['@odata.nextLink']);
+        pages += 1;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  /**
+   * Load list items involving a person (submitted by / created by).
+   * Returns null when no LookupId filter worked so the caller can fall back to page scanning.
+   * Pages newest-first and reports each page so Comments can paint August-dated rows
+   * before a 800-task drain finishes.
+   */
+  private async fetchSharePointListItemsForPersonLookup(
+    siteId: string,
+    listId: string,
+    token: string,
+    lookupId: string,
+    options?: {
+      maxPages?: number;
+      pageSize?: number;
+      onPage?: (items: any[], pageIndex: number) => void;
+    },
+  ): Promise<any[] | null> {
+    const prefer = { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' };
+    const preferredBases = ['Requestor', 'Author', 'SubmittedBy', 'CreatedBy', 'Employee', 'EmployeeName'];
+    const skipBases = new Set([
+      'assignedto', 'assigned', 'field_7', 'superior', 'manager', 'approver', 'editor',
+    ]);
+    const personCols = await this.getListPersonColumns(siteId, listId, token);
+    const colByName = new Map(personCols.map(col => [col.name.toLowerCase(), col]));
+    const candidateBases = [
+      ...preferredBases,
+      ...personCols
+        .map(col => col.name)
+        .filter(name => !skipBases.has(name.toLowerCase())),
+    ].filter((name, index, all) =>
+      all.findIndex(other => other.toLowerCase() === name.toLowerCase()) === index
+    );
+
+    // Mark missing preferred columns as non-filterable without a Graph $filter.
+    for (const base of preferredBases) {
+      const lookupField = `${base}LookupId`;
+      if (this.getListFilterFieldStatus(listId, lookupField) !== undefined) continue;
+      if (!colByName.has(base.toLowerCase())) {
+        this.markListFilterField(listId, lookupField, false);
+      }
+    }
+
+    const lookupFields = this.orderFilterableFields(
+      listId,
+      candidateBases.map(base => `${base}LookupId`),
+    );
+    if (lookupFields.length === 0) return null;
+
+    const byId = new Map<string, any>();
+    let anyFilterSucceeded = false;
+    let firstFieldHit = false;
+    const pageSize = options?.pageSize ?? AppConstants.hrFilesPersonLookupPageSize;
+    const maxPages = options?.maxPages ?? AppConstants.hrFilesPersonLookupMaxPages;
+
+    const pageField = async (
+      field: string,
+      filter: string,
+      useOrderBy: boolean,
+      fieldMaxPages: number,
+    ): Promise<'ok' | 'bad-field' | 'retry-unordered'> => {
+      const orderQuery = useOrderBy ? '&$orderby=lastModifiedDateTime desc' : '';
+      let nextPath: string | null =
+        `/sites/${siteId}/lists/${listId}/items?$expand=fields&$top=${pageSize}${orderQuery}&$filter=${filter}`;
+      let pages = 0;
+      try {
+        while (nextPath && pages < fieldMaxPages) {
+          const page: any = await graphGetWithRetry(
+            this.http,
+            nextPath,
+            token,
+            AppConstants.graphFileListingTimeoutMs,
+            prefer,
+          );
+          this.markListFilterField(listId, field, true);
+          anyFilterSucceeded = true;
+          const pageItems: any[] = [];
+          for (const item of page?.value ?? []) {
+            if (item?.id == null) continue;
+            byId.set(String(item.id), item);
+            pageItems.push(item);
+          }
+          pages += 1;
+          if (pageItems.length > 0) {
+            firstFieldHit = true;
+            options?.onPage?.(pageItems, pages);
+          }
+          nextPath = toGraphPath(page?.['@odata.nextLink']);
+        }
+        return 'ok';
+      } catch (err: any) {
+        const status = err?.status ?? err?.error?.status;
+        // Ordered+filtered queries often 400/422 on large lists. Retry without $orderby
+        // before giving up on the person column itself.
+        if (useOrderBy && (status === 400 || status === 422)) {
+          this.sharePointListOrderBySupported.set(listId, false);
+          return 'retry-unordered';
+        }
+        if (status === 400) {
+          this.markListFilterField(listId, field, false);
+        }
+        return 'bad-field';
+      }
+    };
+
+    for (const field of lookupFields) {
+      if (this.getListFilterFieldStatus(listId, field) === false) continue;
+      const baseName = field.replace(/LookupId$/i, '');
+      const col = colByName.get(baseName.toLowerCase());
+      const filterExpr = this.buildPersonLookupFilterExpr(
+        field,
+        lookupId,
+        col?.allowMultiple === true,
+      );
+      const filter = encodeURIComponent(filterExpr);
+      const fieldMaxPages = firstFieldHit
+        ? Math.min(maxPages, AppConstants.hrFilesLookupExtraFieldPages)
+        : maxPages;
+      const orderOk = this.sharePointListOrderBySupported.get(listId) !== false;
+      let result = await pageField(field, filter, orderOk, fieldMaxPages);
+      if (result === 'retry-unordered') {
+        result = await pageField(field, filter, false, fieldMaxPages);
+      }
+      if (result === 'bad-field') continue;
+      // Keep querying other person columns. An empty-but-successful
+      // RequestorLookupId must not abort Author/SubmittedBy.
+    }
+
+    return anyFilterSucceeded ? [...byId.values()] : null;
+  }
+
+  /**
+   * Load list items currently assigned to the signed-in user.
+   * Returns null when no AssignedTo LookupId filter works on this list.
+   */
+  private async fetchSharePointListItemsForAssigneeLookup(
+    siteId: string,
+    listId: string,
+    token: string,
+    lookupId: string,
+    options?: {
+      maxPages?: number;
+      onPage?: (items: any[]) => void;
+    },
+  ): Promise<any[] | null> {
+    if (this.assigneeLookupBlockedListIds.has(listId)) return null;
+    if (this.getListFilterFieldStatus(listId, 'AssignedToLookupId') === false) {
+      this.assigneeLookupBlockedListIds.add(listId);
+      return null;
+    }
+
+    const filterExpr = await this.resolveAssigneeLookupFilterExpr(siteId, listId, token, lookupId);
+    if (!filterExpr) {
+      this.assigneeLookupBlockedListIds.add(listId);
+      return null;
+    }
+
+    const prefer = { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' };
+    const maxPages = options?.maxPages ?? AppConstants.hrTasksTodoLookupMaxPages;
+    const pageSize = AppConstants.hrFilesPersonLookupPageSize;
+    const orderOk = this.sharePointListOrderBySupported.get(listId) !== false;
+
+    const fetchPages = async (useOrderBy: boolean): Promise<any[] | null> => {
+      const byId = new Map<string, any>();
+      const order = useOrderBy ? '&$orderby=lastModifiedDateTime desc' : '';
+      let nextPath: string | null =
+        `/sites/${siteId}/lists/${listId}/items?$expand=fields&$top=${pageSize}`
+        + `&$filter=${encodeURIComponent(filterExpr)}${order}`;
+      let pages = 0;
+      try {
+        while (nextPath && pages < maxPages) {
+          const page: any = await graphGetWithRetry(
+            this.http,
+            nextPath,
+            token,
+            AppConstants.graphFileListingTimeoutMs,
+            prefer,
+          );
+          const pageItems: any[] = [];
+          for (const item of page?.value ?? []) {
+            if (item?.id == null) continue;
+            byId.set(String(item.id), item);
+            pageItems.push(item);
+          }
+          pages += 1;
+          if (pageItems.length > 0) {
+            options?.onPage?.(pageItems);
+          }
+          nextPath = toGraphPath(page?.['@odata.nextLink']);
+        }
+        return [...byId.values()];
+      } catch (err: any) {
+        const status = err?.status ?? err?.error?.status;
+        if (useOrderBy && (status === 400 || status === 422)) {
+          this.sharePointListOrderBySupported.set(listId, false);
+          return null;
+        }
+        throw err;
+      }
+    };
+
+    try {
+      let items = orderOk ? await fetchPages(true) : null;
+      if (items == null) {
+        items = await fetchPages(false);
+      }
+      if (items == null) return null;
+      this.markListFilterField(listId, 'AssignedToLookupId', true);
+      return items;
+    } catch (err: any) {
+      const status = err?.status ?? err?.error?.status;
+      if (status === 400) {
+        this.markListFilterField(listId, 'AssignedToLookupId', false);
+        this.assigneeLookupBlockedListIds.add(listId);
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Page through Graph list items and hand back where it stopped.
+   *
+   * `maxPages <= 0` means follow every `@odata.nextLink` until the list ends.
+   * Prefer a positive cap for To Do scans so large lists cannot flood Graph;
+   * a positive cap still returns a resume cursor when more pages remain.
+   */
+  private async fetchGraphItemPagesWithCursor(
+    startPath: string,
+    token: string,
+    maxPages: number,
+    prefer?: Record<string, string>,
+  ): Promise<{ items: any[]; nextLink: string | null }> {
+    const byId = new Map<string, any>();
+    let nextPath: string | null = startPath;
+    let pages = 0;
+    const unlimited = !(maxPages > 0);
+
+    while (nextPath && (unlimited || pages < maxPages)) {
+      // Always the retrying path: these loops fan out across ~30 lists, which is
+      // exactly what trips SharePoint throttling, and an un-retried 429 here would
+      // silently drop a whole list's rows.
+      const page: any = await graphGetWithRetry(
+        this.http,
+        nextPath,
+        token,
+        AppConstants.graphFileListingTimeoutMs,
+        prefer ?? {},
+      );
+
+      for (const item of page?.value ?? []) {
+        if (item?.id != null) byId.set(String(item.id), item);
+      }
+      nextPath = toGraphPath(page?.['@odata.nextLink']);
+      pages += 1;
+    }
+
+    return { items: [...byId.values()], nextLink: nextPath };
+  }
+
+  private async fetchSharePointListItemsWithFilter(
+    siteId: string,
+    listId: string,
+    token: string,
+    filterExpr: string,
+    prefer: Record<string, string>,
+    maxPages = 0,
+    orderByExpr?: string,
+  ): Promise<any[]> {
+    const byId = new Map<string, any>();
+    const filter = encodeURIComponent(filterExpr);
+    const order = orderByExpr ? `&$orderby=${encodeURIComponent(orderByExpr)}` : '';
+    let nextPath: string | null =
+      `/sites/${siteId}/lists/${listId}/items?$expand=fields&$top=${AppConstants.hrTasksFastLoadPageSize}&$filter=${filter}${order}`;
+    let pages = 0;
+    const unlimited = !(maxPages > 0);
+
+    while (nextPath && (unlimited || pages < maxPages)) {
+      const page: any = await graphGetWithRetry(
+        this.http,
+        nextPath,
+        token,
+        AppConstants.graphFileListingTimeoutMs,
+        prefer,
+      );
+      for (const item of page?.value ?? []) {
+        if (item?.id != null) byId.set(String(item.id), item);
+      }
+      nextPath = toGraphPath(page?.['@odata.nextLink']);
+      pages += 1;
+    }
+
+    return [...byId.values()];
+  }
+
+  /**
+   * To Do items for a procurement list, newest first.
+   *
+   * These lists are far past SharePoint's 5k list-view threshold, and Graph rejects
+   * the two obvious narrowing options on them: an assignee filter
+   * (`AssignedToLookupId`  400) and a created-date sort (`createdDateTime`  422,
+   * threshold). What Live *does* accept is `Progress eq 'Pending'` combined with
+   * `lastModifiedDateTime desc`, so we narrow on those instead.
+   *
+   * `Progress` only ever holds `Pending` or `Complete` on these lists, and To Do
+   * hides completed work anyway, so the filter costs no visible rows. Assignee
+   * matching still happens client-side afterwards  this only decides which rows
+   * are worth fetching.
+   *
+   * Returns null when the list rejects the query, so the caller can fall back.
+   */
+  private async fetchProcurementTodoPendingItems(
+    siteId: string,
+    listId: string,
+    token: string,
+    listName: string,
+    resumePath?: string,
+    maxPages: number = AppConstants.todoProcInitialPages,
+  ): Promise<any[] | null> {
+    if (this.getListFilterFieldStatus(listId, 'ProgressPendingOrdered') === false) {
+      return null;
+    }
+
+    const startPath = resumePath ?? this.buildTodoListStartPath(siteId, listId, listName);
+
+    try {
+      const { items, nextLink } = await this.fetchGraphItemPagesWithCursor(
+        startPath,
+        token,
+        maxPages,
+        { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' },
+      );
+      this.markListFilterField(listId, 'ProgressPendingOrdered', true);
+      if (nextLink) {
+        this.todoListCursors.set(listName, nextLink);
+      } else {
+        this.todoListCursors.delete(listName);
+      }
+      this.noteTodoWatermark(listName, items);
+      return items;
+    } catch (err: any) {
+      const status = err?.status ?? err?.error?.status;
+      if (status === 400 || status === 422) {
+        this.markListFilterField(listId, 'ProgressPendingOrdered', false);
+        this.todoListCursors.delete(listName);
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /** In All Files, keep each task/comment's real submitter (matches Live). */
+  private applyAllFilesFolderSubmitter<T extends { submittedBy?: string; eFormDetails?: Record<string, unknown> }>(
+    items: T[],
+  ): T[] {
+    return items;
+  }
+
+  /** OData-safe Title filter for document-library folder tasks (All Files only). */
+  private buildDocumentLibraryFolderTitleFilter(folderName: string): string | null {
+    const title = String(folderName ?? '').trim();
+    if (!title) return null;
+    const escaped = title.replace(/'/g, "''");
+    return `fields/Title eq '${escaped}'`;
+  }
+
+  /**
+   * Load tasks for the clicked folder from a document-library-associated task list.
+   * Does not touch HRPersonal person-folder loading.
+   *
+   * Fast path: eFormListId / trailing folder id first (child folders), then Title eq
+   * folder name. Full list scan only when both filters fail or find nothing.
+   */
+  private async loadDocumentLibraryTasksForFolder(
+    listName: string,
+    folderName: string,
+    loadSeq: number,
+    options: { softRefresh?: boolean; silent?: boolean } = {},
+  ): Promise<void> {
+    const softRefresh = !!options.softRefresh;
+    const silent = !!options.silent;
+    const isStale = () => (silent ? false : this.isStaleAllFilesFolderTaskLoad(loadSeq));
+    try {
+      this.folderTaskGraphInFlight += 1;
+      const token = await this.getSharePointToken();
+      if (isStale()) return;
+
+      await this.ensureSiteMetadata(
+        sharePointConfig.siteHostName,
+        sharePointConfig.sitePath,
+        token,
+      );
+
+      const siteId = this.cachedSiteId!;
+      const listObj = this.cachedSiteLists.find((l: any) =>
+        (l.name ?? '').toLowerCase() === listName.toLowerCase() ||
+        (l.displayName ?? '').toLowerCase() === listName.toLowerCase()
+      );
+
+      if (!listObj?.id) {
+        if (isStale()) return;
+        if (softRefresh || silent) return;
+        this.commentsMessage = `Could not find task list "${listName}".`;
+        this.commentItems = [];
+        this.isLoadingComments = false;
+        this.refreshView();
+        return;
+      }
+
+      const userEmail = (this.currentUser?.email ?? '').toLowerCase();
+      const userUpn = (this.currentUser?.userPrincipalName ?? '').toLowerCase();
+      const collectedMapped: any[] = [];
+      const seenIds = new Set<string>();
+      const pageSize = AppConstants.docLibraryFolderTaskPageSize;
+      const maxPages = AppConstants.docLibraryFolderTaskMaxPages;
+
+      if (!silent) {
+        console.log(`[All Files] Loading folder tasks from list "${listName}" for folder "${folderName}"`);
+      }
+
+      const publishAndCache = (done: boolean): void => {
+        if (isStale()) return;
+        if (softRefresh && collectedMapped.length === 0) return;
+        const items = this.applyAllFilesFolderSubmitter(collectedMapped);
+        this.fileCrawlCache.set(
+          this.libFolderTaskCacheKey(listName, folderName),
+          this.sortCommentItemsByDateDesc(items),
+        );
+        if (silent) {
+          if (done) {
+            this.allFilesComponent?.refreshCommentSearchFromCaches();
+          }
+          return;
+        }
+        this.publishFolderTaskProgress(items, {
+          done,
+          emptyMessage: 'No tasks found.',
+        });
+      };
+
+      const mergeMappedItems = (pageMapped: any[]): void => {
+        for (const item of pageMapped) {
+          const id = String(item?.id ?? '').trim();
+          if (id) {
+            if (seenIds.has(id)) continue;
+            seenIds.add(id);
+          }
+          collectedMapped.push(item);
+        }
+      };
+
+      const mapFolderPageItems = (
+        rawItems: any[],
+        sourceListName: string,
+        sourceListObj: { id: string; name?: string; displayName?: string; webUrl?: string },
+      ): any[] =>
+        rawItems
+          .filter((item: any) => this.doesSharePointTaskMatchFolder(item, folderName))
+          .map((item: any) =>
+            this.mapSharePointItemToHrTask(
+              item,
+              sourceListName,
+              sourceListObj,
+              this.cachedSiteWebUrl,
+              userEmail,
+              userUpn,
+              true,
+            )
+          )
+          .filter((item: any): item is NonNullable<typeof item> => item !== null);
+
+      const folderEFormId = this.extractTrailingFolderId(folderName);
+      const titleFilter = this.buildDocumentLibraryFolderTitleFilter(folderName);
+
+      /** Cheap eFormListId + Title filters against one SharePoint list. */
+      const queryListWithFilters = async (
+        sourceListName: string,
+        sourceListObj: { id: string; name?: string; displayName?: string; webUrl?: string },
+      ): Promise<void> => {
+        if (folderEFormId) {
+          try {
+            const byIdRaw = await this.fetchSharePointListItemsForEFormKeys(
+              siteId,
+              sourceListObj.id,
+              token,
+              new Set([folderEFormId]),
+            );
+            if (isStale()) return;
+            const before = collectedMapped.length;
+            mergeMappedItems(mapFolderPageItems(byIdRaw, sourceListName, sourceListObj));
+            console.log(
+              `[All Files] eFormListId filter on "${sourceListName}" returned ${byIdRaw.length} raw / ${collectedMapped.length - before} new matched`,
+            );
+            if (collectedMapped.length > 0) publishAndCache(false);
+          } catch (idFilterErr) {
+            console.warn(
+              `[All Files] eFormListId filter unavailable on "${sourceListName}"; trying Title.`,
+              idFilterErr,
+            );
+          }
+        }
+
+        if (!titleFilter) return;
+        try {
+          const prefer = { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' };
+          let filteredPath: string | null =
+            `/sites/${siteId}/lists/${sourceListObj.id}/items?$expand=fields&$top=${pageSize}` +
+            `&$filter=${encodeURIComponent(titleFilter)}`;
+          let filteredPages = 0;
+          while (filteredPath && filteredPages < maxPages) {
+            const page: any = await graphGetWithRetry(
+              this.http,
+              filteredPath,
+              token,
+              AppConstants.graphFileListingTimeoutMs,
+              prefer,
+            );
+            filteredPages += 1;
+            if (isStale()) return;
+
+            mergeMappedItems(mapFolderPageItems(page?.value ?? [], sourceListName, sourceListObj));
+            filteredPath = toGraphPath(page?.['@odata.nextLink']);
+            if (collectedMapped.length > 0) publishAndCache(false);
+            if (filteredPath) await new Promise(r => setTimeout(r, 50));
+          }
+          console.log(
+            `[All Files] Title filter on "${sourceListName}" done (${filteredPages} pages, ${collectedMapped.length} total matched)`,
+          );
+        } catch (filterErr) {
+          console.warn(
+            `[All Files] Title filter unavailable on "${sourceListName}".`,
+            filterErr,
+          );
+        }
+      };
+
+      const fullScanList = async (
+        sourceListName: string,
+        sourceListObj: { id: string; name?: string; displayName?: string; webUrl?: string },
+      ): Promise<void> => {
+        console.warn(`[All Files] Falling back to full scan of "${sourceListName}"`);
+        let nextPath: string | null =
+          `/sites/${siteId}/lists/${sourceListObj.id}/items?$expand=fields&$top=${pageSize}`;
+        let pagesLoaded = 0;
+
+        while (nextPath && pagesLoaded < maxPages) {
+          const page: any = await graphGetWithRetry(
+            this.http,
+            nextPath,
+            token,
+            AppConstants.graphFileListingTimeoutMs,
+          );
+          pagesLoaded += 1;
+          if (isStale()) return;
+
+          if (!silent && this.isLoadingComments) {
+            this.commentsMessage =
+              pagesLoaded === 1
+                ? `Scanning ${sourceListName}`
+                : `Scanning ${sourceListName} (page ${pagesLoaded})`;
+            this.refreshView();
+          }
+
+          const before = collectedMapped.length;
+          mergeMappedItems(mapFolderPageItems(page?.value ?? [], sourceListName, sourceListObj));
+          if (collectedMapped.length > before) publishAndCache(false);
+
+          nextPath = toGraphPath(page?.['@odata.nextLink']);
+          if (nextPath) await new Promise(r => setTimeout(r, 50));
+        }
+        console.log(
+          `[All Files] Full scan of "${sourceListName}" finished: ${pagesLoaded} pages, ${collectedMapped.length} matched`,
+        );
+      };
+
+      // 1) Live / primary list (eForms TaskListName, e.g. ProcTasks)
+      await queryListWithFilters(listName, listObj);
+      if (isStale()) return;
+
+      // 2) Archive companion (ProcTasksArchive)  historical rows moved off the live list
+      const archiveCompanions = this.getArchiveCompanionTaskLists(listName);
+      if (collectedMapped.length === 0 && archiveCompanions.length > 0) {
+        for (const archiveName of archiveCompanions) {
+          const archiveList = this.findCachedSiteListByName(archiveName);
+          if (!archiveList?.id) {
+            console.warn(`[All Files] Archive list "${archiveName}" not found on site`);
+            continue;
+          }
+          if (!silent && this.isLoadingComments) {
+            this.commentsMessage = `Checking ${archiveName}`;
+            this.refreshView();
+          }
+          console.log(`[All Files] Trying archive companion "${archiveName}"`);
+          await queryListWithFilters(archiveName, archiveList);
+          if (isStale()) return;
+          if (collectedMapped.length > 0) break;
+        }
+      }
+
+      // 3) Full scan only when still empty. Prefer scanning the archive companion
+      //    (where old procurement tasks live)  never grind through live ProcTasks first.
+      if (collectedMapped.length === 0) {
+        const scanTargets =
+          archiveCompanions.length > 0
+            ? archiveCompanions
+            : [listName];
+        for (const scanName of scanTargets) {
+          const scanList =
+            scanName.toLowerCase() === listName.toLowerCase()
+              ? listObj
+              : this.findCachedSiteListByName(scanName);
+          if (!scanList?.id) continue;
+          await fullScanList(scanName, scanList);
+          if (isStale()) return;
+          if (collectedMapped.length > 0) break;
+        }
+      }
+
+      if (isStale()) return;
+
+      // Related Superior / sibling steps via eForm id  check primary + archive lists.
+      const eFormKeys = this.collectEFormKeysFromMappedTasks(collectedMapped, folderName);
+      if (eFormKeys.size > 0) {
+        const relatedListTargets = [
+          { name: listName, list: listObj },
+          ...archiveCompanions
+            .map((name) => ({ name, list: this.findCachedSiteListByName(name) }))
+            .filter((entry): entry is { name: string; list: NonNullable<typeof entry.list> } => !!entry.list?.id),
+        ];
+        for (const target of relatedListTargets) {
+          const relatedRaw = await this.fetchSharePointListItemsForEFormKeys(
+            siteId,
+            target.list.id,
+            token,
+            eFormKeys,
+          );
+          if (isStale()) return;
+
+          const relatedMapped = mapFolderPageItems(relatedRaw, target.name, target.list);
+          mergeMappedItems(relatedMapped);
+        }
+      }
+
+      if (isStale()) return;
+      if (softRefresh && collectedMapped.length === 0) return;
+      publishAndCache(true);
+    } catch (err: any) {
+      if (isStale()) return;
+      if (softRefresh || silent) return;
+      this.isLoadingMoreComments = false;
+      this.commentsMessage = `Failed to load tasks: ${err?.message || 'Unknown error'}`;
+      this.isLoadingComments = false;
+      this.refreshView();
+    } finally {
+      this.folderTaskGraphInFlight = Math.max(0, this.folderTaskGraphInFlight - 1);
+      if (!silent && !isStale() && (this.isLoadingComments || this.isLoadingMoreComments)) {
+        this.isLoadingComments = false;
+        this.isLoadingMoreComments = false;
+        this.refreshView();
+      }
+    }
+  }
+
+  /** Per-list: Graph rejected newest-first $orderby (422 list-view threshold). */
+  private readonly sharePointListOrderBySupported = new Map<string, boolean>();
+
+  private async fetchSharePointListPages(
+    siteId: string,
+    listId: string,
+    token: string,
+    top: number,
+    maxPages: number,
+    newestFirst = false
+  ): Promise<any[]> {
+    const collected: any[] = [];
+    // Live rejects $orderby=createdDateTime with 422 (list-view threshold), but accepts
+    // lastModifiedDateTime  verified against ProcTasks/ProcTasksArchive/ECTasks.
+    // Track this per list  one archive list must not disable newest-first for HRTask*.
+    const useOrderBy = newestFirst && this.sharePointListOrderBySupported.get(listId) !== false;
+    const orderQuery = useOrderBy ? '&$orderby=lastModifiedDateTime desc' : '';
+    let nextPath: string | null =
+      `/sites/${siteId}/lists/${listId}/items?$expand=fields&$top=${top}${orderQuery}`;
+    let pagesLoaded = 0;
+    const unlimited = !(maxPages > 0);
+
+    // maxPages <= 0: follow every nextLink (avoid for To Do  use positive caps).
+    // Positive: early stop; caller may resume via todoListCursors.
+    while (nextPath) {
+      try {
+        const page: any = await graphGetWithRetry(
+          this.http, nextPath, token, AppConstants.graphFileListingTimeoutMs,
+        );
+        collected.push(...((page?.value ?? []) as any[]));
+        pagesLoaded += 1;
+        if (!unlimited && pagesLoaded >= maxPages) break;
+        nextPath = toGraphPath(page?.['@odata.nextLink']);
+      } catch {
+        if (useOrderBy && pagesLoaded === 0 && orderQuery) {
+          this.sharePointListOrderBySupported.set(listId, false);
+          nextPath = `/sites/${siteId}/lists/${listId}/items?$expand=fields&$top=${top}`;
+          continue;
+        }
+        break;
+      }
+    }
+    return collected;
+  }
+
+  /**
+   * Populate the component's site/list caches from the shared resolver, so every feature
+   * in the app resolves the site and its list metadata exactly once per session.
+   */
+  private async ensureSiteMetadata(
+    _siteHost: string,
+    _sitePath: string,
+    token: string,
+  ): Promise<void> {
+    if (this.cachedSiteId && this.cachedSiteLists.length > 0) return;
+
+    const metadata = await this.siteMetadataService.resolve(token);
+    this.cachedSiteId = metadata.siteId;
+    this.cachedSiteWebUrl = metadata.siteWebUrl;
+    this.cachedSiteLists = metadata.lists;
+  }
+
+  /**
+   * The one place that decides how a To Do list is queried, so the first load,
+   * "Load older tasks" and the manual refresh can never drift apart. Always
+   * newest-modified first; procurement lists additionally narrow to pending rows.
+   */
+  private buildTodoListStartPath(siteId: string, listId: string, listName: string): string {
+    const order = `&$orderby=${encodeURIComponent('lastModifiedDateTime desc')}`;
+    const top = AppConstants.hrTasksFastLoadPageSize;
+
+    if (
+      this.isTodoProcurementTaskList(listName) &&
+      this.getListFilterFieldStatus(listId, 'ProgressPendingOrdered') !== false
+    ) {
+      return `/sites/${siteId}/lists/${listId}/items?$expand=fields&$top=${top}`
+        + `&$filter=${encodeURIComponent("fields/Progress eq 'Pending'")}${order}`;
+    }
+
+    return `/sites/${siteId}/lists/${listId}/items?$expand=fields`
+      + `&$top=${top}${order}`;
+  }
+
+  private todoPreferHeader(listName: string): Record<string, string> | undefined {
+    return this.isTodoProcurementTaskList(listName)
+      ? { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' }
+      : undefined;
+  }
+
+  /** Advance a list's high-water mark to the newest row seen. */
+  private noteTodoWatermark(listName: string, items: any[]): void {
+    let newest = this.todoListWatermarks.get(listName) ?? '';
+    for (const item of items) {
+      const modified = String(item?.lastModifiedDateTime ?? '');
+      if (modified && modified > newest) newest = modified;
+    }
+    if (newest) this.todoListWatermarks.set(listName, newest);
+  }
+
+  /**
+   * Rows added or changed since the last time this list was read. Because results are
+   * ordered newest-first, the first already-known row means everything after it is known
+   * too  so this stops there rather than paging the whole list again.
+   */
+  private async fetchTodoRowsNewerThanWatermark(
+    siteId: string,
+    listId: string,
+    token: string,
+    listName: string,
+    watermarkIso: string,
+  ): Promise<any[]> {
+    const prefer = this.todoPreferHeader(listName);
+    let nextPath: string | null = this.buildTodoListStartPath(siteId, listId, listName);
+    const fresh: any[] = [];
+    let pages = 0;
+
+    while (nextPath && pages < AppConstants.todoRefreshMaxPagesPerList) {
+      const page: any = await graphGetWithRetry(
+        this.http, nextPath, token, AppConstants.graphFileListingTimeoutMs, prefer ?? {},
+      );
+
+      let reachedKnownRows = false;
+      for (const item of page?.value ?? []) {
+        const modified = String(item?.lastModifiedDateTime ?? '');
+        if (modified && modified <= watermarkIso) {
+          reachedKnownRows = true;
+          break;
+        }
+        fresh.push(item);
+      }
+
+      if (reachedKnownRows) break;
+      nextPath = toGraphPath(page?.['@odata.nextLink']);
+      pages += 1;
+    }
+
+    return fresh;
+  }
+
+  /**
+   * To Do scan for a list that cannot be filtered by assignee: newest-modified first.
+   * Hard-capped via `todoInitialPagesPerList`; leftover pages stay on `todoListCursors`
+   * for manual "Load older" instead of draining the whole list on login.
+   */
+  private async fetchTodoScanPages(
+    siteId: string,
+    listId: string,
+    token: string,
+    listName: string,
+    resumePath?: string,
+    maxPages: number = AppConstants.todoInitialPagesPerList,
+  ): Promise<any[]> {
+    const startPath = resumePath ?? this.buildTodoListStartPath(siteId, listId, listName);
+
+    try {
+      const { items, nextLink } = await this.fetchGraphItemPagesWithCursor(
+        startPath,
+        token,
+        maxPages,
+      );
+      if (nextLink) {
+        this.todoListCursors.set(listName, nextLink);
+      } else {
+        this.todoListCursors.delete(listName);
+      }
+      this.noteTodoWatermark(listName, items);
+      return items;
+    } catch {
+      // List rejected the sort  fall back to an unordered full scan (no cursor).
+      this.todoListCursors.delete(listName);
+      return this.fetchSharePointListPages(
+        siteId,
+        listId,
+        token,
+        AppConstants.hrTasksFastLoadPageSize,
+        AppConstants.hrTasksTodoLoadPageLimit,
+        false,
+      );
+    }
+  }
+
+  private async fetchItemsForList(
+    listName: string,
+    siteListsArr: any[],
+    siteId: string,
+    siteWebUrl: string,
+    token: string,
+    userEmail: string,
+    userUpn: string,
+    range: { createdSinceIso?: string; createdBeforeIso?: string } | null = null,
+    subordinateTasksOnly = false,
+    fastLoadPageLimit?: number,
+    assigneeLookupId: string | null = null,
+    todoAssigneeOnly = false,
+    todoScan = false,
+  ): Promise<any[]> {
+    const list = siteListsArr.find(
+      (l: any) =>
+        (l.name ?? '').toLowerCase() === listName.toLowerCase() ||
+        (l.displayName ?? '').toLowerCase() === listName.toLowerCase()
+    );
+    if (!list?.id) return [];
+
+    // Procurement lists are exempt: if their assignee filter is unavailable they still
+    // need the page-scan fallback below, otherwise they contribute nothing at all.
+    if (
+      todoAssigneeOnly &&
+      assigneeLookupId &&
+      !this.isTodoProcurementTaskList(listName) &&
+      this.assigneeLookupBlockedListIds.has(list.id)
+    ) {
+      return [];
+    }
+
+    const isOlderBackfill = !!range?.createdBeforeIso;
+    const top = isOlderBackfill ? 999 : AppConstants.hrTasksFastLoadPageSize;
+    const maxPages = isOlderBackfill
+      ? Number.POSITIVE_INFINITY
+      : (fastLoadPageLimit ?? AppConstants.hrTasksFastLoadPageLimit);
+
+    let rawItems: any[];
+    let skipUserFilter = false;
+    try {
+      if (todoAssigneeOnly && this.isTodoProcurementTaskList(listName)) {
+        // Graph cannot filter these lists by assignee at all, so narrow on pending +
+        // newest-modified instead and match the assignee client-side. Follow every
+        // Progress=Pending page (Live parity); unordered fallback stays page-capped.
+        const pendingItems = await this.fetchProcurementTodoPendingItems(
+          siteId,
+          list.id,
+          token,
+          listName,
+        );
+
+        rawItems = pendingItems ?? await this.fetchSharePointListPages(
+          siteId,
+          list.id,
+          token,
+          top,
+          AppConstants.hrTasksTodoProcPageLimit,
+          true,
+        );
+        skipUserFilter = false;
+      } else if (assigneeLookupId && !subordinateTasksOnly) {
+        if (!this.assigneeLookupBlockedListIds.has(list.id)) {
+          const lookupItems = await this.fetchSharePointListItemsForAssigneeLookup(
+            siteId,
+            list.id,
+            token,
+            assigneeLookupId,
+          );
+          if (lookupItems != null) {
+            if (lookupItems.length > 0) {
+              rawItems = lookupItems;
+              skipUserFilter = true;
+            } else {
+              rawItems = lookupItems;
+              skipUserFilter = true;
+            }
+          } else if (todoAssigneeOnly) {
+            return [];
+          } else {
+            rawItems = todoScan
+              ? await this.fetchTodoScanPages(siteId, list.id, token, listName)
+              : await this.fetchSharePointListPages(
+                  siteId,
+                  list.id,
+                  token,
+                  top,
+                  maxPages,
+                  false,
+                );
+          }
+        } else if (todoAssigneeOnly) {
+          return [];
+        } else {
+          // The blocked-lists To Do pass lands here  the bulk of To Do's requests.
+          rawItems = todoScan
+            ? await this.fetchTodoScanPages(siteId, list.id, token, listName)
+            : await this.fetchSharePointListPages(
+                siteId,
+                list.id,
+                token,
+                top,
+                maxPages,
+                false,
+              );
+        }
+      } else {
+        rawItems = todoScan
+          ? await this.fetchTodoScanPages(siteId, list.id, token, listName)
+          : await this.fetchSharePointListPages(
+              siteId,
+              list.id,
+              token,
+              top,
+              maxPages,
+              false,
+            );
+      }
+    } catch {
+      return [];
+    }
+
+    const items: any[] = [];
+    for (const item of rawItems) {
+      const shaped = this.mapSharePointItemToHrTask(
+        item,
+        listName,
+        list,
+        siteWebUrl,
+        userEmail,
+        userUpn,
+        skipUserFilter,
+        subordinateTasksOnly
+      );
+      if (shaped) items.push(shaped);
+    }
+    return items;
+  }
+
+  /** True for All Files task lists (e.g. DamagesToEnemaltaTasks) where Title is the folder name, not the submitter. */
+  private isDocumentLibraryTaskList(listName: string): boolean {
+    const normalized = listName.toLowerCase();
+    return sharePointConfig.documentLibrariesTasks.some(
+      (taskList: string) => taskList.toLowerCase() === normalized
+    );
+  }
+
+  /** Strip workflow boilerplate accidentally captured with a parsed person name. */
+  private cleanParsedPersonName(name: string): string {
+    return name
+      .replace(/\s+please click\b.*$/i, '')
+      .replace(/\s+id=.*$/i, '')
+      .replace(/\s+stepno:.*$/i, '')
+      .trim();
+  }
+
+  /** Pull the assigner/submitter name from workflow comment HTML or plain text. */
+  private parseAssignerFromComment(comment: unknown): string {
+    if (!comment) return '';
+    const plain = String(comment)
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/&nbsp;|&#160;/g, ' ')
+      .replace(/&#58;/g, ':').replace(/&#46;/g, '.')
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const stopBefore = '(?:\\s+please click|\\.|$)';
+    const patterns = [
+      new RegExp(`was assigned to you by\\s+(.+?)${stopBefore}`, 'i'),
+      new RegExp(`assigned to you by\\s+(.+?)${stopBefore}`, 'i'),
+      new RegExp(`was assigned.*?by\\s+(.+?)${stopBefore}`, 'i'),
+      new RegExp(`requested by:\\s*(.+?)${stopBefore}`, 'i'),
+    ];
+    for (const pattern of patterns) {
+      const match = plain.match(pattern);
+      if (match?.[1]) return this.cleanParsedPersonName(match[1]);
+    }
+    return '';
+  }
+
+  private extractPersonName(val: any): string {
+    if (!val) return '';
+    if (typeof val === 'string') return val.trim();
+    if (Array.isArray(val) && val.length > 0) {
+      return val
+        .map((p: any) => this.extractPersonName(p))
+        .filter(Boolean)
+        .join(', ');
+    }
+    if (typeof val === 'object') {
+      // Prefer the first *non-empty* identity field. Graph often returns
+      // LookupValue: "" while Email/UPN is populated  `??` would stop on "".
+      const person = val as Record<string, any>;
+      const nestedUser = person['user'] ?? person['User'] ?? {};
+      const candidates = [
+        person['LookupValue'],
+        person['displayName'],
+        person['DisplayName'],
+        person['Title'],
+        person['EMail'],
+        person['Email'],
+        person['email'],
+        person['UserPrincipalName'],
+        person['userPrincipalName'],
+        person['name'],
+        person['Name'],
+        nestedUser['displayName'],
+        nestedUser['email'],
+        nestedUser['userPrincipalName'],
+      ];
+      for (const candidate of candidates) {
+        const text = String(candidate ?? '').trim();
+        if (text) return text;
+      }
+      return '';
+    }
+    return '';
+  }
+
+  /** Match assignee person/group fields even when Graph omits LookupValue (email-only entries). */
+  private isAssignedToUserFromFields(
+    fields: Record<string, any>,
+    name: string,
+    email: string,
+  ): boolean {
+    const assigneeValues = this.collectTaskAssigneeValues(fields);
+    if (assigneeValues.some(value => this.userService.matchesAssigneeField(value, name, email))) {
+      return true;
+    }
+
+    const emailLower = email.toLowerCase();
+    const personFields = [fields['AssignedTo'], fields['Assigned'], fields['AssignedTo0']];
+    for (const field of personFields) {
+      if (!field) continue;
+      const entries = Array.isArray(field) ? field : [field];
+      for (const entry of entries) {
+        if (!entry || typeof entry !== 'object') continue;
+        const person = entry as Record<string, unknown>;
+        const personEmail = String(
+          person['EMail'] ?? person['Email'] ?? person['email'] ??
+          person['UserPrincipalName'] ?? person['userPrincipalName'] ?? '',
+        ).toLowerCase().trim();
+        const personName = this.extractPersonName(entry);
+        if (personEmail && emailLower && personEmail === emailLower) return true;
+        if (personName && this.userService.matchesAssigneeField(personName, name, email)) return true;
+      }
+    }
+
+    return false;
+  }
+
+  private resolveTaskSubmitter(item: any, fields: any, listName: string): string {
+    // ProcTasks / ProcTasksArchive (and similar): Live uses CustomCreatedBy, not Author/Created By.
+    const customCreatedBy = this.extractPersonName(fields.CustomCreatedBy);
+    if (customCreatedBy) return customCreatedBy;
+
+    const sharePointTitle = String(fields.Title ?? '').trim();
+    if (this.isCommentEntryTitle(sharePointTitle)) {
+      return this.resolveCommentEntrySubmitter(item, fields);
+    }
+
+    if (this.isDocumentLibraryTaskList(listName) || this.isTodoProcurementTaskList(listName)) {
+      const commentText = fields.Comment ?? fields.Notes ?? fields.field_10 ?? '';
+      return (
+        this.extractPersonName(fields.Requestor) ||
+        this.extractPersonName(fields.SubmittedBy) ||
+        this.parseAssignerFromComment(commentText) ||
+        this.extractPersonName(fields.CreatedBy) ||
+        this.extractPersonName(fields.Author) ||
+        this.extractPersonName(item?.createdBy?.user) ||
+        this.extractPersonName(item?.createdBy) ||
+        ''
+      );
+    }
+
+    // Sick Certificate Upload and other source eForm lists often store the person
+    // on Employee / EmployeeName rather than Author.
+    if (this.isHrSourceEFormList(listName)) {
+      return (
+        this.extractPersonName(fields.EmployeeName) ||
+        this.extractPersonName(fields.Employee) ||
+        this.extractPersonName(fields.Requestor) ||
+        this.extractPersonName(fields.SubmittedBy) ||
+        this.extractPersonName(fields.Submitter) ||
+        this.extractPersonName(fields.Author) ||
+        this.extractPersonName(fields.CreatedBy) ||
+        this.extractPersonName(item?.createdBy?.user) ||
+        this.extractPersonName(item?.createdBy) ||
+        sharePointTitle
+      );
+    }
+
+    return (
+      this.extractPersonName(fields.Requestor) ||
+      this.extractPersonName(fields.SubmittedBy) ||
+      this.extractPersonName(fields.Submitter) ||
+      this.extractPersonName(fields.Author) ||
+      this.extractPersonName(fields.CreatedBy) ||
+      this.extractPersonName(item?.createdBy?.user) ||
+      this.extractPersonName(item?.createdBy) ||
+      String(fields.Title ?? '').trim()
+    );
+  }
+
+  private getLoggedInUserDisplayName(): string {
+    return this.userService.getCurrentUserName();
+  }
+
+  private resolveCommentEntrySubmitter(item: any, fields: Record<string, unknown>): string {
+    const candidates = [
+      fields['commentSubmittedBy'],
+      fields['SubmittedBy'],
+      fields['Submitter'],
+      fields['Requestor'],
+      fields['Author'],
+      item?.createdBy?.user?.displayName,
+      item?.createdBy?.user?.email,
+      item?.createdBy?.user?.title,
+      item?.lastModifiedBy?.user?.displayName,
+    ];
+
+    for (const candidate of candidates) {
+      const name = this.extractPersonName(candidate);
+      if (name && !this.isCommentEntryTitle(name)) {
+        return name;
+      }
+    }
+
+    return this.getLoggedInUserDisplayName();
+  }
+
+  /** Collect every assignee-like value stored on a SharePoint task item. */
+  private collectTaskAssigneeValues(fields: Record<string, any>): string[] {
+    const candidates = [
+      fields['AssignedTo'],
+      fields['Assigned'],
+      fields['AssignedTo0'],
+      fields['CurrentAssignee'],
+      fields['TaskAssignee'],
+    ];
+
+    const field7 = String(fields['field_7'] ?? '').trim();
+    if (field7 && !/^\d{1,2}:\d{2}/.test(field7)) {
+      candidates.push(fields['field_7']);
+    }
+
+    const values = candidates
+      .map(value => this.extractPersonName(value))
+      .filter(Boolean);
+
+    return [...new Set(values)];
+  }
+
+  // ============================================================
+  // SHAPE ONE HR TASK ITEM
+  // Pure mapping  returns null when the item doesn't belong to
+  // the current user.
+  // ============================================================
+  private mapSharePointItemToHrTask(
+    item: any,
+    listName: string,
+    list: any,
+    siteWebUrl: string,
+    userEmail: string,
+    userUpn: string,
+    skipUserFilter = false,
+    subordinateTasksOnly = false
+  ): any | null {
+    const f = item.fields ?? {};
+
+    // ?? User matching ??????????????????????????????????????
+    const submitter = this.resolveTaskSubmitter(item, f, listName);
+    const submitterLower = submitter.toLowerCase();
+    const userDisplayLower = (this.currentUser?.username ?? '').toLowerCase();
+    const emailLocal = userEmail.includes('@') ? userEmail.split('@')[0] : userEmail;
+    const displayParts = userDisplayLower.split(/\s+/).filter(p => p.length > 2);
+    const emailParts = emailLocal.replace(/[-_.]/g, ' ').split(' ').filter(p => p.length > 2);
+    const allNameParts = [...new Set([...displayParts, ...emailParts])];
+
+    const extractPerson = (val: any): string => this.extractPersonName(val);
+
+    const exactMatch = submitterLower === userDisplayLower;
+    const partialMatch = allNameParts.length >= 2 &&
+      allNameParts.filter(p => submitterLower.includes(p)).length >= 2;
+    const isCurrentUser = exactMatch || partialMatch ||
+      submitterLower.includes(userEmail) || submitterLower.includes(userUpn);
+
+    const assigneeValues = this.collectTaskAssigneeValues(f);
+    const assignedToValue = assigneeValues.join(', ') || this.extractPersonName(f.AssignedTo ?? f.Assigned);
+    const matchName = this.currentUser?.username ?? this.currentUser?.userPrincipalName ?? '';
+    const matchEmail = userEmail || userUpn;
+    const isAssignedToCurrentUser =
+      skipUserFilter || this.isAssignedToUserFromFields(f, matchName, matchEmail);
+
+    // Keep tasks where the current user is Superior 1 or Superior 2, so the
+    // "Subordinate Tasks" view in the To Do list has data to show.
+    const superior1Value = extractPerson(f.AssignedToSuperior1);
+    const superior2Value = extractPerson(f.AssignedToSuperior2);
+    const isSuperiorForCurrentUser =
+      this.userService.matchesAssigneeField(superior1Value, matchName, matchEmail) ||
+      this.userService.matchesAssigneeField(superior2Value, matchName, matchEmail);
+    const isAssignedToSubordinate = this.subordinaryTaskService.isTaskAssignedToAnyAssigneeValue(
+      assigneeValues.length ? assigneeValues : [assignedToValue]
+    );
+
+    const sharePointTitle = String(f.Title ?? '').trim();
+    const sharePointCategory = String(f.Category ?? f.Type ?? f.field_9 ?? '').trim();
+    const isCommentEntry = this.isCommentEntryTitle(sharePointTitle) || this.isCommentEntryTitle(sharePointCategory);
+    const isStatuslessComment =
+      this.isStatuslessCommentTitle(sharePointTitle) ||
+      this.isStatuslessCommentTitle(sharePointCategory);
+
+    if (subordinateTasksOnly) {
+      if (!isAssignedToSubordinate) return null;
+    } else if (
+      !skipUserFilter &&
+      !isCommentEntry &&
+      !isCurrentUser &&
+      !isAssignedToCurrentUser &&
+      !isSuperiorForCurrentUser &&
+      !isAssignedToSubordinate &&
+      submitterLower !== ''
+    ) {
+      return null;
+    }
+
+    // ?? Type flags ?????????????????????????????????????????
+    const isChangeOfShift = listName.toLowerCase().includes('changeofshift');
+    const isTeleworkReports = listName.toLowerCase().includes('teleworkreports');
+    const isTelework = listName.toLowerCase().includes('telework') && !isTeleworkReports;
+
+    // ?? Status ?????????????????????????????????????????????
+    // Procurement lists: Progress is the live gate (Pending/Complete). LastState/Status
+    // often still say "Approved" from an earlier step  using those hid open Pr- tasks.
+    let status = this.isTodoProcurementTaskList(listName)
+      ? String(f.Progress ?? f.LastState ?? f.Status ?? 'Pending').trim()
+      : String(
+          f.LastState ?? f.Status ?? f.ApprovalStatus ?? f.WorkflowStatus ??
+          f.TaskOutcome ?? f.Outcome ?? f.CurrentStage ?? f.Stage ??
+          f.field_3 ?? f.field_4 ?? f.field_5 ?? f.Completed ?? f.IsCompleted ??
+          f.State ?? f.Progress ?? f.Modified ?? 'Pending'
+        ).trim();
+
+    // Hide status on General Comment, New Attachment, and Request for Action cards
+    if (isStatuslessComment) {
+      status = '';
+    }
+
+    // ?? Approver chain ?????????????????????????????????????
+    const approver1 = String(f.Approver1 ?? f.Approver ?? f.field_12 ?? '').trim();
+    const approver2 = String(f.Approver2 ?? f.field_15 ?? '').trim();
+    const approver3 = String(f.Approver3 ?? f.field_28 ?? '').trim();
+    const sharePointCompletedBy =
+      this.extractPersonName(f.CompletedBy) ||
+      this.extractPersonName(f.CompletedBy0) ||
+      '';
+    const primaryApprover = sharePointCompletedBy || approver1 || approver2 || approver3;
+
+    const approver1Date = String(f.Approver1Date ?? f.field_13 ?? '').trim();
+    const approver1Comment = String(f.Approver1Comment ?? f.field_29 ?? '').trim();
+    const approver2Date = String(f.Approver2Date ?? '').trim();
+    const approver2Comment = String(f.Approver2Comment ?? '').trim();
+    const approver3Date = String(f.Approver3Date ?? '').trim();
+    const approver3Comment = String(f.Approver3Comment ?? '').trim();
+
+    // ?? Dates & time ???????????????????????????????????????
+    const missedDate = String(f.MissedDate ?? f.field_5 ?? '').trim();
+    // Proc archive rows: Created/Modified are often archive-move dates; Live uses custom columns.
+    const customCreatedDate = String(f.CustomCreatedDate ?? '').trim();
+    const customModifiedBy =
+      this.extractPersonName(f.CustomModifiedBy) ||
+      this.extractPersonName(f.Editor) ||
+      this.extractPersonName(f.ModifiedBy) ||
+      this.extractPersonName(item?.lastModifiedBy?.user) ||
+      this.extractPersonName(item?.lastModifiedBy);
+    const customModifiedDate = String(
+      f.CustomModifiedDate ?? f.CustomModified ?? ''
+    ).trim();
+    // SubmittedDate is the primary sort key for HR Files progressive loading.
+    // Some lists omit Created/Submitted fields, so we fall back to last modified
+    // to avoid "0" dates that cause items to appear at the bottom first and
+    // then jump to the top later.
+    const submittedDate = String(
+      customCreatedDate ||
+        f.Created ||
+        f.SubmittedDate ||
+        item?.createdDateTime ||
+        item?.fields?.Created ||
+        item?.fields?.SubmittedDate ||
+        f.Modified ||
+        item?.lastModifiedDateTime ||
+        ''
+    ).trim();
+    const statusDate = String(f.Approver1Date ?? f.field_13 ?? f.Modified ?? '').trim();
+    const timeIn = String(f.TimeIn ?? f.TimeInText ?? f.field_7 ?? '').trim();
+    const timeOut = String(f.TimeOut ?? f.TimeOutText ?? f.field_8 ?? '').trim();
+    const missed = String(f.Missed ?? f.field_6 ?? '').trim();
+
+    // ?? Common fields ??????????????????????????????????????
+    const reason = String(f.Reason ?? f.ReasonOther ?? f.field_11 ?? '').trim();
+    const stage = String(f.CurrentStage ?? f.field_4 ?? '').trim();
+    const section = String(f.Section ?? f.field_34 ?? '').trim();
+    const fromDate = String(f.FromDate ?? f.StartDate ?? f.SickLeaveStartDate ?? f.DateFrom ?? f.field_12 ?? f.field_13 ?? '').trim();
+    const toDate = String(f.ToDate ?? f.EndDate ?? f.SickLeaveEndDate ?? f.DateTo ?? f.field_14 ?? f.field_15 ?? '').trim();
+
+    // ?? TransferOfVL fields ????????????????????????????????
+    const hoursForTransfer = String(f.HoursForTransfer ?? f.HoursTransferred ?? '').trim();
+    const fromYear = String(f.FromYear ?? '').trim();
+    const toYear = String(f.ToYear ?? '').trim();
+    const needEngineer = String(f.NeedEngineerApproval ?? f.NeedEngineerAp ?? '').trim();
+    const requestorPin = String(f.RequestorPin ?? '').trim();
+    const approver1Pin = String(f.Approver1Pin ?? '').trim();
+    const approver2Pin = String(f.Approver2Pin ?? '').trim();
+    const approver3Pin = String(f.Approver3Pin ?? '').trim();
+    const spToken = String(f.Token ?? '').trim();
+
+    // ?? Extra columns ??????????????????????????????????????
+    const progress = String(f.Progress ?? f.field_5 ?? '').trim();
+    const taskOutcome = String(f.TaskOutcome ?? f.Outcome ?? f.field_6 ?? '').trim();
+    const taskOutcomeField = String(f.TaskOutcome ?? '').trim();
+    const eFormCategory = String(f.Category ?? '').trim();
+    const eFormProgress = String(f.Progress ?? '').trim();
+    const createdBy = String(f.AuthorLookupId ?? '').trim();
+    const modifiedBy = String(f.EditorLookupId ?? '').trim();
+    const createdDate = String(f.Created ?? '').trim();
+    const modifiedDate = String(f.Modified ?? '').trim();
+    const category = String(f.Category ?? f.Type ?? f.field_9 ?? '').trim();
+    // SharePoint field that todo-list uses as the grouping id (see tasksAssignedToMe / buildGroupKey).
+    const eFormListId = String(f.eFormListId ?? f.ListId ?? f.field_11 ?? '').trim();
+
+    const assignedTo = assignedToValue || extractPerson(f.AssignedTo ?? f.Assigned);
+    const assignedToSuperior = extractPerson(f.AssignedToSuperior ?? f.Superior ?? f.field_8);
+    const assignedTo2 = extractPerson(f.AssignedTo);
+    const assignedToSuperior1 = extractPerson(f.AssignedToSuperior1);
+    const assignedToSuperior2field = extractPerson(f.AssignedToSuperior2);
+
+    // ?? Task routing / SLA columns (shown in AllFiles ? Comments) ??
+    const assignedAtStepNo = String(
+      f.AssignedAtStepNo ?? f.AssignedAtStep ?? f.AssignedAtStepNumber ?? ''
+    ).trim();
+    const assignedToStepNo = String(
+      f.AssignedToStepNo ?? f.AssignedToStep ?? f.AssignedToStepNumber ?? ''
+    ).trim();
+    const dueDate = String(
+      f.DueDate ?? f.DueDate0 ?? f.Due ?? f.Due_x0020_Date ?? ''
+    ).trim();
+
+    // ?? Comment field ??????????????????????????????????????
+    let comment = '';
+    let commentHtml = '';
+    if (f.Comment ?? f.Notes ?? f.field_10) {
+      let raw = String(f.Comment ?? f.Notes ?? f.field_10).trim()
+        .replace(/&nbsp;|&#160;/g, ' ')
+        .replace(/&#58;/g, ':').replace(/&#46;/g, '.')
+        .replace(/&quot;|&#34;/g, '"').replace(/&#39;|&apos;/g, "'")
+        .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+        .replace(/<(?!\/?a\b)[^>]*>/gi, '');
+      comment = raw.replace(/<[^>]*>/g, '').trim()
+        .replace(/Please Approve ([\w\s]+) eForm for - ([\w\s]+)/gi, '$1 Request\n\nRequested by: $2')
+        .replace(/Date From[\s]*:[\s]*([\d\/]+)/gi, 'From: $1')
+        .replace(/Date To[\s]*:[\s]*([\d\/]+)/gi, '\nTo: $1')
+        .replace(/Requested Days[\s]*:[\s]*(\d+)/gi, '\nDuration: $1 days')
+        .replace(/Please click.*HERE.*to update eForm[\.] ID=([\d]+)/gi, '\n\neForm List ID: $1')
+        .replace(/\s+/g, ' ').replace(/\n\s*\n/g, '\n\n').trim();
+      commentHtml = raw
+        // Match quoted AND unquoted hrefs  SharePoint/PowerApps comments are
+        // stored with mixed encodings, so quotes may be missing after decoding.
+        .replace(/<a\b[^>]*\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>/gi, (_match, dq, sq, unq) => {
+          const rawHref = String(dq ?? sq ?? unq ?? '').replace(/^["']+|["']+$/g, '').trim();
+          const fixedHref = normalizeSharePointFileUrl(rawHref);
+          return `<a class="comment-link" href="${fixedHref}" target="_blank" rel="noopener noreferrer">`;
+        })
+        .replace(/(Date From\s*:)/gi, '<br><br>$1')
+        .replace(/(Date To\s*:)/gi, '<br>$1')
+        .replace(/(Requested Days\s*:)/gi, '<br>$1')
+        .replace(/(Please click)/gi, '<br>$1')
+        .replace(/(<br\s*\/?>\s*){3,}/gi, '<br><br>').trim();
+    }
+
+    // insert line breaks before numbered items (e.g. "39. ...40. ...")
+    // Only touch text nodes  running this over the whole string used to inject
+    // "<br>" inside href="..." attributes and break links to files whose URL
+    // contains digits followed by a dot (e.g. ".../2022.pdf").
+    commentHtml = commentHtml
+      .split(/(<[^>]*>)/)
+      .map(part => part.startsWith('<') ? part : part.replace(/(\d+)\.\s*/g, '<br>$1. '))
+      .join('');
+
+    // ensure adjacent anchor tags are separated onto their own lines
+    commentHtml = commentHtml.replace(/<\/a>\s*<a /gi, '</a><br><a ');
+
+    const attachmentFromHtml = this.extractAttachmentFromCommentHtml(commentHtml);
+    const attachmentUrl = normalizeSharePointFileUrl(attachmentFromHtml.url);
+    const attachmentFileName = attachmentFromHtml.fileName;
+
+    // ?? Body text ??????????????????????????????????????????
+    const taskLabel = listName.replace('HRTask', '');
+    const displayName = isCommentEntry ? sharePointTitle : taskLabel;
+    const statusLower = status.toLowerCase();
+    const isApproved = statusLower.includes('approv') || statusLower.includes('complet');
+    let body = '';
+
+    if (isChangeOfShift) {
+      body = submitter && primaryApprover && isApproved
+        ? `Change of Shift Request for ${submitter} was Approved by ${primaryApprover}`
+        : submitter ? `Change of Shift Request for ${submitter}` : '';
+      if (requestorPin) body += `\nRequestor PIN: ${requestorPin}`;
+      if (section) body += `\nSection: ${section}`;
+      if (reason) body += `\nReason: ${reason}`;
+      if (stage) body += `\nCurrent Stage: ${stage}`;
+      if (approver1) {
+        body += `\n${isApproved ? '?' : '?'} Approver 1: ${approver1}`;
+        if (approver1Pin) body += ` (PIN: ${approver1Pin})`;
+        if (approver1Date) body += `  ${approver1Date}`;
+        if (approver1Comment) body += `\n  Comment: ${approver1Comment}`;
+      }
+      if (approver2) {
+        body += `\n? Approver 2: ${approver2}`;
+        if (approver2Pin) body += ` (PIN: ${approver2Pin})`;
+        if (approver2Date) body += `  ${approver2Date}`;
+        if (approver2Comment) body += `\n  Comment: ${approver2Comment}`;
+      }
+      if (approver3) {
+        body += `\n? Approver 3: ${approver3}`;
+        if (approver3Pin) body += ` (PIN: ${approver3Pin})`;
+        if (approver3Date) body += `  ${approver3Date}`;
+        if (approver3Comment) body += `\n  Comment: ${approver3Comment}`;
+      }
+      if (spToken) body += `\nToken: ${spToken}`;
+    } else if (isTelework || isTeleworkReports) {
+      body = submitter && primaryApprover && isApproved
+        ? `Telework Request for ${submitter} was Approved by ${primaryApprover}`
+        : submitter ? `Telework Request for ${submitter}` : '';
+      if (fromDate && toDate) body += `\nFrom: ${fromDate}  To: ${toDate}`;
+      if (reason && reason !== 'Enter value here') body += `\nReason: ${reason}`;
+      if (primaryApprover && primaryApprover !== 'Enter value here') {
+        body += `\n${isApproved ? '?' : '?'} ${primaryApprover}`;
+        if (approver1Date) body += `  ${approver1Date}`;
+      }
+    } else {
+      body = submitter && primaryApprover && isApproved
+        ? `${taskLabel} Task for ${submitter} was Approved by ${primaryApprover}`
+        : submitter ? `${taskLabel} Task for ${submitter}` : '';
+      if (reason && reason !== 'Enter value here') body += `\nReason: ${reason}`;
+      if (stage) body += `\nCurrent Stage: ${stage}`;
+      if (section) body += `\nSection: ${section}`;
+      if (approver1) {
+        body += `\n${isApproved ? '?' : '?'} Approver 1: ${approver1}`;
+        if (approver1Date) body += `  ${approver1Date}`;
+        if (approver1Comment) body += `\n  Comment: ${approver1Comment}`;
+      }
+      if (approver2) {
+        body += `\n? Approver 2: ${approver2}`;
+        if (approver2Date) body += `  ${approver2Date}`;
+      }
+      if (approver3) {
+        body += `\n? Approver 3: ${approver3}`;
+        if (approver3Date) body += `  ${approver3Date}`;
+      }
+    }
+    body += `\nPlease click HERE to update HR Task. eFormListId=${eFormListId}`;
+
+    const itemWebUrl = list.webUrl
+      ? `${list.webUrl}/DispForm.aspx?ID=${item.id}`
+      : `${siteWebUrl}/Lists/${listName}/DispForm.aspx?ID=${item.id}`;
+
+    return {
+      id: item.id,
+      name: displayName,
+      webUrl: itemWebUrl,
+      lastModifiedDateTime: f.Modified ?? item?.lastModifiedDateTime ?? '',
+      isFolder: false,
+      status, statusDate, submittedBy: submitter, submittedDate,
+      completedBy: primaryApprover,
+      description: body,
+      listName,
+      isAssignedToCurrentUser,
+      isContentLoaded: true,
+      eFormDetails: {
+        type: displayName, status, submitter, listName,
+        completedBy: primaryApprover,
+        approver1, approver1Date, approver1Comment,
+        approver2, approver2Date, approver2Comment,
+        approver3, approver3Date, approver3Comment,
+        submittedDate, statusDate, missedDate, timeIn, timeOut, missed,
+        hoursForTransfer, fromYear, toYear, needEngineer,
+        requestorPin, approver1Pin, approver2Pin, approver3Pin, token: spToken,
+        fromDate, toDate, reason, stage, section, body,
+        progress, taskOutcome, assignedTo, assignedToSuperior,
+        category, comment, commentHtml: isCommentEntry ? (commentHtml || comment) : commentHtml, eFormListId,
+        attachmentUrl, attachmentFileName,
+        assignedAtStepNo, assignedToStepNo, dueDate,
+        taskOutcomeField, assignedTo2, assignedToSuperior1, assignedToSuperior2field,
+        createdBy, modifiedBy, createdDate, modifiedDate, eFormCategory, eFormProgress,
+        customCreatedBy: submitter,
+        customCreatedDate: customCreatedDate || submittedDate,
+        customModifiedBy,
+        customModifiedDate: customModifiedDate || String(f.Modified ?? item.lastModifiedDateTime ?? '').trim(),
+        rawFields: f,
+      },
+    };
+  }
+
+  // ============================================================
+  // EFORM CONTENT MODAL
+  // ============================================================
+  protected selectedEFormContent: {
+    fileName: string;
+    content: string;
+    contentType: string;
+    uploadDate: string;
+    eFormDetails?: any;
+    detailRows?: { label: string; value: string; sectionBreak?: boolean }[];
+  } | null = null;
+  protected isLoadingEFormContent = false;
+
+  // Handles the delegate form submission. The SharePoint write is delegated to
+  // the service, and the UI is only updated after that write is verified  so an
+  // unverified/failed write shows an error instead of a fake success.
+  protected async onDelegateTask(payload: { task: any; newAssignee: any }): Promise<void> {
+    const task = payload?.task;
+    const newAssignee = payload?.newAssignee;
+
+    if (!task || !newAssignee) {
+      console.error('Invalid delegation payload');
+      return;
+    }
+
+    const newAssigneeName: string = newAssignee.Title;
+    const newAssigneeEmail: string = newAssignee.Email || newAssignee.UserPrincipalName || '';
+
+    try {
+      // Persist to SharePoint first; this resolves only when the change is verified.
+      await this.delegateService.updateAssignedTo(task, newAssignee);
+      this.onDelegateSuccess(task.id, newAssigneeName, newAssigneeEmail);
+    } catch (error: any) {
+      console.error('Error delegating task:', error);
+      const msg = error?.message || 'Unknown error';
+      this.showModal('Delegate Failed', `Could not update SharePoint: ${msg}`, 'error');
+    }
+  }
+
+  private onDelegateSuccess(itemId: string, newAssigneeName: string, newAssigneeEmail = ''): void {
+    // Update the item in-place so the UI reflects the real SharePoint state.
+    // Removing it locally was masking failed writes  on refresh the item would
+    // reappear because SharePoint still had the old assignee.
+    const item = this.commentItems.find(c => c.id === itemId);
+    if (item) {
+      if (item.eFormDetails) {
+        item.eFormDetails = { ...item.eFormDetails, assignedTo: newAssigneeName || newAssigneeEmail };
+
+        console.log('item.eFormDetails:', item.eFormDetails);
+      }
+      (item as any).assignedTo = newAssigneeName || newAssigneeEmail;
+    }
+    this.syncTaskCachesAfterMutation(item ?? { id: itemId }, 'delegate', {
+      assignedToName: newAssigneeName,
+      assignedToEmail: newAssigneeEmail,
+    });
+    this.invalidateCommentFilters();
+    this.refreshView();
+    this.showModal('Task Delegated', `Task has been delegated to ${newAssigneeName}.`, 'success');
+  }
+
+  private buildHrTaskDetailRows(
+    d: any,
+    task: any,
+  ): { label: string; value: string; sectionBreak?: boolean }[] {
+    const clean = (v: any) =>
+      !v || String(v).trim() === '' || String(v).trim() === 'Enter value here'
+        ? '' : String(v).trim();
+
+    const rows: { label: string; value: string; sectionBreak?: boolean }[] = [];
+    const push = (label: string, value: string) => {
+      if (value) rows.push({ label, value });
+    };
+    const endSection = () => {
+      if (rows.length) rows[rows.length - 1].sectionBreak = true;
+    };
+
+    const fmtDate = (val: string) => {
+      const dt = new Date(val);
+      return isNaN(dt.getTime())
+        ? val
+        : dt.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) +
+        ' ' + dt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    };
+
+    const statusLower = clean(d.status).toLowerCase();
+    const isApproved = statusLower.includes('approv') || statusLower.includes('complet');
+    const isRejected = statusLower.includes('reject') || statusLower.includes('denied');
+    const statusSuffix = isApproved ? ' ?' : isRejected ? ' ?' : '';
+
+    push('HR Task Type :', d.type || task.name);
+    push('eForm List ID :', clean(d.eFormListId));
+    push('Task ID :', clean(task.id));
+    push('Status :', `${clean(d.status)}${statusSuffix}`);
+    endSection();
+
+    push('Requestor :', clean(d.submitter));
+    if (clean(d.submittedDate)) push('submitted :', fmtDate(d.submittedDate));
+    if (clean(d.section)) push('section :', clean(d.section));
+    endSection();
+
+    if (clean(d.missedDate)) push('date :', clean(d.missedDate));
+    if (clean(d.timeIn)) push('Time In:', `${clean(d.timeIn)}:00`);
+    if (clean(d.timeOut)) push('time out :', `${clean(d.timeOut)}:00`);
+    if (clean(d.reason)) push('Reason:', clean(d.reason));
+    if (clean(d.fromDate)) push('from date :', clean(d.fromDate));
+    if (clean(d.toDate)) push('to date :', clean(d.toDate));
+    if (rows.length && rows[rows.length - 1].sectionBreak !== true) endSection();
+
+    if (clean(d.approver1)) {
+      push('Approver 1:', clean(d.approver1));
+      if (clean(d.approver1Date)) push('Approver 1 Date :', clean(d.approver1Date));
+      if (clean(d.approver1Comment)) push('Approver 1 Comment :', clean(d.approver1Comment));
+    }
+    if (clean(d.approver2)) {
+      push('Approver 2:', clean(d.approver2));
+      if (clean(d.approver2Date)) push('Approver 2 Date :', clean(d.approver2Date));
+      if (clean(d.approver2Comment)) push('Approver 2 Comment :', clean(d.approver2Comment));
+    }
+    if (clean(d.approver3)) {
+      push('Approver 3:', clean(d.approver3));
+      if (clean(d.approver3Date)) push('Approver 3 Date :', clean(d.approver3Date));
+      if (clean(d.approver3Comment)) push('Approver 3 Comment :', clean(d.approver3Comment));
+    }
+
+    if (clean(d.hoursForTransfer)) push('Hours to Transfer :', clean(d.hoursForTransfer));
+    if (clean(d.fromYear)) push('From Year :', clean(d.fromYear));
+    if (clean(d.toYear)) push('To Year :', clean(d.toYear));
+    if (clean(d.needEngineer)) push('Engineer Approval :', clean(d.needEngineer));
+    if (clean(d.requestorPin)) push('Requestor PIN :', clean(d.requestorPin));
+    if (clean(d.stage)) push('Current Stage :', clean(d.stage));
+    if (clean(d.eFormCategory)) push('Category :', clean(d.eFormCategory));
+    if (clean(d.eFormProgress)) push('Progress :', clean(d.eFormProgress));
+    if (clean(d.taskOutcomeField)) push('Task Outcome :', clean(d.taskOutcomeField));
+    if (clean(d.assignedTo2)) push('Assigned To :', clean(d.assignedTo2));
+    if (clean(d.assignedToSuperior)) push('Assigned To Superior :', clean(d.assignedToSuperior));
+    if (clean(d.assignedToStepNo)) push('Assigned To Step No :', clean(d.assignedToStepNo));
+    if (clean(d.assignedToSuperior1)) push('Superior 1 :', clean(d.assignedToSuperior1));
+    if (clean(d.assignedToSuperior2field)) push('Superior 2 :', clean(d.assignedToSuperior2field));
+    if (clean(d.createdDate)) push('Created :', fmtDate(d.createdDate));
+    if (clean(d.modifiedDate)) push('Modified :', fmtDate(d.modifiedDate));
+
+    return rows;
+  }
+
+  protected openHrTaskForm(task: any): void {
+    if (!task.id) return;
+
+    try {
+      const d = task.eFormDetails;
+      const detailRows = this.buildHrTaskDetailRows(d, task);
+      const content = detailRows.map((row) => `${row.label}: ${row.value}`).join('\n');
+
+      this.selectedEFormContent = {
+        fileName: `${d.type || task.name}  eForm List ID ${detailRows.find((r) => r.label === 'eForm List ID')?.value ?? ''}`,
+        content,
+        contentType: 'text/plain',
+        uploadDate: task.submittedDate || task.lastModifiedDateTime,
+        eFormDetails: d,
+        detailRows,
+      };
+    } catch (error) {
+      this.selectedEFormContent = {
+        fileName: task.name,
+        content: `Failed to load content: ${(error as any)?.message || 'Unknown error'}`,
+        contentType: 'text/plain',
+        uploadDate: task.lastModifiedDateTime || task.submittedDate,
+      };
+    }
+    this.isLoadingEFormContent = false;
+    this.refreshView();
+  }
+
+  protected closeFormViewer(): void { this.selectedEFormContent = null; }
+
+  // ============================================================
+  // GRAPH API  thin wrapper used inside this component
+  // Services use the standalone graphGet() helper directly.
+  // ============================================================
+  private graphGet(path: string, token: string, timeoutMs: number = AppConstants.graphDefaultTimeoutMs) {
+    return graphGet(this.http, path, token, timeoutMs);
+  }
+
+  // ============================================================
+  // GET TARGET DRIVE ID
+  // ============================================================
+  /** Dedupes concurrent drive lookups during login / HR Files open. */
+  private driveResolveInFlight: Promise<string | null> | null = null;
+
+  private async getTargetDriveId(token: string): Promise<string | null> {
+    if (this.cachedDriveId && this.cachedSiteId) return this.cachedDriveId;
+    if (this.driveResolveInFlight) return this.driveResolveInFlight;
+
+    this.driveResolveInFlight = this.resolveTargetDriveId(token);
+    try {
+      return await this.driveResolveInFlight;
+    } finally {
+      this.driveResolveInFlight = null;
+    }
+  }
+
+  private async resolveTargetDriveId(token: string): Promise<string | null> {
+    if (this.cachedDriveId && this.cachedSiteId) return this.cachedDriveId;
+
+    const site = await this.siteMetadataService.resolve(token);
+    this.cachedSiteId = site.siteId;
+    this.cachedSiteWebUrl = site.siteWebUrl;
+    if (this.cachedSiteLists.length === 0) this.cachedSiteLists = site.lists;
+
+    const drives: any = await graphGetWithRetry(
+      this.http,
+      `/sites/${site.siteId}/drives?$select=id,name,webUrl`,
+      token,
+    );
+    const driveList: any[] = drives?.value ?? [];
+
+    const targetDrive = driveList.find(
+      (d: any) => normalizeName(d.name) === normalizeName(this.targetLibraryName)
+    );
+    if (targetDrive?.id) { this.cachedDriveId = targetDrive.id; return targetDrive.id; }
+
+    const documentsDrive = driveList.find((d: any) => {
+      const n = normalizeName(d.name);
+      return n === 'documents' || n === 'shareddocuments';
+    });
+    if (documentsDrive?.id) {
+      const rootChildren: any = await graphGetWithRetry(
+        this.http,
+        `/drives/${documentsDrive.id}/root/children?$select=id,name,webUrl,folder&$top=500`,
+        token,
+        AppConstants.graphFileListingTimeoutMs,
+      );
+      const targetFolder = (rootChildren?.value ?? []).find(
+        (item: any) =>
+          !!item?.folder && normalizeName(item.name) === normalizeName(this.targetLibraryName)
+      );
+      if (targetFolder?.id) { this.cachedDriveId = documentsDrive.id; return documentsDrive.id; }
+    }
+    return null;
+  }
+
+  // ============================================================
+  // RESOLVE HR PERSONAL FOLDER NAME (for user card display)
+  // ============================================================
+  private async resolveHrPersonalFolderName(): Promise<void> {
+    if (!this.currentUser) {
+      this.hrPersonalFolderName = null;
+      return;
+    }
+    if (this.hrPersonalFolderName) return;
+
+    this.refreshView();
+    try {
+      const token = await this.getSharePointToken();
+      const driveId = await this.getTargetDriveId(token);
+      if (!driveId) return;
+
+      const userFolder = await this.findUserFolder(driveId, token);
+      if (userFolder?.name) {
+        this.hrPersonalFolderName = userFolder.name;
+        if (!this.userRootFolderId) {
+          this.userRootFolderId = userFolder.id;
+        }
+      }
+    } catch { /* non-blocking  card falls back to placeholder text */ }
+    finally {
+      this.refreshView();
+    }
+  }
+
+  // ============================================================
+  // FIND USER FOLDER (4-level cache hierarchy)
+  // ============================================================
+  private async findUserFolder(
+    driveId: string, token: string
+  ): Promise<{ id: string; name: string; webUrl?: string } | null> {
+    const candidates = this.getUserFolderCandidates();
+    if (!candidates.length) return null;
+
+    const memKey = `${driveId}-root`;
+    const lsKey = `${AppConstants.folderCacheLsPrefix}${driveId}_${this.currentUser?.userPrincipalName ?? ''}`;
+
+    try {
+      const stored = localStorage.getItem(lsKey);
+      if (stored) {
+        const parsed = JSON.parse(stored) as { id: string; name: string; webUrl: string; cachedAt: number };
+        if (parsed?.id && (Date.now() - parsed.cachedAt) < AppConstants.folderCacheTtlMs) {
+          this.folderCache.set(memKey, parsed);
+          return { id: parsed.id, name: parsed.name, webUrl: parsed.webUrl };
+        }
+      }
+    } catch { /* ignore corrupt cache */ }
+
+    const memCached = this.folderCache.get(memKey);
+    if (memCached) return memCached;
+
+    const directResult = await this.findUserFolderDirect(driveId, token, candidates);
+    if (directResult) {
+      this.folderCache.set(memKey, directResult);
+      try {
+        localStorage.setItem(lsKey, JSON.stringify({
+          ...directResult, webUrl: directResult.webUrl ?? '', cachedAt: Date.now(),
+        }));
+      } catch { /* ignore corrupt cache */ }
+      return directResult;
+    }
+
+    // Do NOT deep-walk the drive (was up to ~1500 children Graph calls). Direct path +
+    // root listing above is enough for the card; My Files can resolve later on demand.
+    return null;
+  }
+
+  private clearLocalStorageFolderCache(): void {
+    try {
+      Object.keys(localStorage)
+        .filter(k => k.startsWith(AppConstants.folderCacheLsPrefix))
+        .forEach(k => localStorage.removeItem(k));
+    } catch { /* ignore */ }
+  }
+
+  private async findUserFolderDirect(
+    driveId: string,
+    token: string,
+    candidates: string[]
+  ): Promise<{ id: string; name: string; webUrl?: string } | null> {
+    const user = this.currentUser;
+    if (!user) return null;
+
+    const email = (user.email || user.userPrincipalName || '').trim().toLowerCase();
+    const upn = (user.userPrincipalName || '').trim().toLowerCase();
+    const employeeId = (user.employeeId || '').trim();
+
+    const exactNames: string[] = [];
+    if (employeeId) {
+      if (email) exactNames.push(`${employeeId} ${email}`);
+      if (upn && upn !== email) exactNames.push(`${employeeId} ${upn}`);
+    }
+    if (email) exactNames.push(email);
+    if (upn && upn !== email) exactNames.push(upn);
+
+    for (const exactName of exactNames) {
+      try {
+        const folder: any = await graphGetWithRetry(
+          this.http,
+          `/drives/${driveId}/root:/${encodeURIComponent(exactName)}?$select=id,name,webUrl,folder`,
+          token,
+          AppConstants.graphFileListingTimeoutMs,
+        );
+        if (folder?.id && folder?.folder) {
+          return { id: folder.id, name: folder.name, webUrl: folder.webUrl };
+        }
+      } catch { /* try the next candidate */ }
+    }
+
+    try {
+      const rootChildren: any = await graphGetWithRetry(
+        this.http,
+        `/drives/${driveId}/root/children?$select=id,name,webUrl,folder&$top=999`,
+        token,
+        AppConstants.graphFileListingTimeoutMs,
+      );
+      const folders = (rootChildren?.value ?? []).filter((item: any) => !!item?.folder);
+
+      for (const exactName of exactNames) {
+        const match = folders.find(
+          (f: any) => (f.name ?? '').toLowerCase() === exactName.toLowerCase()
+        );
+        if (match) return { id: match.id, name: match.name, webUrl: match.webUrl };
+      }
+
+      let bestMatch: { id: string; name: string; webUrl?: string } | null = null;
+      let bestScore = 0;
+      for (const folder of folders) {
+        const score = this.scoreFolderMatch(folder.name ?? '', candidates);
+        if (score > bestScore) {
+          bestScore = score;
+          bestMatch = { id: folder.id, name: folder.name, webUrl: folder.webUrl };
+        }
+      }
+      if (bestMatch && bestScore >= 55) return bestMatch;
+    } catch { /* skip */ }
+    return null;
+  }
+
+  private async scanForUserFolder(
+    driveId: string,
+    containerFolder: string,
+    token: string,
+    candidates: string[]
+  ): Promise<{ id: string; name: string; webUrl?: string } | null> {
+    let foldersToVisit = [containerFolder];
+    let scannedFolders = 0;
+    const startedAtMs = Date.now();
+    let bestMatch: { id: string; name: string; webUrl?: string } | null = null;
+    let bestScore = 0;
+
+    while (foldersToVisit.length > 0) {
+      if (scannedFolders >= 1500 || Date.now() - startedAtMs > 60_000) break;
+
+      const batch = foldersToVisit.splice(0, 5);
+      const batchResults = await Promise.all(batch.map(async folderId => {
+        const path = folderId === 'root'
+          ? `/drives/${driveId}/root/children?$select=id,name,webUrl,folder&$top=50`
+          : `/drives/${driveId}/items/${folderId}/children?$select=id,name,webUrl,folder&$top=200`;
+        try {
+          const page: any = await graphGetWithRetry(
+            this.http, path, token, AppConstants.graphFileListingTimeoutMs,
+          );
+          return (page?.value ?? []).filter((item: any) => !!item?.folder);
+        } catch { return []; }
+      }));
+
+      let foundHighScore = false;
+      for (const folderChildren of batchResults) {
+        for (const folder of folderChildren) {
+          scannedFolders += 1;
+          const score = this.scoreFolderMatch(folder.name || '', candidates);
+          if (score > bestScore) {
+            bestScore = score;
+            bestMatch = { id: folder.id, name: folder.name, webUrl: folder.webUrl };
+          }
+          if (score >= 95) { foundHighScore = true; break; }
+          if (scannedFolders < 1500) foldersToVisit.push(folder.id);
+        }
+        if (foundHighScore) break;
+      }
+      if (foundHighScore) break;
+    }
+
+    return (!bestMatch || bestScore < 55) ? null : bestMatch;
+  }
+
+  // ============================================================
+  // GET ALL DRIVE ITEMS
+  // ============================================================
+  private async getAllDriveItems(
+    driveId: string,
+    token: string,
+    startFolderId: string = 'root',
+    onProgress?: (message: string) => void
+  ): Promise<{ items: any[]; hadFailures: boolean; wasTruncated: boolean }> {
+    const collected: any[] = [];
+    const foldersToVisit: string[] = [startFolderId];
+    let hadFailures = false;
+    let wasTruncated = false;
+    let visitedFolders = 0;
+    const startedAtMs = Date.now();
+
+    while (foldersToVisit.length > 0) {
+      if (
+        visitedFolders >= AppConstants.maxDriveFoldersToScan ||
+        collected.length >= AppConstants.maxDriveItemsToCollect ||
+        Date.now() - startedAtMs > AppConstants.maxDriveTraversalMs
+      ) {
+        wasTruncated = hadFailures = true;
+        break;
+      }
+
+      const batch = foldersToVisit.splice(0, 5);
+      this.startUserFileLoadingWatchdog(); // reset once per batch
+
+      const batchPromises = batch.map(async folderId => {
+        visitedFolders += 1;
+        let nextPath: string | null = folderId === 'root'
+          ? `/drives/${driveId}/root/children?$select=id,name,webUrl,lastModifiedDateTime,lastModifiedBy,size,file,folder,parentReference&$top=200`
+          : `/drives/${driveId}/items/${folderId}/children?$select=id,name,webUrl,lastModifiedDateTime,lastModifiedBy,size,file,folder,parentReference&$top=200`;
+        const folderResults: any[] = [];
+        while (nextPath) {
+          try {
+            const page: any = await graphGetWithRetry(
+              this.http, nextPath, token, AppConstants.graphFileListingTimeoutMs,
+            );
+            const pageItems: any[] = page?.value ?? [];
+            folderResults.push(...pageItems);
+            for (const item of pageItems) {
+              if ((item?.folder?.childCount ?? 0) > 0) foldersToVisit.push(item.id);
+            }
+            nextPath = toGraphPath(page?.['@odata.nextLink']);
+          } catch {
+            hadFailures = true;
+            break;
+          }
+        }
+        return folderResults;
+      });
+
+      try {
+        const batchResults = await Promise.all(batchPromises);
+        for (const results of batchResults) collected.push(...results);
+        onProgress?.(`Loading files... ${collected.length} items found`);
+      } catch {
+        hadFailures = true;
+      }
+    }
+
+    return { items: collected, hadFailures, wasTruncated };
+  }
+
+  // ============================================================
+  // USER FOLDER CANDIDATE NAMES & SCORING
+  // ============================================================
+  private getUserFolderCandidates(): string[] {
+    const user = this.currentUser;
+    if (!user) return [];
+
+    const email = (user.email || '').trim().toLowerCase();
+    const upn = (user.userPrincipalName || '').trim().toLowerCase();
+    const displayName = (user.username || '').trim().toLowerCase();
+    const employeeId = (user.employeeId || '').trim().toLowerCase();
+
+    const localFromEmail = email.includes('@') ? email.split('@')[0] : email;
+    const localFromUpn = upn.includes('@') ? upn.split('@')[0] : upn;
+
+    const displayParts = displayName.split(/\s+/).filter(Boolean);
+    const reversedDisplayName = displayParts.length >= 2
+      ? `${displayParts[displayParts.length - 1]} ${displayParts.slice(0, -1).join(' ')}`
+      : '';
+
+    const unique = new Set<string>();
+    for (const c of [email, upn, localFromEmail, localFromUpn, displayName, reversedDisplayName, employeeId]) {
+      if (c) { unique.add(c); unique.add(normalizeName(c)); }
+    }
+    return Array.from(unique).filter(Boolean);
+  }
+
+  private scoreFolderMatch(folderName: string, candidates: string[]): number {
+    const nf = normalizeName(folderName);
+    const rfl = folderName.toLowerCase();
+    let bestScore = 0;
+
+    for (const candidate of candidates) {
+      const nc = normalizeName(candidate);
+      const rc = candidate.toLowerCase();
+      if (!nc && !rc) continue;
+
+      if (nf && nc && nf === nc) bestScore = Math.max(bestScore, 100);
+      else if (rfl === rc) bestScore = Math.max(bestScore, 95);
+      else if (nf && nc && (nf.startsWith(nc) || nc.startsWith(nf))) bestScore = Math.max(bestScore, 80);
+      else if (nf && nc && (nf.includes(nc) || nc.includes(nf))) bestScore = Math.max(bestScore, 70);
+      else if (rc && rfl.includes(rc)) bestScore = Math.max(bestScore, 60);
+    }
+    return bestScore;
+  }
+
+  // ============================================================
+  // ERROR HANDLER
+  // ============================================================
+  private handleUserFilesError(error: unknown): void {
+    this.clearUserFileLoadingWatchdog();
+    if ((error as any)?.name === 'TimeoutError') {
+      this.userFileError = 'SharePoint request timed out. Please try again.';
+    } else if (error instanceof HttpErrorResponse) {
+      const msg = error?.error?.error?.message || error?.error?.message || error.message;
+      this.userFileError = `Graph error ${error.status}: ${msg}`;
+    } else if (error instanceof Error) {
+      this.userFileError = error.message;
+    } else {
+      this.userFileError = 'Failed to load files from SharePoint.';
+    }
+    this.isLoadingUserFiles = false;
+    this.refreshView();
+  }
+
+
+  // ============================================================
+  // WATCHDOG TIMER
+  // ============================================================
+  private startUserFileLoadingWatchdog(): void {
+    this.clearUserFileLoadingWatchdog();
+    this.userFileLoadingTimeoutId = setTimeout(() => {
+      if (this.isLoadingHrFilesList) {
+        this.userFileError = 'SharePoint request timed out. Please try again.';
+        this.isLoadingHrFilesList = false;
+        this.refreshView();
+        return;
+      }
+      if (this.isLoadingUserFiles) {
+        this.userFileError = 'SharePoint request timed out. Please try again.';
+        this.isLoadingUserFiles = false;
+        this.refreshView();
+      }
+    }, AppConstants.userFileLoadingWatchdogMs);
+  }
+
+  private clearUserFileLoadingWatchdog(): void {
+    if (this.userFileLoadingTimeoutId !== null) {
+      clearTimeout(this.userFileLoadingTimeoutId);
+      this.userFileLoadingTimeoutId = null;
+    }
+  }
+
+  // ============================================================
+  // POWERAPPS MODAL
+  // ============================================================
+  protected showPowerAppsModal = false;
+
+  protected openPowerAppsModal(): void {
+    this.showPowerAppsModal = true;
+  }
+
+  protected closePowerAppsModal(): void {
+    this.showPowerAppsModal = false;
+  }
+
+  // ============================================================
+  // NEW COMMENT MODAL
+  // ============================================================
+  protected isCommentPanelOpen = false;
+  protected selectedTask: { Id: number | string } | null = null;
+  protected selectedCommentListName = '';
+
+  protected get showRequestForActionCategory(): boolean {
+    return this.formConfigService.allowsRequestForAction(
+      this.selectedEFormListId ?? '',
+      this.selectedEFormTitle ?? '',
+      this.selectedCommentListName,
+    );
+  }
+
+  protected openNewCommentModal(): void {
+    if (!this.selectedTask?.Id) {
+      console.error('Select a task first');
+      return;
+    }
+    this.isCommentPanelOpen = true;
+  }
+
+  protected closeNewCommentModal(): void {
+    this.isCommentPanelOpen = false;
+  }
+
+  /** Marks a Request for Action as completed in SharePoint and removes it from To Do. */
+  protected async onCompleteTask(event: { task: any; completionText: string }): Promise<void> {
+    const task = event?.task;
+    const completionText = String(event?.completionText ?? '').trim();
+    const taskId = String(task?.id ?? task?.Id ?? '').trim();
+    if (!taskId) return;
+
+    try {
+      const completedByName = this.getLoggedInUserDisplayName();
+      await this.commentService.completeRequestForAction(task, completionText, completedByName);
+
+      this.todoService.removeTask(taskId);
+      // Keep Redis in sync  otherwise the completed task reappears on the next
+      // cache paint until a full Graph refresh replaces the snapshot.
+      this.syncTaskCachesAfterMutation(task, 'complete');
+
+      const completionNote = completionText
+        ? `[Completed by ${completedByName}]: ${completionText}`
+        : `[Completed by ${completedByName}]`;
+
+      this.commentItems = this.commentItems.map(item => {
+        if (String(item.id ?? '').trim() !== taskId) {
+          return item;
+        }
+
+        const existingComment = String(
+          item.eFormDetails?.['comment'] ?? item.eFormDetails?.['commentHtml'] ?? '',
+        )
+          .replace(/<br\s*\/?>/gi, '\n')
+          .replace(/<[^>]+>/g, '')
+          .trim();
+        const mergedComment = existingComment
+          ? `${existingComment}\n\n${completionNote}`
+          : completionNote;
+
+        return {
+          ...item,
+          status: '',
+          completedBy: completedByName,
+          eFormDetails: {
+            ...(item.eFormDetails ?? {}),
+            status: '',
+            completedBy: completedByName,
+            comment: mergedComment,
+            commentHtml: mergedComment.replace(/\n/g, '<br>'),
+          },
+        };
+      });
+
+      this.allFilesComponent?.refreshCommentSearchCache();
+      this.invalidateCommentFilters();
+      this.refreshView();
+    } catch (err) {
+      console.error('Failed to complete Request for Action:', err);
+      this.errorMessage = err instanceof Error ? err.message : 'Failed to complete task';
+      this.refreshView();
+    }
+  }
+
+  // to update the comment section iteams for the new-comment modal in the todo section
+  //also this is saved by the new-comment modal in the todo section grouping the comments by task id.
+  protected onNewCommentSaved(ev: NewCommentSavedEvent): void {
+    const newItem = this.buildCommentCardFromSavedEvent(ev);
+    if (!newItem) return;
+    this.prependCommentItem(newItem);
+
+    const parentTask =
+      this.commentItems.find(item => String(item.id ?? '').trim() === String(ev.taskId ?? '').trim()) ??
+      { id: ev.taskId };
+
+    if (ev.category === 'action' && ev.assignedToName) {
+      this.onDelegateSuccess(String(ev.taskId), ev.assignedToName, ev.assignedToEmail ?? '');
+    } else {
+      this.syncTaskCachesAfterMutation(parentTask, 'comment');
+    }
+  }
+
+  /** After a successful SharePoint due-date write, keep Redis snapshots aligned. */
+  protected onTaskDueDateChanged(event: { task: any; dueDate: string }): void {
+    const dueDate = String(event?.dueDate ?? '').trim();
+    if (!event?.task || !dueDate) return;
+    this.syncTaskCachesAfterMutation(event.task, 'dueDate', { dueDate });
+  }
+
+  private buildCommentCardFromSavedEvent(ev: NewCommentSavedEvent): CommentListItem | null {
+    const taskId = String(ev?.taskId ?? '').trim();
+    if (!taskId) return null;
+
+    const base = this.resolveCommentCardBase(taskId);
+    if (!base) return null;
+
+    switch (ev.category) {
+      case 'general':
+        return this.buildGeneralCommentCard(ev, base, taskId);
+      case 'attachment':
+        return this.buildAttachmentCommentCard(ev, base, taskId);
+      case 'action':
+        return this.buildActionCommentCard(ev, base, taskId);
+      default:
+        return this.buildDefaultSavedCommentCard(ev, base, taskId);
+    }
+  }
+  // to resolve the comment card base for the new-comment modal in the todo section
+  private resolveCommentCardBase(taskId: string): CommentListItem | null {
+    return (
+      this.commentItems.find(item => String(item.id ?? '').trim() === taskId) ??
+      this.buildCommentCardFromSelection(taskId)
+    );
+  }
+
+  // to get the task submitter from the comment card base for the new-comment modal in the todo section
+  private getTaskSubmitterFromBase(base: CommentListItem): string {
+    return (
+      base.submittedBy ??
+      base.eFormDetails?.submittedBy ??
+      base.eFormDetails?.submitter ??
+      this.currentUser?.username ??
+      ''
+    );
+  }
+
+  // to build the general comment card for the new-comment modal in the todo section
+  private buildGeneralCommentCard(
+    ev: NewCommentSavedEvent,
+    base: CommentListItem,
+    taskId: string
+  ): CommentListItem {
+    return this.createSavedCommentItem(base, taskId, 'General Comment', {
+      commentHtml: ev.comment,
+      commentCategory: ev.category,
+      attachmentFileName: '',
+      assignedTo: '',
+      category: '',
+      status: ''
+    }, ev.sharePointItemId);
+  }
+
+  // to build the attachment comment card for the new-comment modal in the todo section
+  private buildAttachmentCommentCard(
+    ev: NewCommentSavedEvent,
+    base: CommentListItem,
+    taskId: string
+  ): CommentListItem {
+    const attachmentFileName = String(ev.fileName ?? '').trim();
+    const attachmentUrl = String(ev.attachmentUrl ?? '').trim();
+    const commentHtml = this.buildCommentHtmlWithAttachment(
+      ev.comment,
+      attachmentFileName,
+      attachmentUrl
+    );
+
+    return this.createSavedCommentItem(base, taskId, 'New Attachment', {
+      status: '',
+      commentHtml,
+      commentCategory: ev.category,
+      attachmentFileName,
+      attachmentUrl,
+      assignedTo: '',
+      category: '',
+    }, ev.sharePointItemId);
+  }
+
+  private buildActionCommentCard(
+    ev: NewCommentSavedEvent,
+    base: CommentListItem,
+    taskId: string
+  ): CommentListItem {
+    const attachmentFileName = String(ev.fileName ?? '').trim();
+    const attachmentUrl = String(ev.attachmentUrl ?? '').trim();
+    const commentHtml = attachmentFileName && attachmentUrl
+      ? this.buildCommentHtmlWithAttachment(ev.comment, attachmentFileName, attachmentUrl)
+      : ev.comment;
+    const assignedTo = String(ev.assignedToName ?? '').trim();
+
+    return this.createSavedCommentItem(base, taskId, 'Request for Action', {
+      status: '',
+      commentHtml,
+      commentCategory: ev.category,
+      attachmentFileName,
+      attachmentUrl,
+      assignedTo,
+      category: '',
+    }, ev.sharePointItemId);
+  }
+
+  private escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+
+  // this is to make the url of the attachment clickable in the new-comment modal in the todo section
+  private buildCommentHtmlWithAttachment(
+    comment: string,
+    fileName: string,
+    attachmentUrl: string
+  ): string {
+    const safeComment = this.escapeHtml(comment.trim()).replace(/\n/g, '<br>');
+
+    if (!fileName || !attachmentUrl) {
+      return safeComment;
+    }
+
+    const safeName = this.escapeHtml(fileName);
+    const openUrl = normalizeSharePointFileUrl(attachmentUrl);
+    const safeUrl = this.escapeHtml(openUrl);
+    const attachmentLink =
+      `<a class="comment-link" href="${safeUrl}" target="_blank" rel="noopener noreferrer">` +
+      `${safeName}</a>`;
+
+    return safeComment ? `${safeComment}<br><br>${attachmentLink}` : attachmentLink;
+  }
+
+
+  protected openAttachmentLink(event: Event, url: string): void {
+    event.preventDefault();
+    event.stopPropagation();
+    // Strip stray quote characters left over from encoded hrefs (&quot;...&quot;).
+    const cleaned = String(url ?? '').trim().replace(/^["']+|["']+$/g, '');
+    const target = normalizeSharePointFileUrl(cleaned);
+    if (!target) {
+      return;
+    }
+    // Always open in a new tab  never navigate the app itself.
+    window.open(target, '_blank', 'noopener,noreferrer');
+  }
+
+  protected onCommentLinkClick(event: Event): void {
+    const anchor = (event.target as HTMLElement | null)?.closest('a');
+    if (!anchor || !(anchor instanceof HTMLAnchorElement)) {
+      return;
+    }
+    const href = anchor.getAttribute('href') ?? anchor.href;
+    if (!href || href.startsWith('#')) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    this.openAttachmentLink(event, href);
+  }
+
+  private extractAttachmentFromCommentHtml(html: string): { url: string; fileName: string } {
+    const match = html.match(/<a\b[^>]*\bhref=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i);
+    if (!match) {
+      return { url: '', fileName: '' };
+    }
+    return {
+      url: match[1].replace(/&amp;/g, '&').trim(),
+      fileName: match[2].replace(/<[^>]+>/g, '').trim(),
+    };
+  }
+
+  // to build the default saved comment card for the new-comment modal in the todo section
+  private buildDefaultSavedCommentCard(
+    ev: NewCommentSavedEvent,
+    base: CommentListItem,
+    taskId: string
+  ): CommentListItem {
+    return this.createSavedCommentItem(base, taskId, base.name ?? 'Comment', {
+      status: base.eFormDetails?.status ?? '',
+      commentHtml: ev.comment,
+      commentCategory: ev.category,
+      attachmentFileName: '',
+      assignedTo: base.eFormDetails?.assignedTo ?? '',
+      category: base.eFormDetails?.category ?? '',
+    }, ev.sharePointItemId);
+  }
+
+  private createSavedCommentItem(
+    base: CommentListItem,
+    taskId: string,
+    name: string,
+    details: {
+      status: string;
+      commentHtml: string;
+      commentCategory: string;
+      attachmentFileName: string;
+      attachmentUrl?: string;
+      assignedTo: string;
+      category: string;
+    },
+    sharePointItemId?: string
+  ): CommentListItem {
+    const commentAuthor = this.getLoggedInUserDisplayName();
+    const baseDetails = base.eFormDetails ?? {};
+    const inheritedRawFields = (baseDetails['rawFields'] ?? {}) as Record<string, unknown>;
+    return {
+      ...base,
+      id: sharePointItemId?.trim() || `comment:${taskId}:${Date.now()}`,
+      name,
+      submittedBy: commentAuthor,
+      eFormDetails: {
+        ...baseDetails,
+        ...details,
+        // Do not inherit parent task Status  comment cards hide status (and RFA uses its own).
+        rawFields: {
+          ...inheritedRawFields,
+          Title: name,
+          Status: details.status,
+          LastState: details.status,
+          ApprovalStatus: details.status,
+          WorkflowStatus: details.status,
+        },
+        eFormListId: baseDetails.eFormListId ?? this.selectedEFormListId ?? '',
+        submitter: commentAuthor,
+        commentSubmittedBy: commentAuthor,
+        submittedBy: commentAuthor,
+        submittedDate: new Date().toISOString(),
+      },
+      isContentLoaded: true,
+    };
+  }
+
+  private prependCommentItem(item: CommentListItem): void {
+    this.commentItems = [item, ...this.commentItems];
+    this.invalidateCommentFilters();
+    this.refreshView();
+  }
+
+  private buildCommentCardFromSelection(taskId: string): (typeof this.commentItems)[0] | null {
+    if (!this.selectedTask?.Id || String(this.selectedTask.Id) !== taskId) {
+      return null;
+    }
+
+    const todoTask = this.todoService.getTaskById(taskId);
+    if (todoTask) {
+      return {
+        id: taskId,
+        name: todoTask.name,
+        webUrl: String((todoTask as any).webUrl ?? ''),
+        isFolder: false,
+        submittedBy: todoTask.submittedBy,
+        eFormDetails: {
+          ...(todoTask.eFormDetails ?? {}),
+          eFormListId: this.selectedEFormListId ?? todoTask.eFormDetails?.eFormListId,
+          type: this.selectedEFormTitle ?? todoTask.eFormDetails?.type,
+          category: todoTask.eFormDetails?.category ?? 'eForm',
+          assignedTo: todoTask.eFormDetails?.assignedTo ?? todoTask.assignedTo,
+          submittedDate: todoTask.eFormDetails?.submittedDate,
+          status: todoTask.eFormDetails?.status ?? '',
+        },
+        isContentLoaded: true,
+      };
+    }
+
+    return {
+      id: taskId,
+      name: this.selectedEFormTitle ?? 'Task',
+      webUrl: '',
+      isFolder: false,
+      submittedBy: this.selectedSubmitter ?? undefined,
+      eFormDetails: {
+        eFormListId: this.selectedEFormListId,
+        type: this.selectedEFormTitle,
+        category: 'eForm',
+        status: '',
+      },
+      isContentLoaded: true,
+    };
+  }
+
+  // ============================================================
+  // MOBILE NAVIGATION
+  // ============================================================
+  protected activeNavIndex = MOBILE_NAV_INDEX.todo;
+
+  protected onNavItemClick(index: number): void {
+    const action = resolveMobileNavClick(
+      index,
+      this.activeNavIndex,
+      !!this.currentUser?.email
+    );
+
+    switch (action.type) {
+      case 'none':
+        return;
+      case 'goHome':
+        this.toggleUserInfo();
+        return;
+      case 'goTodo':
+        this.toggleToDoSection();
+        return;
+      case 'goAllFiles':
+        this.toggleAllFilesSection();
+        return;
+      case 'goComments':
+        this.hideComments = false;
+        Object.assign(this, getCommentsTabMobileState());
+        if (action.syncSearch) {
+          this.syncMobileSearchInput();
+        }
+        this.refreshView();
+        return;
+      case 'goAttachments':
+        Object.assign(this, getAttachmentsTabMobileState());
+        // Already browsing All Files / HR person attachments  only switch the tab.
+        // Never call openMyFiles() here: that clears the folder and reloads tasks.
+        if (
+          this.currentLibraryDriveId ||
+          this.attachmentBrowsingRoot ||
+          this.currentFolderId ||
+          (this.showUserFile && this.userFiles.length > 0)
+        ) {
+          this.showUserFile = true;
+          this.refreshView();
+          return;
+        }
+        if (action.shouldLoadFiles) {
+          if (this.hasLoadedPersonalFiles) {
+            this.showMyFilesPanel();
+          } else {
+            this.openMyFiles();
+          }
+        }
+        return;
+    }
+  }
+}

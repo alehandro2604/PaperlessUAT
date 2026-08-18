@@ -1,0 +1,161 @@
+<div class="modal-backdrop" *ngIf="open" (click)="close()">
+  <div
+    class="new-comment-modal"
+    [class.new-comment-modal--with-upload]="isSplitLayout"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="new-comment-title"
+    (click)="$event.stopPropagation()"
+  >
+    <div class="new-comment-header">
+      <h3 id="new-comment-title">New Comment</h3>
+      <button type="button" class="modal-close-btn" aria-label="Close" (click)="close()" [disabled]="saving">
+        &times;
+      </button>
+    </div>
+
+    <div class="new-comment-body">
+      <label class="new-comment-label" for="new-comment-category">Category</label>
+      <app-dropdown
+        id="new-comment-category"
+        class="new-comment-category-dropdown"
+        [(ngModel)]="selectedCategory"
+        [options]="categoryOptions"
+        placeholder="Select a category"
+        ariaLabel="Select comment category"
+        [fullWidth]="true"
+      />
+
+      <div
+        class="new-comment-content-row"
+        [class.new-comment-content-row--split]="isSplitLayout"
+      >
+        <div class="new-comment-comment-col">
+          <label class="new-comment-label" for="new-comment-text">Comment</label>
+          <textarea
+            id="new-comment-text"
+            class="new-comment-textarea"
+            rows="6"
+            placeholder="Write your comment..."
+            [(ngModel)]="commentText"
+          ></textarea>
+        </div>
+
+        <form class="file-upload-form" *ngIf="isAttachmentCategory">
+          <label class="new-comment-label" for="new-comment-file">Upload attachment</label>
+          <label class="file-upload-label" for="new-comment-file">
+            <div class="file-upload-design">
+              <svg height="1em" viewBox="0 0 640 512" aria-hidden="true">
+                <path
+                  d="M144 480C64.5 480 0 415.5 0 336c0-62.8 40.2-116.2 96.2-135.9c-.1-2.7-.2-5.4-.2-8.1c0-88.4 71.6-160 160-160c59.3 0 111 32.2 138.7 80.2C409.9 102 428.3 96 448 96c53 0 96 43 96 96c0 12.2-2.3 23.8-6.4 34.6C596 238.4 640 290.1 640 352c0 70.7-57.3 128-128 128H144zm79-217c-9.4 9.4-9.4 24.6 0 33.9s24.6 9.4 33.9 0l39-39V392c0 13.3 10.7 24 24 24s24-10.7 24-24V257.9l39 39c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-80-80c-9.4-9.4-24.6-9.4-33.9 0l-80 80z"
+                ></path>
+              </svg>
+              <p>Drag and Drop</p>
+              <p>or</p>
+              <span class="browse-button">Browse file</span>
+            </div>
+            <input
+              type="file"
+              id="new-comment-file"
+              (change)="onFileSelected($event)"
+            />
+          </label>
+          <p class="selected-file-name" *ngIf="selectedFile">{{ selectedFile.name }}</p>
+        </form>
+
+        <div class="request-for-action-col" *ngIf="isRequestForActionCategory">
+          <label class="new-comment-label">Request for Action</label>
+
+          <div class="new-comment-panel-toggle">
+            <button
+              type="button"
+              class="new-comment-btn secondary"
+              [class.active]="actionRightPanel === 'attachments'"
+              (click)="showActionAttachments()"
+            >
+              Attachments
+            </button>
+            <button
+              type="button"
+              class="new-comment-btn secondary"
+              [class.active]="actionRightPanel === 'assign'"
+              (click)="showActionAssignTo()"
+            >
+              Assign To
+            </button>
+          </div>
+
+          <form class="file-upload-form" *ngIf="actionRightPanel === 'attachments'">
+            <label class="new-comment-label" for="new-comment-action-file">Upload attachment</label>
+            <label class="file-upload-label" for="new-comment-action-file">
+              <div class="file-upload-design">
+                <svg height="1em" viewBox="0 0 640 512" aria-hidden="true">
+                  <path
+                    d="M144 480C64.5 480 0 415.5 0 336c0-62.8 40.2-116.2 96.2-135.9c-.1-2.7-.2-5.4-.2-8.1c0-88.4 71.6-160 160-160c59.3 0 111 32.2 138.7 80.2C409.9 102 428.3 96 448 96c53 0 96 43 96 96c0 12.2-2.3 23.8-6.4 34.6C596 238.4 640 290.1 640 352c0 70.7-57.3 128-128 128H144zm79-217c-9.4 9.4-9.4 24.6 0 33.9s24.6 9.4 33.9 0l39-39V392c0 13.3 10.7 24 24 24s24-10.7 24-24V257.9l39 39c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-80-80c-9.4-9.4-24.6-9.4-33.9 0l-80 80z"
+                  ></path>
+                </svg>
+                <p>Drag and Drop</p>
+                <p>or</p>
+                <span class="browse-button">Browse file</span>
+              </div>
+              <input
+                type="file"
+                id="new-comment-action-file"
+                (change)="onFileSelected($event)"
+              />
+            </label>
+            <p class="selected-file-name" *ngIf="selectedFile">{{ selectedFile.name }}</p>
+          </form>
+
+          <div class="request-for-action-assign-panel" *ngIf="actionRightPanel === 'assign'">
+            <p class="selected-file-name" *ngIf="selectedFile">Attached: {{ selectedFile.name }}</p>
+            <label class="new-comment-label" for="new-comment-request-for-action">Assign to user</label>
+            <input
+              id="new-comment-request-for-action"
+              type="search"
+              class="request-for-action-search"
+              [(ngModel)]="actionSearchQuery"
+              (input)="onActionSearchInput()"
+              placeholder="Search users..."
+              autocomplete="off"
+            />
+
+            <p class="request-for-action-loading" *ngIf="actionSearching">Searching...</p>
+            <p class="request-for-action-error" *ngIf="actionSearchError">{{ actionSearchError }}</p>
+
+            <div class="request-for-action-results" *ngIf="actionSearchResults.length > 0">
+              <button
+                type="button"
+                class="request-for-action-result"
+                *ngFor="let user of actionSearchResults"
+                (click)="selectActionUser(user)"
+              >
+                <span class="request-for-action-result-name">{{ user.Title }}</span>
+                <span class="request-for-action-result-email">{{ user.Email }}</span>
+              </button>
+            </div>
+
+            <div class="request-for-action-selected" *ngIf="selectedActionUser">
+              <span class="request-for-action-selected-name">{{ selectedActionUser.Title }}</span>
+              <span class="request-for-action-selected-email">{{ selectedActionUser.Email }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <p class="new-comment-error" *ngIf="saveError">{{ saveError }}</p>
+
+    <div class="new-comment-footer">
+      <button type="button" class="new-comment-btn secondary" (click)="close()" [disabled]="saving">Cancel</button>
+      <button
+        type="button"
+        class="new-comment-btn primary"
+        [disabled]="!canSave"
+        (click)="saveComment()"
+      >
+        {{ saving ? 'Saving...' : 'Save' }}
+      </button>
+    </div>
+  </div>
+</div>

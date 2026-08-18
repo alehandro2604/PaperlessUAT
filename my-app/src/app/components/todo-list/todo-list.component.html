@@ -1,0 +1,140 @@
+<div class="todo-container">
+  <div class="todo-title-row">
+
+    <div class="title-filters">
+      <label class="filter-toggle" for="subordinate-tasks">
+        <input
+          type="checkbox"
+          id="subordinate-tasks"
+          name="subordinate-tasks"
+          [checked]="showSubordinateTasks"
+          (change)="onSubordinateToggle($any($event.target).checked)"
+        />
+        <span>Subordinate Tasks</span>
+      </label>
+
+      <label class="filter-toggle" for="Future-tasks">
+        <input
+          type="checkbox"
+          id="Future-tasks"
+          name="Future-tasks"
+          [checked]="showFutureTasks"
+          (change)="onFutureTasksToggle($any($event.target).checked)"
+        />
+        <span class="filter-toggle-label">
+          <span class="filter-toggle-title">Future Tasks</span>
+          <span class="future-tasks-cutoff">after {{ futureTasksCutoffDisplay }}</span>
+        </span>
+      </label>
+    </div>
+  </div>
+  <!-- Todo content -->
+  <div class="todo-content todo-scrallbar">
+    <div class="comment-search-row">
+      <div class="search-field">
+        <img class="search-icon" src="search.png" alt="Search">
+        <input
+          class="searchBar"
+          type="search"
+          placeholder="Search..."
+          (input)="onSearchChange($event)"
+          (search)="onSearchChange($event)"
+          [value]="searchTerm"
+        />
+      </div>
+    </div>
+
+    <!-- Loading state — only when nothing to show yet -->
+    <div *ngIf="isTodoLoading && submitterNames.length === 0" class="loading">
+      <ng-container *ngIf="showSubordinateTasks && subordinateTasksLoading">Loading subordinate tasks...</ng-container>
+      <ng-container *ngIf="!(showSubordinateTasks && subordinateTasksLoading)">Loading tasks...</ng-container>
+    </div>
+
+    <!-- Empty state — only after load fully finished -->
+    <div *ngIf="!isTodoLoading && submitterNames.length === 0" class="no-tasks">
+      <p *ngIf="!showSubordinateTasks && !showFutureTasks">You're all caught up!</p>
+      <p *ngIf="showFutureTasks">No pending tasks after {{ futureTasksCutoffDisplay }}.</p>
+      <p *ngIf="showSubordinateTasks && subordinateTasksError">{{ subordinateTasksError }}</p>
+      <p *ngIf="showSubordinateTasks && !subordinateTasksError && subordinateEmployeeCount === 0">
+        No employees found under your manager account.
+      </p>
+      <p *ngIf="showSubordinateTasks && !subordinateTasksError && subordinateEmployeeCount > 0">
+        No pending tasks assigned to your {{ subordinateEmployeeCount }} subordinate(s).
+      </p>
+    </div>
+
+    <div *ngIf="!isTodoLoading && submitterNames.length > 0 && filteredGroupedBySubmitter.length === 0" class="no-tasks">
+      <p>No tasks match your search.</p>
+    </div>
+
+    <!-- Only for the explicit "Load remaining tasks" button — not background/first-pass fetch -->
+    <p *ngIf="loadingMoreTasks && submitterNames.length > 0" class="loading loading-more">
+      Loading more tasks…
+    </p>
+
+    <!--
+      Task list — 2-level:
+      - Level 1: `groupedBySubmitter` (employee / submitter)
+      - Level 2: `group.subGroups` (task type, grouped by eFormListId)
+    -->
+    <div *ngIf="!(showSubordinateTasks && subordinateTasksLoading) && filteredGroupedBySubmitter.length > 0" class="tasks-list">
+      <div *ngFor="let group of filteredGroupedBySubmitter; trackBy: trackBySubmitterGroup" class="user-item">
+
+        <!-- Level 1: submitter / employee -->
+        <div
+          class="user-list-item list-item-card todo-group-item"
+          [class.is-expanded]="isSubmitterGroupExpanded(group.submitterKey)"
+          (click)="toggleSubmitterGroup(group.submitterKey)"
+        >
+          <div *ngIf="group.displayName" class="list-item-avatar" aria-hidden="true">{{ getGroupInitial(group.displayName) }}</div>
+          <div class="user-info">
+            <span class="user-identifier">{{ group.displayName }}</span>
+            <span class="user-email" *ngIf="group.email">{{ group.email }}</span>
+            <span class="user-meta">{{ group.subGroups.length }} task type(s)</span>
+          </div>
+          <span class="task-count-badge">{{ group.totalCount }}</span>
+          <i class="fi fi-br-angle-right user-arrow" aria-hidden="true"></i>
+        </div>
+
+        <!-- Level 2: task types for this submitter, shown when Level 1 is expanded  in level 2 also add the original timestamp-->
+        <div class="subgroup-list" *ngIf="isSubmitterGroupExpanded(group.submitterKey)">
+          <div
+            *ngFor="let sub of group.subGroups; trackBy: trackBySubGroup"
+            class="subgroup-item list-item-card"
+            [class.is-expanded]="isSubmitterExpanded(sub.groupKey)"
+            (click)="toggleSubmitter(sub.groupKey)"
+          >
+          
+            <app-change-task-date
+              *ngIf="sub.tasks?.length && hasDueDateColumn(sub.tasks[0])"
+              [task]="sub.tasks[0]"
+              (dateChange)="onChangeTaskDate(sub.tasks[0], $event)"
+            ></app-change-task-date>
+            <div class="user-info">
+              <span class="user-meta">{{ sub.taskLabel }}</span>
+              <span class="user-meta" *ngIf="sub.eFormListId">eForm ID: {{ sub.eFormListId }}</span>
+              <span class="user-meta">{{ sub.tasks[0].createdDate | date:'dd/MM/yyyy HH:mm' }}</span>
+            </div>
+            <span
+              class="subgroup-due-date"
+              *ngIf="hasDueDateColumn(sub.tasks[0]) && getTaskDueDateDisplay(sub.tasks[0]) as dueDate"
+            >{{ dueDate }}</span>
+            <div class="subgroup-actions" (click)="$event.stopPropagation()">
+              <app-claim
+                *ngIf="sub.tasks?.length && isClaimableTask(sub.tasks[0])"
+                [task]="sub.tasks[0]"
+              ></app-claim>
+              <app-new-comment-complete
+                *ngIf="sub.tasks?.length"
+                [task]="sub.tasks[0]"
+                [isRequestForActionTask]="isRequestForActionTask(sub.tasks[0])"
+                (completeTask)="onCompleteTask(sub.tasks[0], $event)"
+              ></app-new-comment-complete>
+            </div>
+            <i class="fi fi-br-angle-right user-arrow" aria-hidden="true"></i>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
