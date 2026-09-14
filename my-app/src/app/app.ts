@@ -5973,7 +5973,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const statusLower = clean(d.status).toLowerCase();
     const isApproved = statusLower.includes('approv') || statusLower.includes('complet');
     const isRejected = statusLower.includes('reject') || statusLower.includes('denied');
-    const statusSuffix = isApproved ? ' ?' : isRejected ? ' ?' : '';
+    const statusSuffix = isApproved ? ' (approved)' : isRejected ? ' (rejected)' : '';
 
     push('HR Task Type :', d.type || task.name);
     push('eForm List ID :', clean(d.eFormListId));

@@ -418,19 +418,19 @@ export class HrTaskMapperService {
       if (reason) body += `\nReason: ${reason}`;
       if (stage) body += `\nCurrent Stage: ${stage}`;
       if (approver1) {
-        body += `\n${isApproved ? '?' : '?'} Approver 1: ${approver1}`;
+        body += `\n${isApproved ? '(approved)' : '(pending)'} Approver 1: ${approver1}`;
         if (approver1Pin) body += ` (PIN: ${approver1Pin})`;
         if (approver1Date) body += ` - ${approver1Date}`;
         if (approver1Comment) body += `\n  Comment: ${approver1Comment}`;
       }
       if (approver2) {
-        body += `\n? Approver 2: ${approver2}`;
+        body += `\n(pending) Approver 2: ${approver2}`;
         if (approver2Pin) body += ` (PIN: ${approver2Pin})`;
         if (approver2Date) body += ` - ${approver2Date}`;
         if (approver2Comment) body += `\n  Comment: ${approver2Comment}`;
       }
       if (approver3) {
-        body += `\n? Approver 3: ${approver3}`;
+        body += `\n(pending) Approver 3: ${approver3}`;
         if (approver3Pin) body += ` (PIN: ${approver3Pin})`;
         if (approver3Date) body += ` - ${approver3Date}`;
         if (approver3Comment) body += `\n  Comment: ${approver3Comment}`;
@@ -443,7 +443,7 @@ export class HrTaskMapperService {
       if (fromDate && toDate) body += `\nFrom: ${fromDate}  To: ${toDate}`;
       if (reason && reason !== 'Enter value here') body += `\nReason: ${reason}`;
       if (primaryApprover && primaryApprover !== 'Enter value here') {
-        body += `\n${isApproved ? '?' : '?'} ${primaryApprover}`;
+        body += `\n${isApproved ? '(approved)' : '(pending)'} ${primaryApprover}`;
         if (approver1Date) body += ` - ${approver1Date}`;
       }
     } else {
@@ -454,16 +454,16 @@ export class HrTaskMapperService {
       if (stage) body += `\nCurrent Stage: ${stage}`;
       if (section) body += `\nSection: ${section}`;
       if (approver1) {
-        body += `\n${isApproved ? '?' : '?'} Approver 1: ${approver1}`;
+        body += `\n${isApproved ? '(approved)' : '(pending)'} Approver 1: ${approver1}`;
         if (approver1Date) body += ` - ${approver1Date}`;
         if (approver1Comment) body += `\n  Comment: ${approver1Comment}`;
       }
       if (approver2) {
-        body += `\n? Approver 2: ${approver2}`;
+        body += `\n(pending) Approver 2: ${approver2}`;
         if (approver2Date) body += ` - ${approver2Date}`;
       }
       if (approver3) {
-        body += `\n? Approver 3: ${approver3}`;
+        body += `\n(pending) Approver 3: ${approver3}`;
         if (approver3Date) body += ` - ${approver3Date}`;
       }
     }
