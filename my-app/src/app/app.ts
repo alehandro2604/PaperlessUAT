@@ -6269,54 +6269,6 @@ export class AppComponent implements OnInit, OnDestroy {
     return null;
   }
 
-  private async scanForUserFolder(
-    driveId: string,
-    containerFolder: string,
-    token: string,
-    candidates: string[]
-  ): Promise<{ id: string; name: string; webUrl?: string } | null> {
-    let foldersToVisit = [containerFolder];
-    let scannedFolders = 0;
-    const startedAtMs = Date.now();
-    let bestMatch: { id: string; name: string; webUrl?: string } | null = null;
-    let bestScore = 0;
-
-    while (foldersToVisit.length > 0) {
-      if (scannedFolders >= 1500 || Date.now() - startedAtMs > 60_000) break;
-
-      const batch = foldersToVisit.splice(0, 5);
-      const batchResults = await Promise.all(batch.map(async folderId => {
-        const path = folderId === 'root'
-          ? `/drives/${driveId}/root/children?$select=id,name,webUrl,folder&$top=50`
-          : `/drives/${driveId}/items/${folderId}/children?$select=id,name,webUrl,folder&$top=200`;
-        try {
-          const page: any = await graphGetWithRetry(
-            this.http, path, token, AppConstants.graphFileListingTimeoutMs,
-          );
-          return (page?.value ?? []).filter((item: any) => !!item?.folder);
-        } catch { return []; }
-      }));
-
-      let foundHighScore = false;
-      for (const folderChildren of batchResults) {
-        for (const folder of folderChildren) {
-          scannedFolders += 1;
-          const score = this.scoreFolderMatch(folder.name || '', candidates);
-          if (score > bestScore) {
-            bestScore = score;
-            bestMatch = { id: folder.id, name: folder.name, webUrl: folder.webUrl };
-          }
-          if (score >= 95) { foundHighScore = true; break; }
-          if (scannedFolders < 1500) foldersToVisit.push(folder.id);
-        }
-        if (foundHighScore) break;
-      }
-      if (foundHighScore) break;
-    }
-
-    return (!bestMatch || bestScore < 55) ? null : bestMatch;
-  }
-
   // ============================================================
   // GET ALL DRIVE ITEMS
   // ============================================================
