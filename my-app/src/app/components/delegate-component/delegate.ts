@@ -137,7 +137,7 @@ export class DelegateComponent implements OnInit, OnDestroy {
     this.isSearching = true;
     this.searchError = '';
 
-    const seq = ++this.searchSeq;
+    const seq = ++this.searchSeq;//this is a sequence number to track the search request
 
     this.searchTimeout = setTimeout(async () => {
       try {

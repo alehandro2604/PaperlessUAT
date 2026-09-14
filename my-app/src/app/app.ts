@@ -45,6 +45,24 @@ import { AppDropdownComponent, AppDropdownOption } from './components/app-dropdo
 import { HrFilesComponent } from './components/hr-files/hr-files.component';
 import { NewCommentSavedEvent, CommentListItem } from './models/comment.models';
 import { formatFormTitle } from './form-utils';
+import {
+  isSyntheticCommentCard, matchesCommentLabel, isCommentEntryTitle, isStatuslessCommentTitle,
+  getCommentEntryKind, shouldHideCommentStatus, isCommentTypeItem, isSharePointCommentEntry,
+  extractCommentCardTaskId, matchesApprovalFilter, escapeHtml, buildCommentHtmlWithAttachment,
+  extractAttachmentFromCommentHtml, openAttachmentLink, onCommentLinkClick, buildQuickCommentItemFromSearchHit,
+} from './utils/comment-utils';
+import {
+  isItemSubmittedBy, getHrTaskPersonLookupIds, doesHrTaskMatchPersonLookupId, normalizeHrTaskChainName,
+  getMappedHrTaskChainName, getRawHrTaskChainName, hrTaskChainNamesMatch, doesRawItemReferenceEFormKeys,
+  doesRawItemMatchSeedEFormIdAndTaskName, extractEFormKeysFromMappedItem, doesMappedItemMatchSeedEFormIdAndTaskName,
+  collectEFormKeyToTaskNames, buildPersonLookupFilterExpr, isDocumentLibraryTaskList, isChildSubjectColumn,
+  getDateSearchTokens, getTaskEFormTitle, extractTrailingFolderId,
+} from './utils/hr-task-matching';
+import {
+  cleanParsedPersonName, extractPersonName, getEmailFromHrFolderName, normalizeTaskMatchText,
+  fieldMatchesFolderToken, extractPersonNameParts, getHrPersonalFolderMatchTokens, candidatesMatchFolderPerson,
+  isItemSubmittedByFolderPerson, collectTaskAssigneeValues, stringifyTaskFieldValue,
+} from './utils/person-name-matching';
 
 @Component({
   selector: 'app-root',
@@ -353,10 +371,10 @@ export class AppComponent implements OnInit, OnDestroy {
     const rawFields = details.rawFields;
 
     const completedByName =
-      this.extractPersonName(eform?.completedBy) ||
-      this.extractPersonName(details.completedBy) ||
+      extractPersonName(eform?.completedBy) ||
+      extractPersonName(details.completedBy) ||
       (rawFields && typeof rawFields === 'object'
-        ? this.extractPersonName((rawFields as Record<string, unknown>)['CompletedBy'])
+        ? extractPersonName((rawFields as Record<string, unknown>)['CompletedBy'])
         : '');
     if (completedByName) return completedByName;
 
@@ -368,9 +386,9 @@ export class AppComponent implements OnInit, OnDestroy {
 
     if (rawFields && typeof rawFields === 'object') {
       const fromFields =
-        this.extractPersonName((rawFields as Record<string, unknown>)['CustomModifiedBy']) ||
-        this.extractPersonName((rawFields as Record<string, unknown>)['Editor']) ||
-        this.extractPersonName((rawFields as Record<string, unknown>)['ModifiedBy']);
+        extractPersonName((rawFields as Record<string, unknown>)['CustomModifiedBy']) ||
+        extractPersonName((rawFields as Record<string, unknown>)['Editor']) ||
+        extractPersonName((rawFields as Record<string, unknown>)['ModifiedBy']);
       if (fromFields) return fromFields;
     }
 
@@ -661,7 +679,7 @@ export class AppComponent implements OnInit, OnDestroy {
   ): Promise<void> {
     if (!folderId || !this.showAllFilesSection) return;
 
-    const eFormId = this.extractTrailingFolderId(folderName);
+    const eFormId = extractTrailingFolderId(folderName);
     if (!eFormId) return;
 
     const cacheKey = this.childSubjectCacheKey(libraryName, eFormId);
@@ -695,7 +713,7 @@ export class AppComponent implements OnInit, OnDestroy {
       names = await this.loadChildSubjectNamesFromSourceEForm(items);
       this.childSubjectSourceFetchedForFolderId = folderId;
       const libraryName = this.currentLibraryName ?? '';
-      const eFormId = this.extractTrailingFolderId(this.selectedFolderName);
+      const eFormId = extractTrailingFolderId(this.selectedFolderName);
       if (names.length > 0 && libraryName && eFormId) {
         this.childSubjectNamesByLibraryEFormId.set(this.childSubjectCacheKey(libraryName, eFormId), names);
       }
@@ -731,9 +749,9 @@ export class AppComponent implements OnInit, OnDestroy {
   ): string[] {
     const names: string[] = [];
     for (const [key, rawValue] of Object.entries(fields)) {
-      if (!this.isChildSubjectColumn(key)) continue;
+      if (!isChildSubjectColumn(key)) continue;
 
-      const text = this.stringifyTaskFieldValue(rawValue);
+      const text = stringifyTaskFieldValue(rawValue);
       for (const candidate of text.split(/[\r\n;]+/)) {
         const name = candidate.replace(/^#?\d+;#/, '').trim();
         const normalizedName = normalizeName(name);
@@ -749,7 +767,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   /** ChildSubject columns live on the source eForm list item, not always on the task row. */
   private async loadChildSubjectNamesFromSourceEForm(items: any[]): Promise<string[]> {
-    const folderEFormId = this.extractTrailingFolderId(this.selectedFolderName);
+    const folderEFormId = extractTrailingFolderId(this.selectedFolderName);
     const seedTask =
       items.find((item) => String(item?.eFormDetails?.eFormListId ?? '').trim() === folderEFormId) ??
       items[0];
@@ -816,43 +834,11 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   /** Level-2 All Files dropdown uses ChildSubject and ChildSubject2 only. */
-  private isChildSubjectColumn(columnName: string): boolean {
-    const normalized = String(columnName ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (normalized === 'childsubject' || normalized === 'childsubject2') return true;
-    // SharePoint encoded internal names, e.g. Child_x0020_Subject / Child_x0020_Subject2
-    return /^childx0020subject2?$/.test(normalized);
-  }
 
 
   // ============================================================
   // DATE SEARCH HELPER
   // ============================================================
-  private getDateSearchTokens(dateStr: string): string {
-    if (!dateStr) return '';
-    const dt = new Date(dateStr);
-    if (isNaN(dt.getTime())) return dateStr.toLowerCase();
-
-    const day = dt.getDate().toString();
-    const dayPadded = dt.toLocaleDateString('en-GB', { day: '2-digit' });
-    const month2 = dt.toLocaleDateString('en-GB', { month: '2-digit' });
-    const monthShort = dt.toLocaleDateString('en-GB', { month: 'short' }).toLowerCase();
-    const monthLong = dt.toLocaleDateString('en-GB', { month: 'long' }).toLowerCase();
-    const year = dt.getFullYear().toString();
-
-    return [
-      `${dayPadded}/${month2}/${year}`,
-      `${day}/${month2}/${year}`,
-      `${month2}/${year}`,
-      `${monthShort} ${year}`,
-      `${monthLong} ${year}`,
-      `${day} ${monthShort}`,
-      `${day} ${monthLong}`,
-      monthShort,
-      monthLong,
-      year,
-      day,
-    ].join(' ');
-  }
 
   private filterCommentItems(): Array<typeof this.commentItems[0]> {
     let filtered = this.commentItems;
@@ -865,19 +851,19 @@ export class AppComponent implements OnInit, OnDestroy {
           return false;
         }
 
-        const isCommentEntry = this.isCommentTypeItem(item);
+        const isCommentEntry = isCommentTypeItem(item);
         const selectedTaskId = String(this.selectedTask?.Id ?? '').trim();
         const groupTaskIds = new Set(this.selectedGroupTaskIds);
 
         if (!isCommentEntry) {
           const matchesEFormTitle = !this.selectedEFormTitle || (
-            this.getTaskEFormTitle(item) === this.selectedEFormTitle
+            getTaskEFormTitle(item) === this.selectedEFormTitle
           );
           if (!matchesEFormTitle) {
             return false;
           }
-        } else if (this.isSyntheticCommentCard(item)) {
-          const cardTaskId = this.extractCommentCardTaskId(item.id);
+        } else if (isSyntheticCommentCard(item)) {
+          const cardTaskId = extractCommentCardTaskId(item.id);
           if (!cardTaskId) {
             return true;
           }
@@ -893,7 +879,7 @@ export class AppComponent implements OnInit, OnDestroy {
           if (isCommentEntry) {
             return true;
           }
-          if (!this.isItemSubmittedBy(item, this.selectedSubmitter)) {
+          if (!isItemSubmittedBy(item, this.selectedSubmitter)) {
             return false;
           }
           // When a submitter is selected in the To Do view, the Comments panel should
@@ -922,7 +908,7 @@ export class AppComponent implements OnInit, OnDestroy {
           item.description,
           item.submittedBy,
           item.status,
-          this.getDateSearchTokens(item.submittedDate ?? ''),
+          getDateSearchTokens(item.submittedDate ?? ''),
           details.type,
           details.status,
           details.submitter,
@@ -966,33 +952,24 @@ export class AppComponent implements OnInit, OnDestroy {
     }
 
     if (this.selectedApprovalFilter) {
-      filtered = filtered.filter(item => this.matchesApprovalFilter(item, this.selectedApprovalFilter));
+      filtered = filtered.filter(item => matchesApprovalFilter(item, this.selectedApprovalFilter));
     }
 
     if (this.showAllFilesSection) {
       const folderName = String(this.selectedFolderName ?? '').trim();
-      if (folderName && this.extractTrailingFolderId(folderName)) {
+      if (folderName && extractTrailingFolderId(folderName)) {
         filtered = filtered.filter(item => this.doesMappedHrTaskMatchFolder(item, folderName));
       }
     }
 
     if (this.isHrPersonalFilesContext()) {
-      filtered = filtered.filter(item => !this.isCommentTypeItem(item));
+      filtered = filtered.filter(item => !isCommentTypeItem(item));
     }
 
     return filtered;
   }
 
   /** Same title resolution used by todo-list Level-2 grouping. */
-  private getTaskEFormTitle(item: { eFormDetails?: Record<string, unknown>; name?: unknown }): string {
-    const details = item.eFormDetails ?? {};
-    const rawFields = (details['rawFields'] ?? {}) as Record<string, unknown>;
-    const raw =
-      rawFields['Title'] ??
-      details['Title'] ??
-      details['title'];
-    return String(raw ?? '').trim() || 'Unknown Title';
-  }
 
   private getPrimaryItemAssignee(item: { eFormDetails?: Record<string, unknown>; assignedTo?: unknown }): string {
     const details = item.eFormDetails ?? {};
@@ -1005,25 +982,6 @@ export class AppComponent implements OnInit, OnDestroy {
     return primary ? [primary] : [];
   }
 
-  private isItemSubmittedBy(
-    item: { submittedBy?: string; eFormDetails?: Record<string, unknown> },
-    submitterName: string | null
-  ): boolean {
-    if (!submitterName) return true;
-
-    const candidates = [
-      item.submittedBy,
-      item.eFormDetails?.['submitter'],
-      item.eFormDetails?.['submittedBy'],
-    ]
-      .map(value => String(value ?? '').trim().toLowerCase())
-      .filter(Boolean);
-
-    const target = submitterName.trim().toLowerCase();
-    return candidates.some(candidate =>
-      candidate === target || candidate.includes(target) || target.includes(candidate)
-    );
-  }
 
   private isItemAssignedToSubordinate(item: { eFormDetails?: Record<string, unknown>; assignedTo?: unknown }, subordinateName: string): boolean {
     const assigneeValues = this.getSubordinateItemAssigneeValues(item);
@@ -1211,7 +1169,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
     const rawFields = details.rawFields;
     if (rawFields && typeof rawFields === 'object') {
-      return this.collectTaskAssigneeValues(rawFields as Record<string, any>).join(', ');
+      return collectTaskAssigneeValues(rawFields as Record<string, any>).join(', ');
     }
     return '';
   }
@@ -2268,7 +2226,7 @@ export class AppComponent implements OnInit, OnDestroy {
     if (!parentName || normalizeName(parentName) === normalizeName(childFolderName)) {
       return null;
     }
-    const childEFormId = this.extractTrailingFolderId(childFolderName);
+    const childEFormId = extractTrailingFolderId(childFolderName);
     if (!childEFormId) return null;
 
     const parentCached = this.fileCrawlCache.getStale(this.libFolderTaskCacheKey(listName, parentName));
@@ -2503,7 +2461,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
     const libName = String(hit.folder?.libraryName ?? hit.libraryName ?? '').trim();
     const listName = (libName && this.getTaskListForLibrary(libName)) || libName || 'Tasks';
-    const item = this.buildQuickCommentItemFromSearchHit(hit, listName);
+    const item = buildQuickCommentItemFromSearchHit(hit, listName);
 
     this.isLoadingComments = false;
     this.isLoadingMoreComments = false;
@@ -2514,37 +2472,6 @@ export class AppComponent implements OnInit, OnDestroy {
     this.refreshView();
   }
 
-  private buildQuickCommentItemFromSearchHit(hit: CommentSearchHit, listName: string): any {
-    const body = String(hit.body ?? '').trim();
-    const author = String(hit.author ?? '').trim();
-    const date = String(hit.date ?? '').trim();
-    return {
-      id: hit.taskId,
-      name: hit.title || 'Comment',
-      webUrl: '',
-      lastModifiedDateTime: date,
-      isFolder: false,
-      status: '',
-      submittedBy: author,
-      submittedDate: date,
-      description: body,
-      listName,
-      isContentLoaded: true,
-      eFormDetails: {
-        type: hit.title || 'Comment',
-        status: '',
-        submitter: author,
-        listName,
-        submittedDate: date,
-        body,
-        comment: body,
-        commentHtml: body.replace(/\n/g, '<br>'),
-        customCreatedDate: date,
-        customModifiedDate: date,
-        customModifiedBy: author,
-      },
-    };
-  }
 
   /**
    * Quietly cache Comments for an All Files folder during Comments search.
@@ -4159,48 +4086,9 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   /** User-created comment cards (not SharePoint HR tasks)  must not appear in the todo list. */
-  private isSyntheticCommentCard(item: { id?: unknown }): boolean {
-    return String(item.id ?? '').startsWith('comment:');
-  }
 
-  private static readonly COMMENT_ENTRY_TITLES = new Set([
-    'general comment',
-    'new attachment',
-    'request for action',
-  ]);
-
-  private static readonly STATUSLESS_COMMENT_TITLES = new Set([
-    'general comment',
-    'new attachment',
-    'request for action',
-  ]);
-
-  private isCommentEntryTitle(title: string): boolean {
-    return this.matchesCommentLabel(title, AppComponent.COMMENT_ENTRY_TITLES);
-  }
-
-  private isStatuslessCommentTitle(title: string): boolean {
-    return this.matchesCommentLabel(title, AppComponent.STATUSLESS_COMMENT_TITLES);
-  }
 
   /** Matches exact labels plus SharePoint variants like "New Attachment/s". */
-  private matchesCommentLabel(value: string, labels: Set<string>): boolean {
-    const normalized = value.trim().toLowerCase();
-    if (!normalized) return false;
-    if (labels.has(normalized)) return true;
-
-    return [...labels].some(entry => {
-      if (normalized === entry || normalized.startsWith(`${entry}:`)) return true;
-      // "New Attachment/s", "New Attachments", "General Comments", etc.
-      if (normalized.startsWith(entry)) return true;
-      const withoutSlashS = normalized.replace(/\/s\b/g, 's');
-      return (
-        withoutSlashS === entry ||
-        withoutSlashS === `${entry}s` ||
-        withoutSlashS.startsWith(entry)
-      );
-    });
-  }
 
   /** Hide status badge for general comments, attachments, and request-for-action cards. */
   protected shouldHideCommentStatus(item: {
@@ -4208,83 +4096,13 @@ export class AppComponent implements OnInit, OnDestroy {
     name?: unknown;
     eFormDetails?: Record<string, unknown>;
   }): boolean {
-    return this.getCommentEntryKind(item) !== null;
+    return shouldHideCommentStatus(item);
   }
 
   /** Returns which comment-entry type an item is, or null for normal eForm tasks. */
-  private getCommentEntryKind(item: {
-    id?: unknown;
-    name?: unknown;
-    eFormDetails?: Record<string, unknown>;
-  }): 'general' | 'attachment' | 'action' | null {
-    const details = item.eFormDetails ?? {};
-    const commentCategory = String(details['commentCategory'] ?? '').trim().toLowerCase();
-    if (commentCategory === 'general') return 'general';
-    if (commentCategory === 'attachment') return 'attachment';
-    if (commentCategory === 'action') return 'action';
 
-    const candidates = [
-      details['category'],
-      details['type'],
-      item.name,
-      (details['rawFields'] as Record<string, unknown> | undefined)?.['Title'],
-      (details['rawFields'] as Record<string, unknown> | undefined)?.['Category'],
-    ];
-
-    for (const value of candidates) {
-      const title = String(value ?? '');
-      if (this.matchesCommentLabel(title, new Set(['general comment']))) return 'general';
-      if (this.matchesCommentLabel(title, new Set(['new attachment']))) return 'attachment';
-      if (this.matchesCommentLabel(title, new Set(['request for action']))) return 'action';
-    }
-
-    // Synthetic comment cards without a resolvable category still count as comment entries.
-    if (this.isSyntheticCommentCard(item)) return 'general';
-    return null;
-  }
-
-  private matchesApprovalFilter(
-    item: {
-      id?: unknown;
-      name?: unknown;
-      status?: unknown;
-      eFormDetails?: Record<string, unknown>;
-    },
-    filter: string
-  ): boolean {
-    const kind = this.getCommentEntryKind(item);
-
-    switch (filter) {
-      case 'approved': {
-        if (kind) return false;
-        const s = String(item.eFormDetails?.['status'] ?? item.status ?? '').toLowerCase();
-        return s.includes('approv') || s.includes('complet');
-      }
-      case 'pending': {
-        if (kind) return false;
-        const s = String(item.eFormDetails?.['status'] ?? item.status ?? '').toLowerCase();
-        const isApproved = s.includes('approv') || s.includes('complet');
-        return !isApproved;
-      }
-      case 'general-comments':
-        return kind === 'general';
-      case 'new-attachments':
-        return kind === 'attachment';
-      case 'rfa':
-        return kind === 'action';
-      default:
-        return true;
-    }
-  }
 
   /** Comment rows and user-added comment cards linked by eFormListId. */
-  private isCommentTypeItem(item: {
-    id?: unknown;
-    name?: unknown;
-    eFormDetails?: Record<string, unknown>;
-  }): boolean {
-    return this.getCommentEntryKind(item) !== null;
-  }
 
   private isHrPersonalFilesContext(): boolean {
     return !!String(this.selectedHrPersonalTaskFolder ?? '').trim();
@@ -4362,16 +4180,12 @@ export class AppComponent implements OnInit, OnDestroy {
     item: { id?: unknown; name?: unknown; submittedBy?: string; eFormDetails?: Record<string, unknown> },
     folderName: string,
   ): boolean {
-    if (this.isCommentTypeItem(item)) {
+    if (isCommentTypeItem(item)) {
       return false;
     }
-    return this.isItemSubmittedByFolderPerson(item, folderName);
+    return isItemSubmittedByFolderPerson(item, folderName);
   }
 
-  private isSharePointCommentEntry(item: any): boolean {
-    const fields = item.fields ?? item;
-    return this.isCommentEntryTitle(String(fields.Title ?? '').trim());
-  }
 
   /** True for Sick Certificate / source eForm submission lists (vs standard HRTask*). */
   private isHrSourceEFormList(listName: string): boolean {
@@ -4383,37 +4197,10 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   /** True when the mapped HR task was submitted by the person represented by an HR Files folder. */
-  private isItemSubmittedByFolderPerson(
-    item: { submittedBy?: string; eFormDetails?: Record<string, unknown> },
-    folderName: string
-  ): boolean {
-    const rawFields = (item.eFormDetails?.['rawFields'] ?? {}) as Record<string, unknown>;
-    return this.candidatesMatchFolderPerson([
-      item.submittedBy,
-      item.eFormDetails?.['submitter'],
-      item.eFormDetails?.['submittedBy'],
-      item.eFormDetails?.['commentSubmittedBy'],
-      rawFields['Requestor'],
-      rawFields['SubmittedBy'],
-      rawFields['Submitter'],
-      rawFields['Author'],
-      rawFields['CreatedBy'],
-      rawFields['commentSubmittedBy'],
-      rawFields['EmployeeName'],
-      rawFields['Employee'],
-      rawFields['EmployeeEmail'],
-    ], folderName);
-  }
 
-  private extractCommentCardTaskId(id: unknown): string {
-    const raw = String(id ?? '').trim();
-    if (!raw.startsWith('comment:')) return '';
-    const parts = raw.split(':');
-    return parts.length >= 2 ? parts[1].trim() : '';
-  }
 
   private getHrTasksForTodoList<T extends { id?: unknown }>(items: T[]): T[] {
-    return items.filter(item => !this.isSyntheticCommentCard(item));
+    return items.filter(item => !isSyntheticCommentCard(item));
   }
 
   /**
@@ -5044,15 +4831,15 @@ export class AppComponent implements OnInit, OnDestroy {
 
   /** True when a SharePoint list item belongs to the clicked document-library folder. */
   private doesSharePointTaskMatchFolder(item: any, folderName: string): boolean {
-    const folderTokens = this.getHrPersonalFolderMatchTokens(folderName);
+    const folderTokens = getHrPersonalFolderMatchTokens(folderName);
     if (folderTokens.length === 0) return false;
 
     const f = item.fields ?? item;
-    const folderEFormId = this.extractTrailingFolderId(folderName);
+    const folderEFormId = extractTrailingFolderId(folderName);
     if (folderEFormId) {
       const taskTitle = String(f.Title ?? f.Name ?? '').trim();
       const taskEFormId = this.extractTaskEFormListId(f);
-      const taskTitleId = this.extractTrailingFolderId(taskTitle);
+      const taskTitleId = extractTrailingFolderId(taskTitle);
 
       if (taskEFormId === folderEFormId) return true;
       if (taskTitleId === folderEFormId) return true;
@@ -5095,20 +4882,17 @@ export class AppComponent implements OnInit, OnDestroy {
 
     for (const value of candidates) {
       if (value == null || value === '') continue;
-      const text = this.stringifyTaskFieldValue(value);
-      const normalizedText = this.normalizeTaskMatchText(text);
+      const text = stringifyTaskFieldValue(value);
+      const normalizedText = normalizeTaskMatchText(text);
       if (folderTokens.some(token => normalizedText.includes(token))) return true;
 
-      const segments = text.split(/[/\\]/).map((s: string) => this.normalizeTaskMatchText(s));
+      const segments = text.split(/[/\\]/).map((s: string) => normalizeTaskMatchText(s));
       if (segments.some(segment => folderTokens.some(token => segment.includes(token)))) return true;
     }
 
     return false;
   }
 
-  private extractTrailingFolderId(folderName: string): string {
-    return String(folderName ?? '').trim().match(/(?:^|[-_\s])(\d+)\s*$/)?.[1] ?? '';
-  }
 
   private extractTaskEFormListId(fields: Record<string, unknown>): string {
     const field11 = String(fields['field_11'] ?? '').trim();
@@ -5119,7 +4903,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   /** Final guard for mapped Comments cards in All Files folder view. */
   private doesMappedHrTaskMatchFolder(item: any, folderName: string): boolean {
-    const folderEFormId = this.extractTrailingFolderId(folderName);
+    const folderEFormId = extractTrailingFolderId(folderName);
     if (!folderEFormId) return true;
 
     const rawFields = item?.eFormDetails?.rawFields;
@@ -5129,7 +4913,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
     const taskEFormId = String(item?.eFormDetails?.eFormListId ?? '').trim();
     const taskTitle = String(item?.name ?? item?.eFormDetails?.type ?? '').trim();
-    const taskTitleId = this.extractTrailingFolderId(taskTitle);
+    const taskTitleId = extractTrailingFolderId(taskTitle);
 
     if (taskEFormId === folderEFormId) return true;
     if (taskTitleId === folderEFormId) return true;
@@ -5141,161 +4925,28 @@ export class AppComponent implements OnInit, OnDestroy {
   private filterTasksForSelectedAllFilesFolder(items: any[]): any[] {
     if (!this.showAllFilesSection) return items;
     const folderName = String(this.selectedFolderName ?? '').trim();
-    if (!folderName || !this.extractTrailingFolderId(folderName)) return items;
+    if (!folderName || !extractTrailingFolderId(folderName)) return items;
     return items.filter(item => this.doesMappedHrTaskMatchFolder(item, folderName));
   }
 
-  private stringifyTaskFieldValue(value: unknown): string {
-    if (value == null) return '';
-    if (Array.isArray(value)) return value.map(v => this.stringifyTaskFieldValue(v)).filter(Boolean).join(' ');
-    if (typeof value === 'object') {
-      const record = value as Record<string, unknown>;
-      return String(
-        record['LookupValue'] ??
-        record['Title'] ??
-        record['DisplayName'] ??
-        record['displayName'] ??
-        record['Email'] ??
-        record['email'] ??
-        record['UserPrincipalName'] ??
-        record['userPrincipalName'] ??
-        record['name'] ??
-        record['value'] ??
-        ''
-      );
-    }
-    return String(value);
-  }
 
-  private normalizeTaskMatchText(value: string): string {
-    return value.toLowerCase().replace(/[^a-z0-9]/g, '');
-  }
 
   /**
    * Numeric employee IDs (e.g. "106") must match as whole tokens — never as a
    * substring of "1106" / "5106" or random digits inside other fields.
    */
-  private fieldMatchesFolderToken(normalizedText: string, token: string): boolean {
-    if (!normalizedText || !token) return false;
-    if (/^\d+$/.test(token)) {
-      if (normalizedText === token) return true;
-      if (normalizedText.startsWith(token) && normalizedText.length > token.length) {
-        const next = normalizedText.charAt(token.length);
-        if (next >= '0' && next <= '9') return false;
-        return true;
-      }
-      return false;
-    }
-    return normalizedText.includes(token);
-  }
 
   /** Split a person/display string into discrete name parts (adrian ≠ adriana). */
-  private extractPersonNameParts(value: string): string[] {
-    return String(value ?? '')
-      .toLowerCase()
-      .split(/[\s,._@+\-]+/)
-      .map(part => this.normalizeTaskMatchText(part.trim()))
-      .filter(part => part.length >= 4 && !/^\d+$/.test(part));
-  }
 
-  private getHrPersonalFolderMatchTokens(folderName: string): string[] {
-    const raw = String(folderName ?? '').trim().toLowerCase();
-    if (!raw) return [];
-
-    const withoutLeadingNumber = raw.replace(/^\d+\s+/, '').trim();
-    const employeeId = raw.match(/^\d+/)?.[0] ?? '';
-    const emailMatch = raw.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i)?.[0] ?? '';
-    const emailLocal = emailMatch ? emailMatch.split('@')[0] : '';
-    const displayFromEmail = emailLocal.replace(/[._-]+/g, ' ');
-    const nameParts = this.extractPersonNameParts(withoutLeadingNumber);
-
-    return [...new Set(
-      [
-        withoutLeadingNumber,
-        ...nameParts,
-        emailMatch,
-        emailLocal,
-        displayFromEmail,
-        employeeId,
-      ]
-        .map(token => this.normalizeTaskMatchText(token))
-        .filter(token => token.length >= 4 || (/^\d+$/.test(token) && token.length >= 2))
-    )];
-  }
 
   /**
    * Person-folder match requires a real name/email hit.
    * Employee id alone is not enough (caused Aidan rows under Alehandro via "106").
    * Single first-name substrings are not enough either (adrian ≠ Adriana / Adrian-John).
    */
-  private candidatesMatchFolderPerson(
-    candidates: unknown[],
-    folderName: string,
-  ): boolean {
-    const folderTokens = this.getHrPersonalFolderMatchTokens(folderName);
-    if (folderTokens.length === 0) return false;
-
-    const nameTokens = folderTokens.filter(token => !/^\d+$/.test(token));
-    const idTokens = folderTokens.filter(token => /^\d+$/.test(token));
-    const rawCandidates = candidates
-      .map(value => this.stringifyTaskFieldValue(value).trim())
-      .filter(Boolean);
-    if (rawCandidates.length === 0) return false;
-
-    const normalizedCandidates = rawCandidates
-      .map(value => this.normalizeTaskMatchText(value))
-      .filter(Boolean);
-    const candidateParts = new Set(rawCandidates.flatMap(value => this.extractPersonNameParts(value)));
-
-    const matchesLongToken = (token: string) =>
-      normalizedCandidates.some(text => this.fieldMatchesFolderToken(text, token));
-
-    if (nameTokens.length > 0) {
-      // Combined first+last / email-local (e.g. "adriankind") — precise enough alone.
-      if (nameTokens.some(token => token.length >= 8 && matchesLongToken(token))) {
-        return true;
-      }
-
-      // Individual parts must match as whole tokens so "adrian" does not hit "adriana".
-      const folderParts = this.extractPersonNameParts(
-        String(folderName ?? '').replace(/^\d+\s+/, ''),
-      );
-      if (folderParts.length === 0) return false;
-
-      const partHits = folderParts.filter(part => candidateParts.has(part));
-      const requiredHits = Math.min(2, folderParts.length);
-      return partHits.length >= requiredHits;
-    }
-
-    return idTokens.some(token =>
-      normalizedCandidates.some(text => this.fieldMatchesFolderToken(text, token)),
-    );
-  }
 
   /** Match HR Files folder to submitter or current assignee (not superior fields). */
-  private getHrTaskPersonLookupIds(item: any): string[] {
-    const f = item?.fields ?? item ?? {};
-    const candidates = [
-      f.RequestorLookupId, f.AuthorLookupId, f.SubmittedByLookupId,
-      f.EmployeeLookupId, f.EmployeeNameLookupId, f.SubmitterLookupId,
-      f.AssignedToLookupId, f.AssignedLookupId,
-      f.Requestor?.LookupId, f.Author?.LookupId, f.SubmittedBy?.LookupId,
-      f.Employee?.LookupId, f.EmployeeName?.LookupId, f.Submitter?.LookupId,
-      f.AssignedTo?.LookupId, f.Assigned?.LookupId,
-      f.CreatedByLookupId, f.CreatedBy?.LookupId,
-      item?.createdBy?.user?.id,
-    ];
-    return [...new Set(
-      candidates
-        .map(value => String(value ?? '').trim())
-        .filter(Boolean),
-    )];
-  }
 
-  private doesHrTaskMatchPersonLookupId(item: any, lookupId: string | null): boolean {
-    if (!lookupId) return false;
-    return this.getHrTaskPersonLookupIds(item).includes(lookupId);
-  }
 
   /**
    * Seed/supplement membership for an HR person folder.
@@ -5309,12 +4960,12 @@ export class AppComponent implements OnInit, OnDestroy {
     personLookupId: string | null,
     folderMatchHints: string[],
   ): boolean {
-    const lookupIds = this.getHrTaskPersonLookupIds(item);
+    const lookupIds = getHrTaskPersonLookupIds(item);
     if (personLookupId && lookupIds.length > 0) {
       return lookupIds.includes(personLookupId);
     }
     return (
-      this.doesHrTaskMatchPersonLookupId(item, personLookupId) ||
+      doesHrTaskMatchPersonLookupId(item, personLookupId) ||
       this.doesHrTaskMatchFolderPerson(item, listName, folderName) ||
       this.doesHrTaskMatchFolderHints(item, listName, folderMatchHints)
     );
@@ -5329,13 +4980,13 @@ export class AppComponent implements OnInit, OnDestroy {
   ): boolean {
     const raw = item?.eFormDetails?.rawFields;
     const lookupSource = raw && typeof raw === 'object' ? { fields: raw } : item;
-    const lookupIds = this.getHrTaskPersonLookupIds(lookupSource);
+    const lookupIds = getHrTaskPersonLookupIds(lookupSource);
     if (personLookupId && lookupIds.length > 0) {
       return lookupIds.includes(personLookupId);
     }
     return (
-      this.doesHrTaskMatchPersonLookupId(lookupSource, personLookupId) ||
-      this.isItemSubmittedByFolderPerson(item, folderName) ||
+      doesHrTaskMatchPersonLookupId(lookupSource, personLookupId) ||
+      isItemSubmittedByFolderPerson(item, folderName) ||
       this.isItemSubmittedByFolderHints(item, folderMatchHints)
     );
   }
@@ -5343,7 +4994,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private doesHrTaskMatchFolderPerson(item: any, listName: string, folderName: string): boolean {
     const f = item.fields ?? item;
     const submitter = this.resolveTaskSubmitter(item, f, listName);
-    return this.candidatesMatchFolderPerson([
+    return candidatesMatchFolderPerson([
       submitter,
       f.Requestor,
       f.SubmittedBy,
@@ -5413,17 +5064,17 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private candidatesMatchFolderHints(candidates: unknown[], hints: string[]): boolean {
     const normalizedHints = hints
-      .map(hint => this.normalizeTaskMatchText(hint))
+      .map(hint => normalizeTaskMatchText(hint))
       .filter(hint => hint.length >= 3);
     if (normalizedHints.length === 0) return false;
 
     const normalizedCandidates = candidates
-      .map(value => this.normalizeTaskMatchText(this.stringifyTaskFieldValue(value)))
+      .map(value => normalizeTaskMatchText(stringifyTaskFieldValue(value)))
       .filter(Boolean);
     if (normalizedCandidates.length === 0) return false;
 
     return normalizedHints.some(hint =>
-      normalizedCandidates.some(text => this.fieldMatchesFolderToken(text, hint))
+      normalizedCandidates.some(text => fieldMatchesFolderToken(text, hint))
     );
   }
 
@@ -5555,7 +5206,7 @@ export class AppComponent implements OnInit, OnDestroy {
     userUpn: string,
   ): any[] {
     return rawItems
-      .filter((item: any) => !this.isSharePointCommentEntry(item))
+      .filter((item: any) => !isSharePointCommentEntry(item))
       .filter((item: any) =>
         this.doesHrTaskBelongToFolderPerson(
           item,
@@ -5569,7 +5220,7 @@ export class AppComponent implements OnInit, OnDestroy {
         item, listName, listObj, this.cachedSiteWebUrl, userEmail, userUpn, true,
       ))
       .filter((item): item is NonNullable<typeof item> => item !== null)
-      .filter((item: any) => !this.isCommentTypeItem(item))
+      .filter((item: any) => !isCommentTypeItem(item))
       .filter((item: any) =>
         this.doesMappedHrTaskBelongToFolderPerson(
           item,
@@ -5759,7 +5410,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
     // Second pass: workflow siblings that share the same eForm ID AND the same task name.
     const seedTasksForSiblings = this.preferCurrentUserSeedTasks(seedItems);
-    const eFormKeyToTaskNames = this.collectEFormKeyToTaskNames(seedTasksForSiblings);
+    const eFormKeyToTaskNames = collectEFormKeyToTaskNames(seedTasksForSiblings);
     if (eFormKeyToTaskNames.size > 0 && !this.isStaleAllFilesFolderTaskLoad(loadSeq)) {
       const listsWithHits = [...mappedByList.keys()];
       const backfillPages = AppConstants.hrFilesTaskListBackfillPageLimit;
@@ -5789,17 +5440,17 @@ export class AppComponent implements OnInit, OnDestroy {
               )
             : [];
           const relatedCombined = [...relatedRaw, ...scannedRaw].filter(item =>
-            this.doesRawItemMatchSeedEFormIdAndTaskName(item, eFormKeyToTaskNames)
+            doesRawItemMatchSeedEFormIdAndTaskName(item, eFormKeyToTaskNames)
           );
           if (relatedCombined.length === 0) return;
 
           const relatedMapped = relatedCombined
-            .filter((item: any) => !this.isSharePointCommentEntry(item))
+            .filter((item: any) => !isSharePointCommentEntry(item))
             .map((item: any) => this.mapSharePointItemToHrTask(item, listName, listObj, this.cachedSiteWebUrl, userEmail, userUpn, true))
             .filter((item): item is NonNullable<typeof item> => item !== null)
-            .filter((item: any) => !this.isCommentTypeItem(item))
+            .filter((item: any) => !isCommentTypeItem(item))
             .filter((item: any) =>
-              this.doesMappedItemMatchSeedEFormIdAndTaskName(item, eFormKeyToTaskNames)
+              doesMappedItemMatchSeedEFormIdAndTaskName(item, eFormKeyToTaskNames)
             );
 
           if (relatedMapped.length === 0) return;
@@ -5828,10 +5479,10 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private collectEFormKeysFromMappedTasks(items: any[], folderName?: string): Set<string> {
-    const folderEFormId = folderName ? this.extractTrailingFolderId(folderName) : '';
+    const folderEFormId = folderName ? extractTrailingFolderId(folderName) : '';
     const keys = new Set<string>();
     for (const item of items) {
-      for (const key of this.extractEFormKeysFromMappedItem(item)) {
+      for (const key of extractEFormKeysFromMappedItem(item)) {
         if (folderEFormId && key !== folderEFormId) continue;
         keys.add(key);
       }
@@ -5853,7 +5504,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const email = (this.currentUser?.email ?? '').toLowerCase();
     const upn = (this.currentUser?.userPrincipalName ?? '').toLowerCase();
     const display = (this.currentUser?.username ?? '').toLowerCase();
-    const tokens = [email, upn, display].map(t => this.normalizeTaskMatchText(t)).filter(t => t.length >= 3);
+    const tokens = [email, upn, display].map(t => normalizeTaskMatchText(t)).filter(t => t.length >= 3);
     if (tokens.length === 0) return false;
 
     const submitterCandidates = [
@@ -5863,136 +5514,25 @@ export class AppComponent implements OnInit, OnDestroy {
       item?.eFormDetails?.commentSubmittedBy,
     ];
     return submitterCandidates.some(value => {
-      const normalized = this.normalizeTaskMatchText(this.stringifyTaskFieldValue(value));
+      const normalized = normalizeTaskMatchText(stringifyTaskFieldValue(value));
       return !!normalized && tokens.some(token => normalized.includes(token) || token.includes(normalized));
     });
   }
 
   /** Map each eForm id ? normalized task/form names from the seed submissions. */
-  private collectEFormKeyToTaskNames(seedTasks: any[]): Map<string, Set<string>> {
-    const map = new Map<string, Set<string>>();
-    for (const task of seedTasks) {
-      const chainName = this.getMappedHrTaskChainName(task);
-      if (!chainName) continue;
-      for (const key of this.extractEFormKeysFromMappedItem(task)) {
-        let names = map.get(key);
-        if (!names) {
-          names = new Set<string>();
-          map.set(key, names);
-        }
-        names.add(chainName);
-      }
-    }
-    return map;
-  }
 
   /**
    Normalize titles so "Please Approve Missing Punch eForm for - X" and
    "Missing Punch Finalised" resolve to the same chain name.
    */
-  private normalizeHrTaskChainName(value: string): string {
-    return String(value ?? '')
-      .toLowerCase()
-      .replace(/please\s+approve\s+/g, ' ')
-      .replace(/\bfinalis(?:ed|e|ation)?\b/g, ' ')
-      .replace(/\beforms?\b/g, ' ')
-      .replace(/\bfor\b\s*-?\s*.*$/g, ' ')
-      .replace(/\bid\s*[=:]\s*\d+\b/g, ' ')
-      .replace(/[^a-z0-9]+/g, '')
-      .trim();
-  }
 
-  private getMappedHrTaskChainName(item: any): string {
-    const details = item?.eFormDetails ?? {};
-    const rawFields = (details.rawFields ?? {}) as Record<string, unknown>;
-    const candidates = [
-      rawFields['Title'],
-      item?.name,
-      details.type,
-      details.listName,
-    ];
-    for (const candidate of candidates) {
-      const normalized = this.normalizeHrTaskChainName(String(candidate ?? ''));
-      if (normalized.length >= 4) return normalized;
-    }
-    return this.normalizeHrTaskChainName(String(item?.name ?? details.type ?? ''));
-  }
 
-  private getRawHrTaskChainName(item: any): string {
-    const f = item?.fields ?? item ?? {};
-    return this.normalizeHrTaskChainName(String(f.Title ?? f.ContentType ?? ''));
-  }
 
-  private hrTaskChainNamesMatch(seedName: string, candidateName: string): boolean {
-    if (!seedName || !candidateName) return false;
-    if (seedName === candidateName) return true;
-    return seedName.includes(candidateName) || candidateName.includes(seedName);
-  }
 
   /** Related raw item must share an eForm id AND the same task/form name as that seed. */
-  private doesRawItemMatchSeedEFormIdAndTaskName(
-    item: any,
-    eFormKeyToTaskNames: Map<string, Set<string>>,
-  ): boolean {
-    if (!eFormKeyToTaskNames.size) return false;
-    const chainName = this.getRawHrTaskChainName(item);
-    if (!chainName) return false;
 
-    for (const [key, names] of eFormKeyToTaskNames) {
-      if (!this.doesRawItemReferenceEFormKeys(item, new Set([key]))) continue;
-      if ([...names].some(seedName => this.hrTaskChainNamesMatch(seedName, chainName))) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private doesMappedItemMatchSeedEFormIdAndTaskName(
-    item: any,
-    eFormKeyToTaskNames: Map<string, Set<string>>,
-  ): boolean {
-    if (!eFormKeyToTaskNames.size) return false;
-    const chainName = this.getMappedHrTaskChainName(item);
-    if (!chainName) return false;
-
-    for (const key of this.extractEFormKeysFromMappedItem(item)) {
-      const names = eFormKeyToTaskNames.get(key);
-      if (!names?.size) continue;
-      if ([...names].some(seedName => this.hrTaskChainNamesMatch(seedName, chainName))) {
-        return true;
-      }
-    }
-    return false;
-  }
 
   /** eFormListId field values + IDs embedded in comment text (ID=9699 / ID: 9699). */
-  private extractEFormKeysFromMappedItem(item: any): string[] {
-    const keys = new Set<string>();
-    const details = item?.eFormDetails ?? {};
-    const fieldId = String(details.eFormListId ?? '').trim();
-    if (fieldId && fieldId.toLowerCase() !== 'unknown eform') {
-      keys.add(fieldId);
-    }
-
-    // SharePoint task item id is often the same ID shown in "ID=9699" footers.
-    const itemId = String(item?.id ?? '').trim();
-    if (/^\d+$/.test(itemId)) {
-      keys.add(itemId);
-    }
-
-    const text = [
-      item?.description,
-      details.comment,
-      details.commentHtml,
-      details.body,
-      item?.name,
-    ].map(v => String(v ?? '')).join(' ');
-
-    for (const match of text.matchAll(/\bID\s*[=:]\s*(\d+)\b/gi)) {
-      if (match[1]) keys.add(match[1]);
-    }
-    return [...keys];
-  }
 
   private getListFilterFieldStatus(listId: string, field: string): boolean | undefined {
     this.ensureListFilterStatusHydrated();
@@ -6089,19 +5629,6 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  private buildPersonLookupFilterExpr(
-    lookupField: string,
-    lookupId: string,
-    allowMultiple: boolean,
-  ): string {
-    const idLiteral = /^\d+$/.test(lookupId)
-      ? lookupId
-      : `'${String(lookupId).replace(/'/g, "''")}'`;
-    if (allowMultiple) {
-      return `fields/${lookupField}/any(a:a eq ${idLiteral})`;
-    }
-    return `fields/${lookupField} eq ${idLiteral}`;
-  }
 
   /**
    * Resolve AssignedTo (or Assigned / field_7) filter expression from column metadata.
@@ -6128,7 +5655,7 @@ export class AppComponent implements OnInit, OnDestroy {
       return null;
     }
 
-    return this.buildPersonLookupFilterExpr(`${match.name}LookupId`, lookupId, match.allowMultiple);
+    return buildPersonLookupFilterExpr(`${match.name}LookupId`, lookupId, match.allowMultiple);
   }
 
   /** Fetch workflow siblings that share an eForm id (manager finalised steps, etc.). */
@@ -6182,33 +5709,14 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   /** True when a raw SharePoint item references one of the known eForm IDs (field or comment text). */
-  private doesRawItemReferenceEFormKeys(item: any, eFormKeys: Set<string>): boolean {
-    if (!eFormKeys.size) return false;
-    const f = item?.fields ?? item ?? {};
-    const fieldVals = [f.eFormListId, f.ListId, f.field_11]
-      .map(v => String(v ?? '').trim())
-      .filter(Boolean);
-    if (fieldVals.some(v => eFormKeys.has(v))) return true;
 
-    const text = [f.Title, f.Comment, f.Notes, f.field_10]
-      .map(v => String(v ?? ''))
-      .join(' ');
-    for (const key of eFormKeys) {
-      if (new RegExp(`\\bID\\s*[=:]\\s*${key}\\b`, 'i').test(text)) return true;
-    }
-    return false;
-  }
-
-  private getEmailFromHrFolderName(folderName: string): string {
-    return String(folderName ?? '').match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i)?.[0]?.toLowerCase() ?? '';
-  }
 
   /**
    * Email for HR Files LookupId filtering: prefer the address embedded in the
    * folder name, otherwise resolve PinNo / display name via AllDomainUsers.
    */
   private async resolveHrFolderPersonEmail(folderName: string): Promise<string> {
-    const fromFolder = this.getEmailFromHrFolderName(folderName);
+    const fromFolder = getEmailFromHrFolderName(folderName);
     if (fromFolder) return fromFolder;
 
     try {
@@ -6417,7 +5925,7 @@ export class AppComponent implements OnInit, OnDestroy {
       if (this.getListFilterFieldStatus(listId, field) === false) continue;
       const baseName = field.replace(/LookupId$/i, '');
       const col = colByName.get(baseName.toLowerCase());
-      const filterExpr = this.buildPersonLookupFilterExpr(
+      const filterExpr = buildPersonLookupFilterExpr(
         field,
         lookupId,
         col?.allowMultiple === true,
@@ -6779,7 +6287,7 @@ export class AppComponent implements OnInit, OnDestroy {
           )
           .filter((item: any): item is NonNullable<typeof item> => item !== null);
 
-      const folderEFormId = this.extractTrailingFolderId(folderName);
+      const folderEFormId = extractTrailingFolderId(folderName);
       const titleFilter = this.buildDocumentLibraryFolderTitleFilter(folderName);
 
       /** Cheap eFormListId + Title filters against one SharePoint list. */
@@ -7293,21 +6801,8 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   /** True for All Files task lists (e.g. DamagesToEnemaltaTasks) where Title is the folder name, not the submitter. */
-  private isDocumentLibraryTaskList(listName: string): boolean {
-    const normalized = listName.toLowerCase();
-    return sharePointConfig.documentLibrariesTasks.some(
-      (taskList: string) => taskList.toLowerCase() === normalized
-    );
-  }
 
   /** Strip workflow boilerplate accidentally captured with a parsed person name. */
-  private cleanParsedPersonName(name: string): string {
-    return name
-      .replace(/\s+please click\b.*$/i, '')
-      .replace(/\s+id=.*$/i, '')
-      .replace(/\s+stepno:.*$/i, '')
-      .trim();
-  }
 
   /** Pull the assigner/submitter name from workflow comment HTML or plain text. */
   private parseAssignerFromComment(comment: unknown): string {
@@ -7329,49 +6824,11 @@ export class AppComponent implements OnInit, OnDestroy {
     ];
     for (const pattern of patterns) {
       const match = plain.match(pattern);
-      if (match?.[1]) return this.cleanParsedPersonName(match[1]);
+      if (match?.[1]) return cleanParsedPersonName(match[1]);
     }
     return '';
   }
 
-  private extractPersonName(val: any): string {
-    if (!val) return '';
-    if (typeof val === 'string') return val.trim();
-    if (Array.isArray(val) && val.length > 0) {
-      return val
-        .map((p: any) => this.extractPersonName(p))
-        .filter(Boolean)
-        .join(', ');
-    }
-    if (typeof val === 'object') {
-      // Prefer the first *non-empty* identity field. Graph often returns
-      // LookupValue: "" while Email/UPN is populated  `??` would stop on "".
-      const person = val as Record<string, any>;
-      const nestedUser = person['user'] ?? person['User'] ?? {};
-      const candidates = [
-        person['LookupValue'],
-        person['displayName'],
-        person['DisplayName'],
-        person['Title'],
-        person['EMail'],
-        person['Email'],
-        person['email'],
-        person['UserPrincipalName'],
-        person['userPrincipalName'],
-        person['name'],
-        person['Name'],
-        nestedUser['displayName'],
-        nestedUser['email'],
-        nestedUser['userPrincipalName'],
-      ];
-      for (const candidate of candidates) {
-        const text = String(candidate ?? '').trim();
-        if (text) return text;
-      }
-      return '';
-    }
-    return '';
-  }
 
   /** Match assignee person/group fields even when Graph omits LookupValue (email-only entries). */
   private isAssignedToUserFromFields(
@@ -7379,7 +6836,7 @@ export class AppComponent implements OnInit, OnDestroy {
     name: string,
     email: string,
   ): boolean {
-    const assigneeValues = this.collectTaskAssigneeValues(fields);
+    const assigneeValues = collectTaskAssigneeValues(fields);
     if (assigneeValues.some(value => this.userService.matchesAssigneeField(value, name, email))) {
       return true;
     }
@@ -7396,7 +6853,7 @@ export class AppComponent implements OnInit, OnDestroy {
           person['EMail'] ?? person['Email'] ?? person['email'] ??
           person['UserPrincipalName'] ?? person['userPrincipalName'] ?? '',
         ).toLowerCase().trim();
-        const personName = this.extractPersonName(entry);
+        const personName = extractPersonName(entry);
         if (personEmail && emailLower && personEmail === emailLower) return true;
         if (personName && this.userService.matchesAssigneeField(personName, name, email)) return true;
       }
@@ -7407,24 +6864,24 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private resolveTaskSubmitter(item: any, fields: any, listName: string): string {
     // ProcTasks / ProcTasksArchive (and similar): Live uses CustomCreatedBy, not Author/Created By.
-    const customCreatedBy = this.extractPersonName(fields.CustomCreatedBy);
+    const customCreatedBy = extractPersonName(fields.CustomCreatedBy);
     if (customCreatedBy) return customCreatedBy;
 
     const sharePointTitle = String(fields.Title ?? '').trim();
-    if (this.isCommentEntryTitle(sharePointTitle)) {
+    if (isCommentEntryTitle(sharePointTitle)) {
       return this.resolveCommentEntrySubmitter(item, fields);
     }
 
-    if (this.isDocumentLibraryTaskList(listName) || this.isTodoProcurementTaskList(listName)) {
+    if (isDocumentLibraryTaskList(listName) || this.isTodoProcurementTaskList(listName)) {
       const commentText = fields.Comment ?? fields.Notes ?? fields.field_10 ?? '';
       return (
-        this.extractPersonName(fields.Requestor) ||
-        this.extractPersonName(fields.SubmittedBy) ||
+        extractPersonName(fields.Requestor) ||
+        extractPersonName(fields.SubmittedBy) ||
         this.parseAssignerFromComment(commentText) ||
-        this.extractPersonName(fields.CreatedBy) ||
-        this.extractPersonName(fields.Author) ||
-        this.extractPersonName(item?.createdBy?.user) ||
-        this.extractPersonName(item?.createdBy) ||
+        extractPersonName(fields.CreatedBy) ||
+        extractPersonName(fields.Author) ||
+        extractPersonName(item?.createdBy?.user) ||
+        extractPersonName(item?.createdBy) ||
         ''
       );
     }
@@ -7433,27 +6890,27 @@ export class AppComponent implements OnInit, OnDestroy {
     // on Employee / EmployeeName rather than Author.
     if (this.isHrSourceEFormList(listName)) {
       return (
-        this.extractPersonName(fields.EmployeeName) ||
-        this.extractPersonName(fields.Employee) ||
-        this.extractPersonName(fields.Requestor) ||
-        this.extractPersonName(fields.SubmittedBy) ||
-        this.extractPersonName(fields.Submitter) ||
-        this.extractPersonName(fields.Author) ||
-        this.extractPersonName(fields.CreatedBy) ||
-        this.extractPersonName(item?.createdBy?.user) ||
-        this.extractPersonName(item?.createdBy) ||
+        extractPersonName(fields.EmployeeName) ||
+        extractPersonName(fields.Employee) ||
+        extractPersonName(fields.Requestor) ||
+        extractPersonName(fields.SubmittedBy) ||
+        extractPersonName(fields.Submitter) ||
+        extractPersonName(fields.Author) ||
+        extractPersonName(fields.CreatedBy) ||
+        extractPersonName(item?.createdBy?.user) ||
+        extractPersonName(item?.createdBy) ||
         sharePointTitle
       );
     }
 
     return (
-      this.extractPersonName(fields.Requestor) ||
-      this.extractPersonName(fields.SubmittedBy) ||
-      this.extractPersonName(fields.Submitter) ||
-      this.extractPersonName(fields.Author) ||
-      this.extractPersonName(fields.CreatedBy) ||
-      this.extractPersonName(item?.createdBy?.user) ||
-      this.extractPersonName(item?.createdBy) ||
+      extractPersonName(fields.Requestor) ||
+      extractPersonName(fields.SubmittedBy) ||
+      extractPersonName(fields.Submitter) ||
+      extractPersonName(fields.Author) ||
+      extractPersonName(fields.CreatedBy) ||
+      extractPersonName(item?.createdBy?.user) ||
+      extractPersonName(item?.createdBy) ||
       String(fields.Title ?? '').trim()
     );
   }
@@ -7476,8 +6933,8 @@ export class AppComponent implements OnInit, OnDestroy {
     ];
 
     for (const candidate of candidates) {
-      const name = this.extractPersonName(candidate);
-      if (name && !this.isCommentEntryTitle(name)) {
+      const name = extractPersonName(candidate);
+      if (name && !isCommentEntryTitle(name)) {
         return name;
       }
     }
@@ -7486,26 +6943,6 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   /** Collect every assignee-like value stored on a SharePoint task item. */
-  private collectTaskAssigneeValues(fields: Record<string, any>): string[] {
-    const candidates = [
-      fields['AssignedTo'],
-      fields['Assigned'],
-      fields['AssignedTo0'],
-      fields['CurrentAssignee'],
-      fields['TaskAssignee'],
-    ];
-
-    const field7 = String(fields['field_7'] ?? '').trim();
-    if (field7 && !/^\d{1,2}:\d{2}/.test(field7)) {
-      candidates.push(fields['field_7']);
-    }
-
-    const values = candidates
-      .map(value => this.extractPersonName(value))
-      .filter(Boolean);
-
-    return [...new Set(values)];
-  }
 
   // ============================================================
   // SHAPE ONE HR TASK ITEM
@@ -7533,7 +6970,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const emailParts = emailLocal.replace(/[-_.]/g, ' ').split(' ').filter(p => p.length > 2);
     const allNameParts = [...new Set([...displayParts, ...emailParts])];
 
-    const extractPerson = (val: any): string => this.extractPersonName(val);
+    const extractPerson = (val: any): string => extractPersonName(val);
 
     const exactMatch = submitterLower === userDisplayLower;
     const partialMatch = allNameParts.length >= 2 &&
@@ -7541,8 +6978,8 @@ export class AppComponent implements OnInit, OnDestroy {
     const isCurrentUser = exactMatch || partialMatch ||
       submitterLower.includes(userEmail) || submitterLower.includes(userUpn);
 
-    const assigneeValues = this.collectTaskAssigneeValues(f);
-    const assignedToValue = assigneeValues.join(', ') || this.extractPersonName(f.AssignedTo ?? f.Assigned);
+    const assigneeValues = collectTaskAssigneeValues(f);
+    const assignedToValue = assigneeValues.join(', ') || extractPersonName(f.AssignedTo ?? f.Assigned);
     const matchName = this.currentUser?.username ?? this.currentUser?.userPrincipalName ?? '';
     const matchEmail = userEmail || userUpn;
     const isAssignedToCurrentUser =
@@ -7561,10 +6998,10 @@ export class AppComponent implements OnInit, OnDestroy {
 
     const sharePointTitle = String(f.Title ?? '').trim();
     const sharePointCategory = String(f.Category ?? f.Type ?? f.field_9 ?? '').trim();
-    const isCommentEntry = this.isCommentEntryTitle(sharePointTitle) || this.isCommentEntryTitle(sharePointCategory);
+    const isCommentEntry = isCommentEntryTitle(sharePointTitle) || isCommentEntryTitle(sharePointCategory);
     const isStatuslessComment =
-      this.isStatuslessCommentTitle(sharePointTitle) ||
-      this.isStatuslessCommentTitle(sharePointCategory);
+      isStatuslessCommentTitle(sharePointTitle) ||
+      isStatuslessCommentTitle(sharePointCategory);
 
     if (subordinateTasksOnly) {
       if (!isAssignedToSubordinate) return null;
@@ -7607,8 +7044,8 @@ export class AppComponent implements OnInit, OnDestroy {
     const approver2 = String(f.Approver2 ?? f.field_15 ?? '').trim();
     const approver3 = String(f.Approver3 ?? f.field_28 ?? '').trim();
     const sharePointCompletedBy =
-      this.extractPersonName(f.CompletedBy) ||
-      this.extractPersonName(f.CompletedBy0) ||
+      extractPersonName(f.CompletedBy) ||
+      extractPersonName(f.CompletedBy0) ||
       '';
     const primaryApprover = sharePointCompletedBy || approver1 || approver2 || approver3;
 
@@ -7624,11 +7061,11 @@ export class AppComponent implements OnInit, OnDestroy {
     // Proc archive rows: Created/Modified are often archive-move dates; Live uses custom columns.
     const customCreatedDate = String(f.CustomCreatedDate ?? '').trim();
     const customModifiedBy =
-      this.extractPersonName(f.CustomModifiedBy) ||
-      this.extractPersonName(f.Editor) ||
-      this.extractPersonName(f.ModifiedBy) ||
-      this.extractPersonName(item?.lastModifiedBy?.user) ||
-      this.extractPersonName(item?.lastModifiedBy);
+      extractPersonName(f.CustomModifiedBy) ||
+      extractPersonName(f.Editor) ||
+      extractPersonName(f.ModifiedBy) ||
+      extractPersonName(item?.lastModifiedBy?.user) ||
+      extractPersonName(item?.lastModifiedBy);
     const customModifiedDate = String(
       f.CustomModifiedDate ?? f.CustomModified ?? ''
     ).trim();
@@ -7745,7 +7182,7 @@ export class AppComponent implements OnInit, OnDestroy {
     // ensure adjacent anchor tags are separated onto their own lines
     commentHtml = commentHtml.replace(/<\/a>\s*<a /gi, '</a><br><a ');
 
-    const attachmentFromHtml = this.extractAttachmentFromCommentHtml(commentHtml);
+    const attachmentFromHtml = extractAttachmentFromCommentHtml(commentHtml);
     const attachmentUrl = normalizeSharePointFileUrl(attachmentFromHtml.url);
     const attachmentFileName = attachmentFromHtml.fileName;
 
@@ -8633,7 +8070,7 @@ export class AppComponent implements OnInit, OnDestroy {
   ): CommentListItem {
     const attachmentFileName = String(ev.fileName ?? '').trim();
     const attachmentUrl = String(ev.attachmentUrl ?? '').trim();
-    const commentHtml = this.buildCommentHtmlWithAttachment(
+    const commentHtml = buildCommentHtmlWithAttachment(
       ev.comment,
       attachmentFileName,
       attachmentUrl
@@ -8658,7 +8095,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const attachmentFileName = String(ev.fileName ?? '').trim();
     const attachmentUrl = String(ev.attachmentUrl ?? '').trim();
     const commentHtml = attachmentFileName && attachmentUrl
-      ? this.buildCommentHtmlWithAttachment(ev.comment, attachmentFileName, attachmentUrl)
+      ? buildCommentHtmlWithAttachment(ev.comment, attachmentFileName, attachmentUrl)
       : ev.comment;
     const assignedTo = String(ev.assignedToName ?? '').trim();
 
@@ -8673,76 +8110,16 @@ export class AppComponent implements OnInit, OnDestroy {
     }, ev.sharePointItemId);
   }
 
-  private escapeHtml(text: string): string {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
 
 
   // this is to make the url of the attachment clickable in the new-comment modal in the todo section
-  private buildCommentHtmlWithAttachment(
-    comment: string,
-    fileName: string,
-    attachmentUrl: string
-  ): string {
-    const safeComment = this.escapeHtml(comment.trim()).replace(/\n/g, '<br>');
-
-    if (!fileName || !attachmentUrl) {
-      return safeComment;
-    }
-
-    const safeName = this.escapeHtml(fileName);
-    const openUrl = normalizeSharePointFileUrl(attachmentUrl);
-    const safeUrl = this.escapeHtml(openUrl);
-    const attachmentLink =
-      `<a class="comment-link" href="${safeUrl}" target="_blank" rel="noopener noreferrer">` +
-      `${safeName}</a>`;
-
-    return safeComment ? `${safeComment}<br><br>${attachmentLink}` : attachmentLink;
-  }
 
 
-  protected openAttachmentLink(event: Event, url: string): void {
-    event.preventDefault();
-    event.stopPropagation();
-    // Strip stray quote characters left over from encoded hrefs (&quot;...&quot;).
-    const cleaned = String(url ?? '').trim().replace(/^["']+|["']+$/g, '');
-    const target = normalizeSharePointFileUrl(cleaned);
-    if (!target) {
-      return;
-    }
-    // Always open in a new tab  never navigate the app itself.
-    window.open(target, '_blank', 'noopener,noreferrer');
-  }
 
   protected onCommentLinkClick(event: Event): void {
-    const anchor = (event.target as HTMLElement | null)?.closest('a');
-    if (!anchor || !(anchor instanceof HTMLAnchorElement)) {
-      return;
-    }
-    const href = anchor.getAttribute('href') ?? anchor.href;
-    if (!href || href.startsWith('#')) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    this.openAttachmentLink(event, href);
+    onCommentLinkClick(event);
   }
 
-  private extractAttachmentFromCommentHtml(html: string): { url: string; fileName: string } {
-    const match = html.match(/<a\b[^>]*\bhref=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i);
-    if (!match) {
-      return { url: '', fileName: '' };
-    }
-    return {
-      url: match[1].replace(/&amp;/g, '&').trim(),
-      fileName: match[2].replace(/<[^>]+>/g, '').trim(),
-    };
-  }
 
   // to build the default saved comment card for the new-comment modal in the todo section
   private buildDefaultSavedCommentCard(

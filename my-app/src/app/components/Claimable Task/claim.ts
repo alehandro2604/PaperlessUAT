@@ -68,7 +68,6 @@ export class ClaimComponent implements OnDestroy {
     this.overlayRef?.detach();
   }
 
-  
   claimTask(event?: Event): void {
     event?.preventDefault();
     event?.stopPropagation();
