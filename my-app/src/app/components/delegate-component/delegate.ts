@@ -1,4 +1,4 @@
-import { Component, EventEmitter, Input, OnDestroy, OnInit, Output } from '@angular/core';
+import { ChangeDetectorRef, Component, EventEmitter, Input, OnDestroy, OnInit, Output } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Subscription } from 'rxjs';
@@ -54,9 +54,14 @@ export class DelegateComponent implements OnInit, OnDestroy {
   isSearching = false;
   searchError = '';
   private searchTimeout: any = null;
+  private searchSeq = 0;// guards against a slower earlier search overwriting a newer one
   private readonly DEBOUNCE_MS = 300;// debounce time for the search input
 
-  constructor(private delegateService: DelegateService, private userService: UserService) { }
+  constructor(
+    private delegateService: DelegateService,
+    private userService: UserService,
+    private cdr: ChangeDetectorRef,
+  ) { }
 
   ngOnInit(): void {
     this.canDelegateSubscription = this.delegateService.canDelegate$.subscribe(
@@ -120,7 +125,7 @@ export class DelegateComponent implements OnInit, OnDestroy {
       clearTimeout(this.searchTimeout);
     }
 
-    const query = this.searchQuery.trim();
+    const query = this.searchQuery.trim();// trim the search query to remove whitespace
 
     if (query.length < 2) {
       this.searchResults = [];
@@ -132,14 +137,23 @@ export class DelegateComponent implements OnInit, OnDestroy {
     this.isSearching = true;
     this.searchError = '';
 
+    const seq = ++this.searchSeq;
+
     this.searchTimeout = setTimeout(async () => {
       try {
-        this.searchResults = await this.delegateService.searchUsers(query);
+        const results = await this.delegateService.searchUsers(query);
+        if (seq !== this.searchSeq) return;
+        this.searchResults = results;
       } catch {
+        if (seq !== this.searchSeq) return;
         this.searchError = 'Failed to search users. Please try again.';
         this.searchResults = [];
       } finally {
-        this.isSearching = false;
+        if (seq === this.searchSeq) {
+          this.isSearching = false;
+          // App runs zoneless, so this async result needs an explicit render.
+          this.cdr.detectChanges();//cdr means Change Detection Reference,this will trigger a change detection cycle to update the UI
+        }
       }
     }, this.DEBOUNCE_MS);
   }
