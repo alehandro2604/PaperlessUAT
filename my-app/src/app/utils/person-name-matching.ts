@@ -21,7 +21,7 @@ export function extractPersonName(val: any): string {
   }
   if (typeof val === 'object') {
     // Prefer the first *non-empty* identity field. Graph often returns
-    // LookupValue: "" while Email/UPN is populated  `??` would stop on "".
+    // LookupValue: "" while Email/UPN is populated - `??` would stop on "".
     const person = val as Record<string, any>;
     const nestedUser = person['user'] ?? person['User'] ?? {};
     const candidates = [

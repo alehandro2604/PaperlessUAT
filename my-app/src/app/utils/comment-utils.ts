@@ -190,7 +190,7 @@ export function openAttachmentLink(event: Event, url: string): void {
   if (!target) {
     return;
   }
-  // Always open in a new tab  never navigate the app itself.
+  // Always open in a new tab - never navigate the app itself.
   window.open(target, '_blank', 'noopener,noreferrer');
 }
 

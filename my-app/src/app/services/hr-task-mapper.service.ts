@@ -161,7 +161,7 @@ export class HrTaskMapperService {
 
   // ============================================================
   // SHAPE ONE HR TASK ITEM
-  // Pure mapping  returns null when the item doesn't belong to
+  // Pure mapping - returns null when the item doesn't belong to
   // the current user.
   // ============================================================
   mapSharePointItemToHrTask(
@@ -240,7 +240,7 @@ export class HrTaskMapperService {
 
     // ?? Status ?????????????????????????????????????????????
     // Procurement lists: Progress is the live gate (Pending/Complete). LastState/Status
-    // often still say "Approved" from an earlier step  using those hid open Pr- tasks.
+    // often still say "Approved..." from an earlier step - using those hid open Pr- tasks.
     let status = isTodoProcurementTaskList(listName)
       ? String(f.Progress ?? f.LastState ?? f.Status ?? 'Pending').trim()
       : String(
@@ -372,7 +372,7 @@ export class HrTaskMapperService {
         .replace(/Please click.*HERE.*to update eForm[\.] ID=([\d]+)/gi, '\n\neForm List ID: $1')
         .replace(/\s+/g, ' ').replace(/\n\s*\n/g, '\n\n').trim();
       commentHtml = raw
-        // Match quoted AND unquoted hrefs  SharePoint/PowerApps comments are
+        // Match quoted AND unquoted hrefs - SharePoint/PowerApps comments are
         // stored with mixed encodings, so quotes may be missing after decoding.
         .replace(/<a\b[^>]*\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>/gi, (_match, dq, sq, unq) => {
           const rawHref = String(dq ?? sq ?? unq ?? '').replace(/^["']+|["']+$/g, '').trim();
@@ -387,7 +387,7 @@ export class HrTaskMapperService {
     }
 
     // insert line breaks before numbered items (e.g. "39. ...40. ...")
-    // Only touch text nodes  running this over the whole string used to inject
+    // Only touch text nodes - running this over the whole string used to inject
     // "<br>" inside href="..." attributes and break links to files whose URL
     // contains digits followed by a dot (e.g. ".../2022.pdf").
     commentHtml = commentHtml
@@ -420,19 +420,19 @@ export class HrTaskMapperService {
       if (approver1) {
         body += `\n${isApproved ? '?' : '?'} Approver 1: ${approver1}`;
         if (approver1Pin) body += ` (PIN: ${approver1Pin})`;
-        if (approver1Date) body += `  ${approver1Date}`;
+        if (approver1Date) body += ` - ${approver1Date}`;
         if (approver1Comment) body += `\n  Comment: ${approver1Comment}`;
       }
       if (approver2) {
         body += `\n? Approver 2: ${approver2}`;
         if (approver2Pin) body += ` (PIN: ${approver2Pin})`;
-        if (approver2Date) body += `  ${approver2Date}`;
+        if (approver2Date) body += ` - ${approver2Date}`;
         if (approver2Comment) body += `\n  Comment: ${approver2Comment}`;
       }
       if (approver3) {
         body += `\n? Approver 3: ${approver3}`;
         if (approver3Pin) body += ` (PIN: ${approver3Pin})`;
-        if (approver3Date) body += `  ${approver3Date}`;
+        if (approver3Date) body += ` - ${approver3Date}`;
         if (approver3Comment) body += `\n  Comment: ${approver3Comment}`;
       }
       if (spToken) body += `\nToken: ${spToken}`;
@@ -444,7 +444,7 @@ export class HrTaskMapperService {
       if (reason && reason !== 'Enter value here') body += `\nReason: ${reason}`;
       if (primaryApprover && primaryApprover !== 'Enter value here') {
         body += `\n${isApproved ? '?' : '?'} ${primaryApprover}`;
-        if (approver1Date) body += `  ${approver1Date}`;
+        if (approver1Date) body += ` - ${approver1Date}`;
       }
     } else {
       body = submitter && primaryApprover && isApproved
@@ -455,16 +455,16 @@ export class HrTaskMapperService {
       if (section) body += `\nSection: ${section}`;
       if (approver1) {
         body += `\n${isApproved ? '?' : '?'} Approver 1: ${approver1}`;
-        if (approver1Date) body += `  ${approver1Date}`;
+        if (approver1Date) body += ` - ${approver1Date}`;
         if (approver1Comment) body += `\n  Comment: ${approver1Comment}`;
       }
       if (approver2) {
         body += `\n? Approver 2: ${approver2}`;
-        if (approver2Date) body += `  ${approver2Date}`;
+        if (approver2Date) body += ` - ${approver2Date}`;
       }
       if (approver3) {
         body += `\n? Approver 3: ${approver3}`;
-        if (approver3Date) body += `  ${approver3Date}`;
+        if (approver3Date) body += ` - ${approver3Date}`;
       }
     }
     body += `\nPlease click HERE to update HR Task. eFormListId=${eFormListId}`;
