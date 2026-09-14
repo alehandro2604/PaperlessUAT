@@ -906,9 +906,17 @@ export class TodoListComponent implements OnInit, OnDestroy {
   }
 
   hasDueDateColumn(task: ToDoTask | null | undefined): boolean {
-    const raw = (task as any)?.eFormDetails?.rawFields ?? {};
-    return ['DueDate', 'DueDate0', 'Due', 'Due_x0020_Date']
+    const details = (task as any)?.eFormDetails ?? {};
+    const raw = details.rawFields ?? {};
+    const hasKey = ['DueDate', 'DueDate0', 'Due', 'Due_x0020_Date']
       .some(key => Object.prototype.hasOwnProperty.call(raw, key));
+    if (hasKey) return true;
+    return !!String(details.dueDate ?? (task as any)?.dueDate ?? '').trim();
+  }
+
+  /** Graph omits empty columns from `fields`, so scan the whole subgroup. */
+  subGroupHasDueDateColumn(sub: { tasks?: ToDoTask[] } | null | undefined): boolean {
+    return (sub?.tasks ?? []).some(task => this.hasDueDateColumn(task));
   }
 
   /** TEMP testing: show Claim when SharePoint Claimable is No/false. Flip back to Yes/true later. */

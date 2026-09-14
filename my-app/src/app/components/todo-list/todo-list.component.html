@@ -106,7 +106,7 @@
           >
           
             <app-change-task-date
-              *ngIf="sub.tasks?.length && hasDueDateColumn(sub.tasks[0])"
+              *ngIf="sub.tasks?.length && subGroupHasDueDateColumn(sub)"
               [task]="sub.tasks[0]"
               (dateChange)="onChangeTaskDate(sub.tasks[0], $event)"
             ></app-change-task-date>
