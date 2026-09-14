@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 // IMPORTS & DEPENDENCIES
 // ============================================================
 import { CommonModule } from '@angular/common';
@@ -36,6 +36,7 @@ import { FileCrawlCacheService } from './services/file-crawl.service';
 import { SiteMetadataService } from './services/site-metadata.service';
 import { BackendApiService } from './services/backend-api.service';
 import { HrTaskMapperService } from './services/hr-task-mapper.service';
+import { HrTaskFolderMatchService } from './services/hr-task-folder-match.service';
 
 
 // ============================================================
@@ -96,6 +97,7 @@ export class AppComponent implements OnInit, OnDestroy {
     private readonly siteMetadataService: SiteMetadataService,
     private readonly backendApi: BackendApiService,
     private readonly hrTaskMapper: HrTaskMapperService,
+    private readonly folderMatch: HrTaskFolderMatchService,
   ) { }
 
   private static readonly HR_USER_TASKS_CACHE_KEY = 'tasks:hr-user:v5';
@@ -965,7 +967,7 @@ export class AppComponent implements OnInit, OnDestroy {
     if (this.showAllFilesSection) {
       const folderName = String(this.selectedFolderName ?? '').trim();
       if (folderName && extractTrailingFolderId(folderName)) {
-        filtered = filtered.filter(item => this.doesMappedHrTaskMatchFolder(item, folderName));
+        filtered = filtered.filter(item => this.folderMatch.doesMappedHrTaskMatchFolder(item, folderName));
       }
     }
 
@@ -2239,7 +2241,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const parentCached = this.fileCrawlCache.getStale(this.libFolderTaskCacheKey(listName, parentName));
     if (!Array.isArray(parentCached) || parentCached.length === 0) return null;
 
-    const matched = parentCached.filter((item) => this.doesMappedHrTaskMatchFolder(item, childFolderName));
+    const matched = parentCached.filter((item) => this.folderMatch.doesMappedHrTaskMatchFolder(item, childFolderName));
     if (matched.length === 0) return null;
 
     const sorted = this.sortCommentItemsByDateDesc(matched);
@@ -4799,254 +4801,13 @@ export class AppComponent implements OnInit, OnDestroy {
       : '';
   }
 
-  /** True when a SharePoint list item belongs to the clicked document-library folder. */
-  private doesSharePointTaskMatchFolder(item: any, folderName: string): boolean {
-    const folderTokens = getHrPersonalFolderMatchTokens(folderName);
-    if (folderTokens.length === 0) return false;
-
-    const f = item.fields ?? item;
-    const folderEFormId = extractTrailingFolderId(folderName);
-    if (folderEFormId) {
-      const taskTitle = String(f.Title ?? f.Name ?? '').trim();
-      const taskEFormId = this.extractTaskEFormListId(f);
-      const taskTitleId = extractTrailingFolderId(taskTitle);
-
-      if (taskEFormId === folderEFormId) return true;
-      if (taskTitleId === folderEFormId) return true;
-
-      // Child rows often reuse the parent folder Title but carry a different eFormListId.
-      if (taskEFormId && taskEFormId !== folderEFormId) return false;
-      if (taskTitleId && taskTitleId !== folderEFormId) return false;
-
-      // Legacy rows without numeric ids - exact folder title only.
-      if (normalizeName(taskTitle) === normalizeName(folderName)) return true;
-      return false;
-    }
-
-    const candidates = [
-      f.Title,
-      f.Name,
-      f.Folder,
-      f.FolderName,
-      f.DocumentFolder,
-      f.RelatedFolder,
-      f.FileLeafRef,
-      f.FileDirRef,
-      f.Path,
-      f.Requestor,
-      f.SubmittedBy,
-      f.Author,
-      f.CreatedBy,
-      f.AssignedTo,
-      f.Assigned,
-      f.AssignedToSuperior1,
-      f.AssignedToSuperior2,
-      f.EmployeeName,
-      f.Employee,
-      f.Email,
-      f.ADmail,
-      f.Comment,
-      f.Notes,
-      f.ResolvedSubmitter,
-    ];
-
-    for (const value of candidates) {
-      if (value == null || value === '') continue;
-      const text = stringifyTaskFieldValue(value);
-      const normalizedText = normalizeTaskMatchText(text);
-      if (folderTokens.some(token => normalizedText.includes(token))) return true;
-
-      const segments = text.split(/[/\\]/).map((s: string) => normalizeTaskMatchText(s));
-      if (segments.some(segment => folderTokens.some(token => segment.includes(token)))) return true;
-    }
-
-    return false;
-  }
-
-
-  private extractTaskEFormListId(fields: Record<string, unknown>): string {
-    const field11 = String(fields['field_11'] ?? '').trim();
-    return String(
-      fields['eFormListId'] ?? fields['ListId'] ?? (/^\d+$/.test(field11) ? field11 : '')
-    ).trim();
-  }
-
-  /** Final guard for mapped Comments cards in All Files folder view. */
-  private doesMappedHrTaskMatchFolder(item: any, folderName: string): boolean {
-    const folderEFormId = extractTrailingFolderId(folderName);
-    if (!folderEFormId) return true;
-
-    const rawFields = item?.eFormDetails?.rawFields;
-    if (rawFields && typeof rawFields === 'object') {
-      return this.doesSharePointTaskMatchFolder({ fields: rawFields }, folderName);
-    }
-
-    const taskEFormId = String(item?.eFormDetails?.eFormListId ?? '').trim();
-    const taskTitle = String(item?.name ?? item?.eFormDetails?.type ?? '').trim();
-    const taskTitleId = extractTrailingFolderId(taskTitle);
-
-    if (taskEFormId === folderEFormId) return true;
-    if (taskTitleId === folderEFormId) return true;
-    if (taskEFormId && taskEFormId !== folderEFormId) return false;
-    if (taskTitleId && taskTitleId !== folderEFormId) return false;
-    return normalizeName(taskTitle) === normalizeName(folderName);
-  }
-
   private filterTasksForSelectedAllFilesFolder(items: any[]): any[] {
     if (!this.showAllFilesSection) return items;
     const folderName = String(this.selectedFolderName ?? '').trim();
     if (!folderName || !extractTrailingFolderId(folderName)) return items;
-    return items.filter(item => this.doesMappedHrTaskMatchFolder(item, folderName));
+    return items.filter(item => this.folderMatch.doesMappedHrTaskMatchFolder(item, folderName));
   }
 
-
-
-  /**
-   * Numeric employee IDs (e.g. "106") must match as whole tokens — never as a
-   * substring of "1106" / "5106" or random digits inside other fields.
-   */
-
-  /** Split a person/display string into discrete name parts (adrian ≠ adriana). */
-
-
-  /**
-   * Person-folder match requires a real name/email hit.
-   * Employee id alone is not enough (caused Aidan rows under Alehandro via "106").
-   * Single first-name substrings are not enough either (adrian ≠ Adriana / Adrian-John).
-   */
-
-  /** Match HR Files folder to submitter or current assignee (not superior fields). */
-
-
-  /**
-   * Seed/supplement membership for an HR person folder.
-   * When the row has person LookupIds, trust those over loose name text so
-   * "Adrian Kind" does not pick up Adriana / Adrian-John rows from newest-page scans.
-   */
-  private doesHrTaskBelongToFolderPerson(
-    item: any,
-    listName: string,
-    folderName: string,
-    personLookupId: string | null,
-    folderMatchHints: string[],
-  ): boolean {
-    const lookupIds = getHrTaskPersonLookupIds(item);
-    if (personLookupId && lookupIds.length > 0) {
-      return lookupIds.includes(personLookupId);
-    }
-    return (
-      doesHrTaskMatchPersonLookupId(item, personLookupId) ||
-      this.doesHrTaskMatchFolderPerson(item, listName, folderName) ||
-      this.doesHrTaskMatchFolderHints(item, listName, folderMatchHints)
-    );
-  }
-
-  /** Same rules after mapSharePointItemToHrTask (uses mapped + rawFields). */
-  private doesMappedHrTaskBelongToFolderPerson(
-    item: any,
-    folderName: string,
-    personLookupId: string | null,
-    folderMatchHints: string[],
-  ): boolean {
-    const raw = item?.eFormDetails?.rawFields;
-    const lookupSource = raw && typeof raw === 'object' ? { fields: raw } : item;
-    const lookupIds = getHrTaskPersonLookupIds(lookupSource);
-    if (personLookupId && lookupIds.length > 0) {
-      return lookupIds.includes(personLookupId);
-    }
-    return (
-      doesHrTaskMatchPersonLookupId(lookupSource, personLookupId) ||
-      isItemSubmittedByFolderPerson(item, folderName) ||
-      this.isItemSubmittedByFolderHints(item, folderMatchHints)
-    );
-  }
-
-  private doesHrTaskMatchFolderPerson(item: any, listName: string, folderName: string): boolean {
-    const f = item.fields ?? item;
-    const submitter = this.hrTaskMapper.resolveTaskSubmitter(item, f, listName);
-    return candidatesMatchFolderPerson([
-      submitter,
-      f.Requestor,
-      f.SubmittedBy,
-      f.Submitter,
-      f.Author,
-      f.CreatedBy,
-      f.AssignedTo,
-      f.Assigned,
-      f.ResolvedSubmitter,
-      f.commentSubmittedBy,
-      f.EmployeeName,
-      f.Employee,
-      f.EmployeeEmail,
-      f.RequestorEmail,
-      item?.createdBy?.user?.displayName,
-      item?.createdBy?.user?.email,
-      item?.createdBy?.user?.userPrincipalName,
-    ], folderName);
-  }
-
-  /** Extra match path when folder email was resolved from AllDomainUsers (no email in folder name). */
-  private doesHrTaskMatchFolderHints(item: any, listName: string, hints: string[]): boolean {
-    if (!hints.length) return false;
-    const f = item.fields ?? item;
-    const submitter = this.hrTaskMapper.resolveTaskSubmitter(item, f, listName);
-    return this.candidatesMatchFolderHints([
-      submitter,
-      f.Requestor,
-      f.SubmittedBy,
-      f.Submitter,
-      f.Author,
-      f.CreatedBy,
-      f.ResolvedSubmitter,
-      f.commentSubmittedBy,
-      f.EmployeeName,
-      f.Employee,
-      f.EmployeeEmail,
-      f.RequestorEmail,
-      item?.createdBy?.user?.displayName,
-      item?.createdBy?.user?.email,
-      item?.createdBy?.user?.userPrincipalName,
-    ], hints);
-  }
-
-  private isItemSubmittedByFolderHints(
-    item: { submittedBy?: string; eFormDetails?: Record<string, unknown> },
-    hints: string[],
-  ): boolean {
-    if (!hints.length) return false;
-    const rawFields = (item.eFormDetails?.['rawFields'] ?? {}) as Record<string, unknown>;
-    return this.candidatesMatchFolderHints([
-      item.submittedBy,
-      item.eFormDetails?.['submitter'],
-      item.eFormDetails?.['submittedBy'],
-      item.eFormDetails?.['commentSubmittedBy'],
-      rawFields['Requestor'],
-      rawFields['SubmittedBy'],
-      rawFields['Submitter'],
-      rawFields['Author'],
-      rawFields['CreatedBy'],
-      rawFields['commentSubmittedBy'],
-      rawFields['EmployeeName'],
-      rawFields['Employee'],
-      rawFields['EmployeeEmail'],
-    ], hints);
-  }
-
-  private candidatesMatchFolderHints(candidates: unknown[], hints: string[]): boolean {
-    const normalizedHints = hints
-      .map(hint => normalizeTaskMatchText(hint))
-      .filter(hint => hint.length >= 3);
-    if (normalizedHints.length === 0) return false;
-
-    const normalizedCandidates = candidates
-      .map(value => normalizeTaskMatchText(stringifyTaskFieldValue(value)))
-      .filter(Boolean);
-    if (normalizedCandidates.length === 0) return false;
-
-    return normalizedHints.some(hint =>
-      normalizedCandidates.some(text => fieldMatchesFolderToken(text, hint))
-    );
-  }
 
   /** Loads HR tasks from SharePoint lists that belong to the person represented by folderName. */
   private async loadHrPersonalTasksForFolder(
@@ -5178,7 +4939,7 @@ export class AppComponent implements OnInit, OnDestroy {
     return rawItems
       .filter((item: any) => !isSharePointCommentEntry(item))
       .filter((item: any) =>
-        this.doesHrTaskBelongToFolderPerson(
+        this.folderMatch.doesHrTaskBelongToFolderPerson(
           item,
           listName,
           folderName,
@@ -5192,7 +4953,7 @@ export class AppComponent implements OnInit, OnDestroy {
       .filter((item): item is NonNullable<typeof item> => item !== null)
       .filter((item: any) => !isCommentTypeItem(item))
       .filter((item: any) =>
-        this.doesMappedHrTaskBelongToFolderPerson(
+        this.folderMatch.doesMappedHrTaskBelongToFolderPerson(
           item,
           folderName,
           personLookupId,
@@ -6243,7 +6004,7 @@ export class AppComponent implements OnInit, OnDestroy {
         sourceListObj: { id: string; name?: string; displayName?: string; webUrl?: string },
       ): any[] =>
         rawItems
-          .filter((item: any) => this.doesSharePointTaskMatchFolder(item, folderName))
+          .filter((item: any) => this.folderMatch.doesSharePointTaskMatchFolder(item, folderName))
           .map((item: any) =>
             this.hrTaskMapper.mapSharePointItemToHrTask(
               item,
