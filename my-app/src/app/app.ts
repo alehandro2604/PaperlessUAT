@@ -6575,19 +6575,9 @@ export class AppComponent implements OnInit, OnDestroy {
       ''
     );
   }
-
-
-
-
-  // this is to make the url of the attachment clickable in the new-comment modal in the todo section
-
-
-
   protected onCommentLinkClick(event: Event): void {
     onCommentLinkClick(event);
   }
-
-
 
   private prependCommentItem(item: CommentListItem): void {
     this.commentItems = [item, ...this.commentItems];
