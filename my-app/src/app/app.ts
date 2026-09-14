@@ -6371,7 +6371,6 @@ export class AppComponent implements OnInit, OnDestroy {
       const nc = normalizeName(candidate);
       const rc = candidate.toLowerCase();
       if (!nc && !rc) continue;
-
       if (nf && nc && nf === nc) bestScore = Math.max(bestScore, 100);
       else if (rfl === rc) bestScore = Math.max(bestScore, 95);
       else if (nf && nc && (nf.startsWith(nc) || nc.startsWith(nf))) bestScore = Math.max(bestScore, 80);
@@ -6384,6 +6383,7 @@ export class AppComponent implements OnInit, OnDestroy {
   // ============================================================
   // ERROR HANDLER
   // ============================================================
+  // the error handler is used to handle the errors that occur when loading the user files
   private handleUserFilesError(error: unknown): void {
     this.clearUserFileLoadingWatchdog();
     if ((error as any)?.name === 'TimeoutError') {
@@ -6400,10 +6400,10 @@ export class AppComponent implements OnInit, OnDestroy {
     this.refreshView();
   }
 
-
   // ============================================================
   // WATCHDOG TIMER
   // ============================================================
+  //what this does is it will timeout the user file loading if it takes too long
   private startUserFileLoadingWatchdog(): void {
     this.clearUserFileLoadingWatchdog();
     this.userFileLoadingTimeoutId = setTimeout(() => {
