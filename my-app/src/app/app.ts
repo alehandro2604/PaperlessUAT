@@ -8,6 +8,7 @@ import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom, Observable, Subscription } from 'rxjs';
 import { sharePointConfig } from './sharepoint.config';
 import { AppConstants } from './app.constants';
+import { HR_TASK_LIST_NAMES, HR_SOURCE_EFORM_LIST_NAMES, TODO_EXTRA_TASK_LIST_NAMES } from './hr-task-lists.config';
 import { getFileExtension, getFileCategory, getFileIcon, normalizeSharePointFileUrl } from './file-utils';
 import { graphGet, graphGetWithRetry, clearGraphThrottleCooldown, toGraphPath, normalizeName } from './microsoft-graph';
 import { InteractionRequiredAuthError } from '@azure/msal-browser';
@@ -3953,32 +3954,11 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  // ============================================================
-  // KNOWN HR TASK LIST NAMES
-  // ============================================================
-  private readonly hrTaskListNames: string[] = [
-    'HRTaskChangeOfShiftIESC', 'HRTaskTeleworkReports', 'HRTaskTelework',
-    'HRTaskRest', 'HRTaskSickLeaveByAppointment', 'HRTaskProbation', 'HRTaskMissingPunch',
-  ];
-
-  /**
-   * Extra HR lists to always query for person history / To Do discovery.
-   * Sick Certificate tasks live on SickCertificateUploader_Tasks (not HRTask*).
-   */
-  private readonly hrSourceEFormListNames: string[] = [
-    'SickCertificateUploader_Tasks',
-  ];
-
-  /** Procurement / SAP lists  queried for To Do only, not HR Files person folders. */
-  private readonly todoExtraTaskListNames: string[] = [
-    'ProcTasks', 'ProcTasks1', 'ECTasks',
-  ];
-
   /** True for procurement/SAP task lists included in the To Do scope. */
   private isTodoProcurementTaskList(listName: string): boolean {
     const key = String(listName ?? '').trim().toLowerCase();
     if (key === 'proctasksarchive') return true;
-    return this.todoExtraTaskListNames.some(name => name.toLowerCase() === key);
+    return TODO_EXTRA_TASK_LIST_NAMES.some(name => name.toLowerCase() === key);
   }
 
   /** Pull assignee-matched procurement tasks already loaded via All Files folder views. */
@@ -4039,8 +4019,8 @@ export class AppComponent implements OnInit, OnDestroy {
       : this.formConfigService.getHrQueryListNames();
 
     let names = [...new Set([
-      ...this.hrTaskListNames,
-      ...this.hrSourceEFormListNames,
+      ...HR_TASK_LIST_NAMES,
+      ...HR_SOURCE_EFORM_LIST_NAMES,
       ...autoDetected,
       ...fromEForms,
     ])];
@@ -4048,7 +4028,7 @@ export class AppComponent implements OnInit, OnDestroy {
     if (options?.includeAllWorkflows) {
       names = [...new Set([
         ...names,
-        ...this.todoExtraTaskListNames,
+        ...TODO_EXTRA_TASK_LIST_NAMES,
         ...this.formConfigService.getAllQueryListNames(),
       ])];
     }
@@ -4191,7 +4171,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private isHrSourceEFormList(listName: string): boolean {
     const key = String(listName ?? '').trim().toLowerCase();
     if (!key) return false;
-    if (this.hrSourceEFormListNames.some(name => name.toLowerCase() === key)) return true;
+    if (HR_SOURCE_EFORM_LIST_NAMES.some(name => name.toLowerCase() === key)) return true;
     if (key.includes('sickcertificate')) return true;
     return /_eform$/i.test(key) || /eform$/i.test(key.replace(/[^a-z0-9]/g, ''));
   }
