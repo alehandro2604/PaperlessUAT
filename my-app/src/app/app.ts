@@ -49,6 +49,7 @@ import { ManualRefreshComponent } from './components/manual-refresh/refresh';
 import { AppDropdownComponent, AppDropdownOption } from './components/app-dropdown/app-dropdown.component';
 import { HrFilesComponent } from './components/hr-files/hr-files.component';
 import { NewCommentSavedEvent, CommentListItem } from './models/comment.models';
+import { buildCommentCardFromSavedEvent } from './utils/comment-card-builders';
 import { formatFormTitle } from './form-utils';
 import {
   isSyntheticCommentCard, matchesCommentLabel, isCommentEntryTitle, isStatuslessCommentTitle,
@@ -7475,9 +7476,14 @@ export class AppComponent implements OnInit, OnDestroy {
   // to update the comment section iteams for the new-comment modal in the todo section
   //also this is saved by the new-comment modal in the todo section grouping the comments by task id.
   protected onNewCommentSaved(ev: NewCommentSavedEvent): void {
-    const newItem = this.buildCommentCardFromSavedEvent(ev);
-    if (!newItem) return;
-    this.prependCommentItem(newItem);
+    const taskId = String(ev?.taskId ?? '').trim();
+    const base = taskId ? this.resolveCommentCardBase(taskId) : null;
+    if (!base) return;
+
+    this.prependCommentItem(buildCommentCardFromSavedEvent(ev, base, taskId, {
+      commentAuthor: this.getLoggedInUserDisplayName(),
+      fallbackEFormListId: this.selectedEFormListId ?? '',
+    }));
 
     const parentTask =
       this.commentItems.find(item => String(item.id ?? '').trim() === String(ev.taskId ?? '').trim()) ??
@@ -7497,24 +7503,6 @@ export class AppComponent implements OnInit, OnDestroy {
     this.syncTaskCachesAfterMutation(event.task, 'dueDate', { dueDate });
   }
 
-  private buildCommentCardFromSavedEvent(ev: NewCommentSavedEvent): CommentListItem | null {
-    const taskId = String(ev?.taskId ?? '').trim();
-    if (!taskId) return null;
-
-    const base = this.resolveCommentCardBase(taskId);
-    if (!base) return null;
-
-    switch (ev.category) {
-      case 'general':
-        return this.buildGeneralCommentCard(ev, base, taskId);
-      case 'attachment':
-        return this.buildAttachmentCommentCard(ev, base, taskId);
-      case 'action':
-        return this.buildActionCommentCard(ev, base, taskId);
-      default:
-        return this.buildDefaultSavedCommentCard(ev, base, taskId);
-    }
-  }
   // to resolve the comment card base for the new-comment modal in the todo section
   private resolveCommentCardBase(taskId: string): CommentListItem | null {
     return (
@@ -7534,69 +7522,6 @@ export class AppComponent implements OnInit, OnDestroy {
     );
   }
 
-  // to build the general comment card for the new-comment modal in the todo section
-  private buildGeneralCommentCard(
-    ev: NewCommentSavedEvent,
-    base: CommentListItem,
-    taskId: string
-  ): CommentListItem {
-    return this.createSavedCommentItem(base, taskId, 'General Comment', {
-      commentHtml: ev.comment,
-      commentCategory: ev.category,
-      attachmentFileName: '',
-      assignedTo: '',
-      category: '',
-      status: ''
-    }, ev.sharePointItemId);
-  }
-
-  // to build the attachment comment card for the new-comment modal in the todo section
-  private buildAttachmentCommentCard(
-    ev: NewCommentSavedEvent,
-    base: CommentListItem,
-    taskId: string
-  ): CommentListItem {
-    const attachmentFileName = String(ev.fileName ?? '').trim();
-    const attachmentUrl = String(ev.attachmentUrl ?? '').trim();
-    const commentHtml = buildCommentHtmlWithAttachment(
-      ev.comment,
-      attachmentFileName,
-      attachmentUrl
-    );
-
-    return this.createSavedCommentItem(base, taskId, 'New Attachment', {
-      status: '',
-      commentHtml,
-      commentCategory: ev.category,
-      attachmentFileName,
-      attachmentUrl,
-      assignedTo: '',
-      category: '',
-    }, ev.sharePointItemId);
-  }
-
-  private buildActionCommentCard(
-    ev: NewCommentSavedEvent,
-    base: CommentListItem,
-    taskId: string
-  ): CommentListItem {
-    const attachmentFileName = String(ev.fileName ?? '').trim();
-    const attachmentUrl = String(ev.attachmentUrl ?? '').trim();
-    const commentHtml = attachmentFileName && attachmentUrl
-      ? buildCommentHtmlWithAttachment(ev.comment, attachmentFileName, attachmentUrl)
-      : ev.comment;
-    const assignedTo = String(ev.assignedToName ?? '').trim();
-
-    return this.createSavedCommentItem(base, taskId, 'Request for Action', {
-      status: '',
-      commentHtml,
-      commentCategory: ev.category,
-      attachmentFileName,
-      attachmentUrl,
-      assignedTo,
-      category: '',
-    }, ev.sharePointItemId);
-  }
 
 
 
@@ -7609,66 +7534,6 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
 
-  // to build the default saved comment card for the new-comment modal in the todo section
-  private buildDefaultSavedCommentCard(
-    ev: NewCommentSavedEvent,
-    base: CommentListItem,
-    taskId: string
-  ): CommentListItem {
-    return this.createSavedCommentItem(base, taskId, base.name ?? 'Comment', {
-      status: base.eFormDetails?.status ?? '',
-      commentHtml: ev.comment,
-      commentCategory: ev.category,
-      attachmentFileName: '',
-      assignedTo: base.eFormDetails?.assignedTo ?? '',
-      category: base.eFormDetails?.category ?? '',
-    }, ev.sharePointItemId);
-  }
-
-  private createSavedCommentItem(
-    base: CommentListItem,
-    taskId: string,
-    name: string,
-    details: {
-      status: string;
-      commentHtml: string;
-      commentCategory: string;
-      attachmentFileName: string;
-      attachmentUrl?: string;
-      assignedTo: string;
-      category: string;
-    },
-    sharePointItemId?: string
-  ): CommentListItem {
-    const commentAuthor = this.getLoggedInUserDisplayName();
-    const baseDetails = base.eFormDetails ?? {};
-    const inheritedRawFields = (baseDetails['rawFields'] ?? {}) as Record<string, unknown>;
-    return {
-      ...base,
-      id: sharePointItemId?.trim() || `comment:${taskId}:${Date.now()}`,
-      name,
-      submittedBy: commentAuthor,
-      eFormDetails: {
-        ...baseDetails,
-        ...details,
-        // Do not inherit parent task Status  comment cards hide status (and RFA uses its own).
-        rawFields: {
-          ...inheritedRawFields,
-          Title: name,
-          Status: details.status,
-          LastState: details.status,
-          ApprovalStatus: details.status,
-          WorkflowStatus: details.status,
-        },
-        eFormListId: baseDetails.eFormListId ?? this.selectedEFormListId ?? '',
-        submitter: commentAuthor,
-        commentSubmittedBy: commentAuthor,
-        submittedBy: commentAuthor,
-        submittedDate: new Date().toISOString(),
-      },
-      isContentLoaded: true,
-    };
-  }
 
   private prependCommentItem(item: CommentListItem): void {
     this.commentItems = [item, ...this.commentItems];
