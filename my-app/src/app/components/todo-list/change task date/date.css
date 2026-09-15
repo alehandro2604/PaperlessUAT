@@ -59,7 +59,62 @@
   color: var(--text-dark, #1b2a3a);
 }
 
-.change-task-date-label {
+.change-task-date-panel .cal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px 2px;
+}
+
+.change-task-date-panel .cal-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dark, #1b2a3a);
+}
+
+.change-task-date-panel .cal-nav {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #8a94a0;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.change-task-date-panel .cal-nav:hover {
+  background: #f2f4f7;
+  color: var(--text-dark, #1b2a3a);
+}
+
+.change-task-date-panel .cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 30px);
+  justify-content: space-between;
+  row-gap: 1px;
+}
+
+.change-task-date-panel .cal-weekday {
+  height: 22px;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #9aa3ad;
+}
+
+.change-task-date-panel .cal-day {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  font: inherit;
   font-size: 12px;
   font-weight: 700;
   color: var(--brand-blue-dark, #003e70);
