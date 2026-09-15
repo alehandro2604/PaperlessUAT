@@ -13,8 +13,10 @@ import {
 import {
   getHrPersonalFolderMatchTokens, candidatesMatchFolderPerson, isItemSubmittedByFolderPerson,
   normalizeTaskMatchText, stringifyTaskFieldValue, fieldMatchesFolderToken,
+  doesTaskTitleMatchFolderPerson,
 } from '../utils/person-name-matching';
 import { HrTaskMapperService } from './hr-task-mapper.service';
+import { isHrTitleMatchedTaskList } from '../hr-task-lists.config';
 
 @Injectable({ providedIn: 'root' })
 export class HrTaskFolderMatchService {
@@ -124,6 +126,13 @@ export class HrTaskFolderMatchService {
     personLookupId: string | null,
     folderMatchHints: string[],
   ): boolean {
+    if (isHrTitleMatchedTaskList(listName)) {
+      const f = item.fields ?? item;
+      if (doesTaskTitleMatchFolderPerson(f.Title ?? f.Name, folderName, folderMatchHints)) {
+        return true;
+      }
+    }
+  
     const lookupIds = getHrTaskPersonLookupIds(item);
     if (personLookupId && lookupIds.length > 0) {
       return lookupIds.includes(personLookupId);
@@ -134,15 +143,22 @@ export class HrTaskFolderMatchService {
       this.doesHrTaskMatchFolderHints(item, listName, folderMatchHints)
     );
   }
-
   /** Same rules after mapSharePointItemToHrTask (uses mapped + rawFields). */
   doesMappedHrTaskBelongToFolderPerson(
     item: any,
     folderName: string,
     personLookupId: string | null,
     folderMatchHints: string[],
+    listName?: string,
   ): boolean {
+    const resolvedList = listName || String(item?.listName ?? item?.eFormDetails?.listName ?? '');
     const raw = item?.eFormDetails?.rawFields;
+    if (isHrTitleMatchedTaskList(resolvedList)) {
+      const title = raw?.Title ?? item?.name ?? item?.eFormDetails?.type;
+      if (doesTaskTitleMatchFolderPerson(title, folderName, folderMatchHints)) {
+        return true;
+      }
+    }
     const lookupSource = raw && typeof raw === 'object' ? { fields: raw } : item;
     const lookupIds = getHrTaskPersonLookupIds(lookupSource);
     if (personLookupId && lookupIds.length > 0) {

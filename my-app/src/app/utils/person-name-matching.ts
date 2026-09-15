@@ -53,6 +53,33 @@ export function getEmailFromHrFolderName(folderName: string): string {
   return String(folderName ?? '').match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i)?.[0]?.toLowerCase() ?? '';
 }
 
+
+/** True when Title contains the folder person's email (increment / probation). */
+export function doesTaskTitleMatchFolderPerson(
+  title: unknown,
+  folderName: string,
+  hints: string[] = [],
+): boolean {
+  const text = normalizeTaskMatchText(stringifyTaskFieldValue(title));
+  if (!text) return false;
+
+  const emails = [
+    getEmailFromHrFolderName(folderName),
+    ...hints.filter(hint => hint.includes('@')),
+  ]
+    .map(email => normalizeTaskMatchText(email))
+    .filter(email => email.length >= 5);
+
+  if (emails.some(email => text.includes(email))) return true;
+
+  const locals = hints
+    .map(hint => (hint.includes('@') ? hint.split('@')[0] : hint))
+    .map(hint => normalizeTaskMatchText(hint))
+    .filter(hint => hint.length >= 5);
+
+  return locals.some(local => text.includes(local));
+}
+
 export function normalizeTaskMatchText(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, '');
 }

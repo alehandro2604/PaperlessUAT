@@ -26,6 +26,62 @@ export class SharePointTaskQueryService {
     private readonly subordinaryTaskService: SubordinaryTaskService,
   ) { }
 
+
+  async fetchSharePointListItemsByTitleEmail(
+    siteId: string,
+    listId: string,
+    token: string,
+    email: string,
+    options?: { maxPages?: number; onPage?: (items: any[]) => void },
+  ): Promise<any[] | null> {
+    const value = email.trim().toLowerCase();
+    if (!value.includes('@')) return null;
+  
+    const prefer = { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' };
+    const escaped = value.replace(/'/g, "''");
+    const filters = [
+      { field: 'TitleContains', expr: `contains(fields/Title,'${escaped}')` },
+      { field: 'TitleEq', expr: `fields/Title eq '${escaped}'` },
+    ];
+  
+    const byId = new Map<string, any>();
+    let anyOk = false;
+    const maxPages = options?.maxPages ?? AppConstants.hrFilesPersonLookupMaxPages;
+    const pageSize = AppConstants.hrFilesPersonLookupPageSize;
+  
+    for (const { field, expr } of filters) {
+      if (this.getListFilterFieldStatus(listId, field) === false) continue;
+      let nextPath: string | null =
+        `/sites/${siteId}/lists/${listId}/items?$expand=fields&$top=${pageSize}` +
+        `&$filter=${encodeURIComponent(expr)}`;
+      let pages = 0;
+      try {
+        while (nextPath && pages < maxPages) {
+          const page: any = await graphGetWithRetry(
+            this.http, nextPath, token, AppConstants.graphFileListingTimeoutMs, prefer,
+          );
+          this.markListFilterField(listId, field, true);
+          anyOk = true;
+          const pageItems: any[] = [];
+          for (const item of page?.value ?? []) {
+            if (item?.id == null) continue;
+            byId.set(String(item.id), item);
+            pageItems.push(item);
+          }
+          pages += 1;
+          if (pageItems.length) options?.onPage?.(pageItems);
+          nextPath = toGraphPath(page?.['@odata.nextLink']);
+        }
+      } catch (err: any) {
+        if ((err?.status ?? err?.error?.status) === 400) {
+          this.markListFilterField(listId, field, false);
+        }
+      }
+    }
+  
+    return anyOk ? [...byId.values()] : null;
+  }
+
   private siteId: string | null = null;
   private siteLists: any[] = [];
   private cachedUserInformationListId: string | null = null;

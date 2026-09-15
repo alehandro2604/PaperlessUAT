@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // IMPORTS & DEPENDENCIES
 // ============================================================
 import { CommonModule } from '@angular/common';
@@ -11,6 +11,7 @@ import { AppConstants } from './app.constants';
 import {
   HR_TASK_LIST_NAMES, HR_SOURCE_EFORM_LIST_NAMES, TODO_EXTRA_TASK_LIST_NAMES,
   isTodoProcurementTaskList, isHrSourceEFormList,
+  isHrTitleMatchedTaskList,
 } from './hr-task-lists.config';
 import { getFileExtension, getFileCategory, getFileIcon, normalizeSharePointFileUrl } from './file-utils';
 import { graphGet, graphGetWithRetry, clearGraphThrottleCooldown, toGraphPath, normalizeName } from './microsoft-graph';
@@ -4940,6 +4941,7 @@ export class AppComponent implements OnInit, OnDestroy {
           folderName,
           personLookupId,
           folderMatchHints,
+          listName,
         )
       );
   }
@@ -5056,9 +5058,26 @@ export class AppComponent implements OnInit, OnDestroy {
             )
           : Promise.resolve(null);
 
-        const [lookupItems, assigneeItems, supplement] = await Promise.all([
+        const titlePromise = (isHrTitleMatchedTaskList(listName) && folderEmail)
+          ? this.taskQuery.fetchSharePointListItemsByTitleEmail(
+              this.cachedSiteId!,
+              listObj.id,
+              token,
+              folderEmail,
+              {
+                maxPages: lookupMaxPages,
+                onPage: (pageItems) => {
+                  if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+                  publishListHits(listName, mapRaw(pageItems));
+                },
+              },
+            )
+          : Promise.resolve(null);
+
+        const [lookupItems, assigneeItems, titleItems, supplement] = await Promise.all([
           lookupPromise,
           assigneePromise,
+          titlePromise,
           supplementPromise,
         ]);
         if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
@@ -5072,7 +5091,7 @@ export class AppComponent implements OnInit, OnDestroy {
           return [...byId.values()];
         };
 
-        rawItems = mergeRaw(lookupItems, assigneeItems);
+        rawItems = mergeRaw(mergeRaw(lookupItems, assigneeItems), titleItems);
 
         if (supplement.length > 0) {
           publishListHits(listName, mapRaw(supplement));

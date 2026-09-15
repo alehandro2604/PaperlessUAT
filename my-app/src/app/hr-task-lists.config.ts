@@ -40,3 +40,15 @@ export function isHrSourceEFormList(listName: string): boolean {
   if (key.includes('sickcertificate')) return true;
   return /_eform$/i.test(key) || /eform$/i.test(key.replace(/[^a-z0-9]/g, ''));//this os checking if the list name ends with _eform or eform
 }
+
+/** Increment / probation are created by HR; Title holds the employee email. */
+export function isHrTitleMatchedTaskList(listName: string): boolean {
+  const key = String(listName ?? '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  return key.includes('increment') || key.includes('probation') || key.includes('preformance review');
+}
+
+/** True for preformance review task lists. */
+export function isHrPreformanceReviewTaskList(listName: string): boolean {
+  const key = String(listName ?? '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  return key.includes('preformance review');
+}
