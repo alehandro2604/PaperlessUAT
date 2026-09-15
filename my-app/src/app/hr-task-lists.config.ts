@@ -8,6 +8,7 @@
 export const HR_TASK_LIST_NAMES: readonly string[] = [
   'HRTaskChangeOfShiftIESC', 'HRTaskTeleworkReports', 'HRTaskTelework',
   'HRTaskRest', 'HRTaskSickLeaveByAppointment', 'HRTaskProbation', 'HRTaskMissingPunch',
+  'PerformanceReview_Tasks', 'PerformanceReview_Tasks_IESC',
 ];
 
 /**
@@ -41,14 +42,17 @@ export function isHrSourceEFormList(listName: string): boolean {
   return /_eform$/i.test(key) || /eform$/i.test(key.replace(/[^a-z0-9]/g, ''));//this os checking if the list name ends with _eform or eform
 }
 
-/** Increment / probation are created by HR; Title holds the employee email. */
+/** Increment / probation / performance review are created by HR; Title holds the employee email. */
 export function isHrTitleMatchedTaskList(listName: string): boolean {
   const key = String(listName ?? '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-  return key.includes('increment') || key.includes('probation') || key.includes('preformance review');
+  return key.includes('increment')
+    || key.includes('probation')
+    || key.includes('performancereview')
+    || key.includes('preformancereview');
 }
 
-/** True for preformance review task lists. */
+/** True for performance review task lists (PerformanceReview_Tasks / _IESC). */
 export function isHrPreformanceReviewTaskList(listName: string): boolean {
   const key = String(listName ?? '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-  return key.includes('preformance review');
+  return key.includes('performancereview') || key.includes('preformancereview');
 }

@@ -54,7 +54,7 @@ export function getEmailFromHrFolderName(folderName: string): string {
 }
 
 
-/** True when Title contains the folder person's email (increment / probation). */
+/** True when Title contains the folder person's email (increment / probation/performance review). */
 export function doesTaskTitleMatchFolderPerson(
   title: unknown,
   folderName: string,
