@@ -32,23 +32,48 @@ export class SharePointTaskQueryService {
     listId: string,
     token: string,
     email: string,
-    options?: { maxPages?: number; onPage?: (items: any[]) => void },
+    options?: {
+      maxPages?: number;
+      onPage?: (items: any[]) => void;
+      /** HRPersonal folder pin, e.g. "5852" from "5852 Aidan Harrington". */
+      folderPin?: string;
+    },
   ): Promise<any[] | null> {
-    const value = email.trim().toLowerCase();
-    if (!value.includes('@')) return null;
-  
     const prefer = { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' };
-    const escaped = value.replace(/'/g, "''");
-    const filters = [
-      { field: 'TitleContains', expr: `contains(fields/Title,'${escaped}')` },
-      { field: 'TitleEq', expr: `fields/Title eq '${escaped}'` },
-    ];
-  
+    const filters: Array<{ field: string; expr: string }> = [];
+
+    const value = email.trim().toLowerCase();
+    if (value.includes('@')) {
+      const escaped = value.replace(/'/g, "''");
+      filters.push(
+        { field: 'TitleContains', expr: `contains(fields/Title,'${escaped}')` },
+        { field: 'TitleEq', expr: `fields/Title eq '${escaped}'` },
+      );
+      const local = escaped.split('@')[0] ?? '';
+      const pin = String(options?.folderPin ?? '').trim();
+      if (pin && local) {
+        filters.push({
+          field: 'TitlePinEmail',
+          expr: `contains(fields/Title,'${pin.replace(/'/g, "''")} ${local.replace(/'/g, "''")}')`,
+        });
+      }
+    }
+
+    const pinOnly = String(options?.folderPin ?? '').trim();
+    if (pinOnly) {
+      filters.push({
+        field: 'TitlePinPrefix',
+        expr: `startswith(fields/Title,'${pinOnly.replace(/'/g, "''")} ')`,
+      });
+    }
+
+    if (filters.length === 0) return null;
+
     const byId = new Map<string, any>();
     let anyOk = false;
     const maxPages = options?.maxPages ?? AppConstants.hrFilesPersonLookupMaxPages;
     const pageSize = AppConstants.hrFilesPersonLookupPageSize;
-  
+
     for (const { field, expr } of filters) {
       if (this.getListFilterFieldStatus(listId, field) === false) continue;
       let nextPath: string | null =

@@ -77,7 +77,23 @@ export function doesTaskTitleMatchFolderPerson(
     .map(hint => normalizeTaskMatchText(hint))
     .filter(hint => hint.length >= 5);
 
-  return locals.some(local => text.includes(local));
+  if (locals.some(local => text.includes(local))) return true;
+
+  // Title is often "{pin} email@domain" — match pin + folder name when email lookup fails.
+  const folderPin = String(folderName ?? '').match(/^\d+/)?.[0] ?? '';
+  if (folderPin && text.includes(normalizeTaskMatchText(folderPin))) {
+    const nameParts = extractPersonNameParts(
+      String(folderName ?? '')
+        .replace(/^\d+\s+/, '')
+        .replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi, ''),
+    );
+    if (nameParts.length >= 2) {
+      const hits = nameParts.filter(part => part.length >= 4 && text.includes(part));
+      if (hits.length >= Math.min(2, nameParts.length)) return true;
+    }
+  }
+
+  return false;
 }
 
 export function normalizeTaskMatchText(value: string): string {

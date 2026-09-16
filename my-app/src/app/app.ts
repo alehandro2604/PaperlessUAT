@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 // IMPORTS & DEPENDENCIES
 // ============================================================
 import { CommonModule } from '@angular/common';
@@ -4965,6 +4965,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const concurrency = AppConstants.hrFilesTaskListConcurrency;
     const softRefresh = options?.softRefresh === true;
     const folderEmail = await this.taskQuery.resolveHrFolderPersonEmail(folderName);
+    const folderPin = String(folderName ?? '').match(/^\d+/)?.[0] ?? '';
     const personLookupId = folderEmail
       ? await this.taskQuery.resolveSharePointUserLookupId(folderEmail, token)
       : null;
@@ -4972,7 +4973,7 @@ export class AppComponent implements OnInit, OnDestroy {
       ? [folderEmail, folderEmail.split('@')[0] ?? '']
       : [];
     console.log(
-      `[HR Files] Person resolve "${folderName}" -> email=${folderEmail || '(none)'} lookupId=${personLookupId || '(none)'} lists=${listsToQuery.length} softRefresh=${softRefresh}`,
+      `[HR Files] Person resolve "${folderName}" -> email=${folderEmail || '(none)'} pin=${folderPin || '(none)'} lookupId=${personLookupId || '(none)'} lists=${listsToQuery.length} softRefresh=${softRefresh}`,
     );
 
     // listName -> mapped tasks belonging to / involving this person
@@ -5058,7 +5059,7 @@ export class AppComponent implements OnInit, OnDestroy {
             )
           : Promise.resolve(null);
 
-        const titlePromise = (isHrTitleMatchedTaskList(listName) && folderEmail)
+        const titlePromise = isHrTitleMatchedTaskList(listName) && (folderEmail || folderPin)
           ? this.taskQuery.fetchSharePointListItemsByTitleEmail(
               this.cachedSiteId!,
               listObj.id,
@@ -5066,6 +5067,7 @@ export class AppComponent implements OnInit, OnDestroy {
               folderEmail,
               {
                 maxPages: lookupMaxPages,
+                folderPin,
                 onPage: (pageItems) => {
                   if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
                   publishListHits(listName, mapRaw(pageItems));
