@@ -411,15 +411,12 @@ export class AppComponent implements OnInit, OnDestroy {
     return '';
   }
 
-  /** Appends ? when complete, or ? when still pending. */
+  /** Appends ✓ when this assignee has completed; pending names stay plain. */
   protected formatAssigneeLabel(person: string, eform?: { status?: string; completedBy?: string; eFormDetails?: any }): string {
     const name = String(person ?? '').trim();
     if (!name) return '';
     if (this.hasAssigneeCompleted(name, eform)) {
-      return `${name} ?`;
-    }
-    if (this.isEformPending(eform)) {
-      return `${name} ?`;
+      return `${name} ✓`;
     }
     return name;
   }

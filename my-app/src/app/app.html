@@ -264,7 +264,7 @@
                   <div class="eform-submitted-line">Submitted by: {{ eform.submittedBy }}</div>
                   <div
                     class="eform-meta-date"
-                    *ngIf="showAllFilesSection && (eform.eFormDetails?.customCreatedDate || eform.eFormDetails?.submittedDate)">
+                    *ngIf="eform.eFormDetails?.customCreatedDate || eform.eFormDetails?.submittedDate">
                     {{ (eform.eFormDetails.customCreatedDate || eform.eFormDetails.submittedDate) | date:'dd/MM/yyyy hh:mm a' }}
                   </div>
                 </div>
@@ -276,7 +276,7 @@
                     *ngIf="eform.eFormDetails?.status && !shouldHideCommentStatus(eform)">
                     {{ eform.eFormDetails.status }}
                   </span>
-                  <!-- Open: Assigned To. Completed: Completed By. -->
+                  <!-- Open: Assigned To. Completed: Completed By. Date sits under the person. -->
                   <div
                     class="assigned-inline"
                     *ngIf="isEformComplete(eform) && getLastModifiedByName(eform) as completedByName">
@@ -300,18 +300,9 @@
                     />
                   </div>
                   <div
-                    class="eform-modified-by"
-                    *ngIf="showAllFilesSection && !isEformComplete(eform) && eform.eFormDetails?.customModifiedBy">
-                    {{ eform.eFormDetails.customModifiedBy }}
-                  </div>
-                  <div
                     class="eform-meta-date eform-meta-date--right"
-                    *ngIf="showAllFilesSection && eform.eFormDetails?.customModifiedDate">
+                    *ngIf="eform.eFormDetails?.customModifiedDate">
                     {{ eform.eFormDetails.customModifiedDate | date:'dd/MM/yyyy hh:mm a' }}
-                  </div>
-                  <div class="date-submit" *ngIf="!showAllFilesSection && eform.eFormDetails?.submittedDate">
-                    <span class="detail-label">Submitted Date:</span>
-                    <span class="detail-value">{{ eform.eFormDetails.submittedDate | date:'d/MMMM/yyyy HH:mm' }}</span>
                   </div>
                 </div>
               </div>
@@ -361,14 +352,8 @@
                   </div>
                   <div
                     class="eform-mobile-field"
-                    *ngIf="showAllFilesSection && !isEformComplete(eform) && eform.eFormDetails?.customModifiedBy">
-                    <span class="eform-mobile-label">Custom Modified By</span>
-                    <span class="eform-mobile-value">{{ eform.eFormDetails.customModifiedBy }}</span>
-                  </div>
-                  <div
-                    class="eform-mobile-field"
-                    *ngIf="showAllFilesSection && eform.eFormDetails?.customModifiedDate">
-                    <span class="eform-mobile-label">Custom Modified Date</span>
+                    *ngIf="eform.eFormDetails?.customModifiedDate">
+                    <span class="eform-mobile-label">Modified Date</span>
                     <span class="eform-mobile-value">{{ eform.eFormDetails.customModifiedDate | date:'dd/MM/yyyy hh:mm a' }}</span>
                   </div>
                   <div class="eform-mobile-field" *ngIf="eform.eFormDetails?.category">
@@ -382,8 +367,8 @@
                   <div
                     class="eform-mobile-field"
                     *ngIf="eform.eFormDetails?.customCreatedDate || eform.eFormDetails?.submittedDate">
-                    <span class="eform-mobile-label">{{ showAllFilesSection ? 'Custom Created Date' : 'Submitted Date' }}</span>
-                    <span class="eform-mobile-value">{{ (eform.eFormDetails.customCreatedDate || eform.eFormDetails.submittedDate) | date:(showAllFilesSection ? 'dd/MM/yyyy hh:mm a' : 'd/MMMM/yyyy HH:mm') }}</span>
+                    <span class="eform-mobile-label">Submitted Date</span>
+                    <span class="eform-mobile-value">{{ (eform.eFormDetails.customCreatedDate || eform.eFormDetails.submittedDate) | date:'dd/MM/yyyy hh:mm a' }}</span>
                   </div>
                 </div>
               </div>
