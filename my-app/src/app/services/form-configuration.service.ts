@@ -127,7 +127,6 @@ export class FormConfigurationService {
       tap(forms => {
         this._forms$.next(forms);
         this._loading$.next(false);
-        console.log(`[FormConfig] Loaded ${forms.length} eForms`);
       }),
       map(() => void 0),
       catchError(err => {

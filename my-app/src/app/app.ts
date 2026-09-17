@@ -1179,7 +1179,6 @@ export class AppComponent implements OnInit, OnDestroy {
     try {
       const tasks = await this.taskService.loadTaskLists();
       this.allowedHrTaskLists = tasks;
-      console.log('Loaded SharePoint Tasks', tasks);
     } catch (error) {
       console.warn('Could not load SharePoint task lists.', error);
       this.allowedHrTaskLists = [];
@@ -4969,9 +4968,6 @@ export class AppComponent implements OnInit, OnDestroy {
     const folderMatchHints = folderEmail
       ? [folderEmail, folderEmail.split('@')[0] ?? '']
       : [];
-    console.log(
-      `[HR Files] Person resolve "${folderName}" -> email=${folderEmail || '(none)'} pin=${folderPin || '(none)'} lookupId=${personLookupId || '(none)'} lists=${listsToQuery.length} softRefresh=${softRefresh}`,
-    );
 
     // listName -> mapped tasks belonging to / involving this person
     const mappedByList = new Map<string, any[]>();
@@ -5040,7 +5036,9 @@ export class AppComponent implements OnInit, OnDestroy {
             )
           : Promise.resolve(null);
 
-        const assigneePromise = personLookupId
+        // Soft refresh: person LookupId + Title already catch new/updated rows.
+        // Skip assignee fan-out so idle polls do not double Graph traffic / 400 probes.
+        const assigneePromise = !softRefresh && personLookupId
           ? this.taskQuery.fetchSharePointListItemsForAssigneeLookup(
               this.cachedSiteId!,
               listObj.id,
@@ -5131,9 +5129,6 @@ export class AppComponent implements OnInit, OnDestroy {
     }
 
     const seedItems = this.flattenHrMappedByList(mappedByList);
-    console.log(
-      `[HR Files] Seed for "${folderName}" -> ${seedItems.length} task(s) across ${mappedByList.size} list(s)`,
-    );
     options?.onSeedComplete?.(seedItems);
     if (softRefresh) {
       return seedItems;
@@ -5370,10 +5365,6 @@ export class AppComponent implements OnInit, OnDestroy {
       const pageSize = AppConstants.docLibraryFolderTaskPageSize;
       const maxPages = AppConstants.docLibraryFolderTaskMaxPages;
 
-      if (!silent) {
-        console.log(`[All Files] Loading folder tasks from list "${listName}" for folder "${folderName}"`);
-      }
-
       const publishAndCache = (done: boolean): void => {
         if (isStale()) return;
         if (softRefresh && collectedMapped.length === 0) return;
@@ -5442,11 +5433,7 @@ export class AppComponent implements OnInit, OnDestroy {
               new Set([folderEFormId]),
             );
             if (isStale()) return;
-            const before = collectedMapped.length;
             mergeMappedItems(mapFolderPageItems(byIdRaw, sourceListName, sourceListObj));
-            console.log(
-              `[All Files] eFormListId filter on "${sourceListName}" returned ${byIdRaw.length} raw / ${collectedMapped.length - before} new matched`,
-            );
             if (collectedMapped.length > 0) publishAndCache(false);
           } catch (idFilterErr) {
             console.warn(
@@ -5479,9 +5466,6 @@ export class AppComponent implements OnInit, OnDestroy {
             if (collectedMapped.length > 0) publishAndCache(false);
             if (filteredPath) await new Promise(r => setTimeout(r, 50));
           }
-          console.log(
-            `[All Files] Title filter on "${sourceListName}" done (${filteredPages} pages, ${collectedMapped.length} total matched)`,
-          );
         } catch (filterErr) {
           console.warn(
             `[All Files] Title filter unavailable on "${sourceListName}".`,
@@ -5524,9 +5508,6 @@ export class AppComponent implements OnInit, OnDestroy {
           nextPath = toGraphPath(page?.['@odata.nextLink']);
           if (nextPath) await new Promise(r => setTimeout(r, 50));
         }
-        console.log(
-          `[All Files] Full scan of "${sourceListName}" finished: ${pagesLoaded} pages, ${collectedMapped.length} matched`,
-        );
       };
 
       // 1) Live / primary list (eForms TaskListName, e.g. ProcTasks)
@@ -5546,7 +5527,6 @@ export class AppComponent implements OnInit, OnDestroy {
             this.commentsMessage = `Checking ${archiveName}...`;
             this.refreshView();
           }
-          console.log(`[All Files] Trying archive companion "${archiveName}"`);
           await queryListWithFilters(archiveName, archiveList);
           if (isStale()) return;
           if (collectedMapped.length > 0) break;
@@ -5950,8 +5930,6 @@ export class AppComponent implements OnInit, OnDestroy {
     if (item) {
       if (item.eFormDetails) {
         item.eFormDetails = { ...item.eFormDetails, assignedTo: newAssigneeName || newAssigneeEmail };
-
-        console.log('item.eFormDetails:', item.eFormDetails);
       }
       (item as any).assignedTo = newAssigneeName || newAssigneeEmail;
     }

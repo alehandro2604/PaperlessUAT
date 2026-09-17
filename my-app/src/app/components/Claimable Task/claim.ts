@@ -71,7 +71,6 @@ export class ClaimComponent implements OnDestroy {
   claimTask(event?: Event): void {
     event?.preventDefault();
     event?.stopPropagation();
-    console.log('Claiming task', this.task?.id ?? null);
     this.closeModal();
   }
 

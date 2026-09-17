@@ -47,7 +47,6 @@ export class PowerappsModalComponent {
   }
 
   protected openForm(form: EForm): void {
-    console.log('Opening form:', form.title, 'URL:', form.url);
     if (form.url) {
       window.open(form.url, '_blank');
     } else {

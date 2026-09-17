@@ -90,9 +90,7 @@ export class DelegateComponent implements OnInit, OnDestroy {
   }
 
   onSubmit(): void {
-    console.log('=== onSubmit called ===', { selectedUser: this.selectedUser, task: this.task });
     if (this.selectedUser && this.task) {
-      console.log('Emitting delegateTask event to parent');
       this.delegateTask.emit({ task: this.task, newAssignee: this.selectedUser });
     } else {
       console.warn('onSubmit blocked: missing selectedUser or task', {

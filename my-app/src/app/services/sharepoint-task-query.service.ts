@@ -145,11 +145,18 @@ export class SharePointTaskQueryService {
     this.listFilterFieldStatus.clear();
     this.assigneeLookupBlockedListIds.clear();
     this.listPersonColumnsCache.clear();
+    this.sharePointListOrderBySupported.clear();
     this.listFilterStatusHydrated = false;
   }
   getListFilterFieldStatus(listId: string, field: string): boolean | undefined {
     this.ensureListFilterStatusHydrated();
     return this.listFilterFieldStatus.get(listId)?.get(field);
+  }
+
+  /** Whether this list is known to accept $orderby on item queries (undefined = untested). */
+  getListOrderBySupported(listId: string): boolean | undefined {
+    this.ensureListFilterStatusHydrated();
+    return this.sharePointListOrderBySupported.get(listId);
   }
 
   markListFilterField(listId: string, field: string, works: boolean, persist = true): void {
@@ -176,11 +183,17 @@ export class SharePointTaskQueryService {
     try {
       const raw = localStorage.getItem(this.listFilterStatusLsKey());
       if (!raw) return;
-      const parsed = JSON.parse(raw) as { fields?: Record<string, Record<string, boolean>> };
+      const parsed = JSON.parse(raw) as {
+        fields?: Record<string, Record<string, boolean>>;
+        orderBy?: Record<string, boolean>;
+      };
       for (const [listId, byField] of Object.entries(parsed.fields ?? {})) {
         for (const [field, ok] of Object.entries(byField)) {
           this.markListFilterField(listId, field, ok === true, false);
         }
+      }
+      for (const [listId, ok] of Object.entries(parsed.orderBy ?? {})) {
+        this.sharePointListOrderBySupported.set(listId, ok === true);
       }
     } catch {
       // Corrupt cache - ignore and rebuild from live probes / column metadata.
@@ -193,10 +206,18 @@ export class SharePointTaskQueryService {
       for (const [listId, byField] of this.listFilterFieldStatus.entries()) {
         fields[listId] = Object.fromEntries(byField.entries());
       }
-      localStorage.setItem(this.listFilterStatusLsKey(), JSON.stringify({ fields }));
+      const orderBy = Object.fromEntries(this.sharePointListOrderBySupported.entries());
+      localStorage.setItem(this.listFilterStatusLsKey(), JSON.stringify({ fields, orderBy }));
     } catch {
       // Quota / private mode - in-memory map still prevents repeat probes this session.
     }
+  }
+
+  /** Remember whether this list accepts $orderby on item queries (and persist). */
+  private markListOrderBySupported(listId: string, works: boolean): void {
+    this.ensureListFilterStatusHydrated();
+    this.sharePointListOrderBySupported.set(listId, works);
+    this.persistListFilterStatus();
   }
 
   /** Known-good fields first, then untried; skip fields that already returned 400 for this list. */
@@ -505,6 +526,9 @@ export class SharePointTaskQueryService {
           );
           this.markListFilterField(listId, field, true);
           anyFilterSucceeded = true;
+          if (useOrderBy) {
+            this.markListOrderBySupported(listId, true);
+          }
           const pageItems: any[] = [];
           for (const item of page?.value ?? []) {
             if (item?.id == null) continue;
@@ -524,7 +548,7 @@ export class SharePointTaskQueryService {
         // Ordered+filtered queries often 400/422 on large lists. Retry without $orderby
         // before giving up on the person column itself.
         if (useOrderBy && (status === 400 || status === 422)) {
-          this.sharePointListOrderBySupported.set(listId, false);
+          this.markListOrderBySupported(listId, false);
           return 'retry-unordered';
         }
         if (status === 400) {
@@ -547,7 +571,9 @@ export class SharePointTaskQueryService {
       const fieldMaxPages = firstFieldHit
         ? Math.min(maxPages, AppConstants.hrFilesLookupExtraFieldPages)
         : maxPages;
-      const orderOk = this.sharePointListOrderBySupported.get(listId) !== false;
+      // Prefer newest-first while Comments paint progressively. Probe $orderby at most
+      // once per list (re-read each field): success → keep using; 400 → remember and skip.
+      const orderOk = this.getListOrderBySupported(listId) !== false;
       let result = await pageField(field, filter, orderOk, fieldMaxPages);
       if (result === 'retry-unordered') {
         result = await pageField(field, filter, false, fieldMaxPages);
@@ -589,7 +615,8 @@ export class SharePointTaskQueryService {
     const prefer = { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' };
     const maxPages = options?.maxPages ?? AppConstants.hrTasksTodoLookupMaxPages;
     const pageSize = AppConstants.hrFilesPersonLookupPageSize;
-    const orderOk = this.sharePointListOrderBySupported.get(listId) !== false;
+    // Newest-first when Graph allows it (progressive Comments paint). Probe once per list.
+    const orderOk = this.getListOrderBySupported(listId) !== false;
 
     const fetchPages = async (useOrderBy: boolean): Promise<any[] | null> => {
       const byId = new Map<string, any>();
@@ -623,7 +650,7 @@ export class SharePointTaskQueryService {
       } catch (err: any) {
         const status = err?.status ?? err?.error?.status;
         if (useOrderBy && (status === 400 || status === 422)) {
-          this.sharePointListOrderBySupported.set(listId, false);
+          this.markListOrderBySupported(listId, false);
           return null;
         }
         throw err;
@@ -750,15 +777,20 @@ export class SharePointTaskQueryService {
     newestFirst = false
   ): Promise<any[]> {
     const collected: any[] = [];
-    // Live rejects $orderby=createdDateTime with 422 (list-view threshold), but accepts
-    // lastModifiedDateTime - verified against ProcTasks/ProcTasksArchive/ECTasks.
-    // Track this per list - one archive list must not disable newest-first for HRTask*.
-    const useOrderBy = newestFirst && this.sharePointListOrderBySupported.get(listId) !== false;
-    const orderQuery = useOrderBy ? '&$orderby=lastModifiedDateTime desc' : '';
+    // Proc* lists accept lastModifiedDateTime desc; many HRTask* lists 400 on the same
+    // clause. Only send $orderby after a successful ordered page on this listId — one
+    // failed probe is enough; do not re-try ordered URLs every soft-refresh.
+    const knownOrderBy = this.getListOrderBySupported(listId);
+    const useOrderBy = newestFirst && knownOrderBy === true;
+    const tryOrderByProbe = newestFirst && knownOrderBy === undefined;
+    const orderQuery = (useOrderBy || tryOrderByProbe)
+      ? '&$orderby=lastModifiedDateTime desc'
+      : '';
     let nextPath: string | null =
       `/sites/${siteId}/lists/${listId}/items?$expand=fields&$top=${top}${orderQuery}`;
     let pagesLoaded = 0;
     const unlimited = !(maxPages > 0);
+    let probingOrderBy = tryOrderByProbe;
 
     // maxPages <= 0: follow every nextLink (avoid for To Do - use positive caps).
     // Positive: early stop; caller may resume via todoListCursors.
@@ -767,13 +799,18 @@ export class SharePointTaskQueryService {
         const page: any = await graphGetWithRetry(
           this.http, nextPath, token, AppConstants.graphFileListingTimeoutMs,
         );
+        if (probingOrderBy) {
+          this.markListOrderBySupported(listId, true);
+          probingOrderBy = false;
+        }
         collected.push(...((page?.value ?? []) as any[]));
         pagesLoaded += 1;
         if (!unlimited && pagesLoaded >= maxPages) break;
         nextPath = toGraphPath(page?.['@odata.nextLink']);
       } catch {
-        if (useOrderBy && pagesLoaded === 0 && orderQuery) {
-          this.sharePointListOrderBySupported.set(listId, false);
+        if (probingOrderBy && pagesLoaded === 0 && orderQuery) {
+          this.markListOrderBySupported(listId, false);
+          probingOrderBy = false;
           nextPath = `/sites/${siteId}/lists/${listId}/items?$expand=fields&$top=${top}`;
           continue;
         }

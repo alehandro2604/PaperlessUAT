@@ -31,14 +31,6 @@ export class NewCommentCompleteComponent {
   ) { }
 
   onCompleteClick(event: MouseEvent): void {
-    console.log('[NewCommentCompleteComponent] onCompleteClick', {
-      taskId: this.task?.id ?? null,
-      isRequestForActionTask: this.isRequestForActionTask,
-      hasTemplate: !!this.completeDialogTpl,
-      overlayExists: !!this.overlayRef,
-      overlayHasAttached: this.overlayRef?.hasAttached?.() ?? false,
-      eventTarget: (event?.target as HTMLElement | null)?.tagName ?? null,
-    });
     event.preventDefault();
     event.stopPropagation();
     this.openModal();
