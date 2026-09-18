@@ -142,6 +142,7 @@
                 [warningMessage]="userFileWarning"
                 (loadRequested)="loadHrFilesInFirstSection()"
                 (itemSelected)="openHrFileListItem($event)"
+                (itemPrefetchRequested)="prefetchHrPersonComments($event)"
               />
             </div>
           </div>

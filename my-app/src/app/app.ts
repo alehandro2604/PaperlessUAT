@@ -278,6 +278,8 @@ export class AppComponent implements OnInit, OnDestroy {
   /** In-flight silent HR person task prefetches keyed by `tasks:hr-folder:{name}`. */
   private readonly hrTaskPrefetchInFlight = new Set<string>();
   private hrTaskPrefetchTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Debounce timer for hover/pointerdown single-person Comments warm. */
+  private hrPersonHoverPrefetchTimer: ReturnType<typeof setTimeout> | null = null;
   /** Prevent stale All Files task loads when folders are clicked rapidly. */
   private allFilesFolderTaskLoadSeq = 0;
 
@@ -603,16 +605,30 @@ export class AppComponent implements OnInit, OnDestroy {
    * Publish folder/HR task results: always date-sorted (latest first).
    * Prefer painting when a load is complete so newer rows do not keep jumping to the top.
    * "Load more" pages the already-loaded set.
+   * `background: true` = silent merge after the interactive spinner is already gone.
    */
   private publishFolderTaskProgress(
     items: any[],
-    options: { done?: boolean; emptyMessage?: string } = {},
+    options: { done?: boolean; emptyMessage?: string; background?: boolean } = {},
   ): void {
     const sorted = this.sortCommentItemsByDateDesc(
       this.filterTasksForSelectedAllFilesFolder(items)
     );
     this.commentItems = sorted;
-    void this.publishSelectedFolderChildSubjects(sorted, !!options.done);
+    void this.publishSelectedFolderChildSubjects(sorted, !!options.done && !options.background);
+
+    // Silent top-up after first paint — keep Load more position, never re-show spinner.
+    if (options.background) {
+      this.isLoadingComments = false;
+      this.isLoadingMoreComments = false;
+      if (sorted.length > 0) {
+        this.commentsMessage = '';
+      }
+      this.invalidateCommentFilters(false);
+      this.refreshView();
+      this.focusPendingCommentIfNeeded();
+      return;
+    }
 
     if (options.done) {
       const wasLoading = this.isLoadingComments;
@@ -632,8 +648,8 @@ export class AppComponent implements OnInit, OnDestroy {
       return;
     }
 
-    // Incomplete batches (legacy progressive callers): keep spinner until there is
-    // something to show; avoid flashing empty states while lists are still loading.
+    // Incomplete batches: paint first hits, then keep "Loading more tasks..." until
+    // done:true — otherwise assignee/supplement top-up looks stuck mid-count.
     if (this.isLoadingComments) {
       if (sorted.length === 0) {
         this.commentsMessage = 'Loading tasks...';
@@ -650,7 +666,7 @@ export class AppComponent implements OnInit, OnDestroy {
         this.commentsMessage = '';
       }
     }
-    this.isLoadingMoreComments = false;
+    this.isLoadingMoreComments = true;
     this.refreshView();
     this.focusPendingCommentIfNeeded();
   }
@@ -1316,10 +1332,12 @@ export class AppComponent implements OnInit, OnDestroy {
           // To Do first - primary Graph consumer after login.
           this.initializeToDoOnLogin();
 
-          // Defer HR folder name + delegates so they don't race the first To Do wave.
+          // Defer HR warm + delegates so they don't race the first To Do Graph wave.
+          // People-list warm fills shared Redis early so the first HR Files open is fast.
           setTimeout(() => {
             void this.loadHrPersonalFolderName();
             void this.delegateService.loadDelegates();
+            void this.warmHrPersonalRootFoldersCache();
           }, 750);
           resolve();
         },
@@ -2758,6 +2776,10 @@ export class AppComponent implements OnInit, OnDestroy {
       clearTimeout(this.hrTaskPrefetchTimer);
       this.hrTaskPrefetchTimer = null;
     }
+    if (this.hrPersonHoverPrefetchTimer) {
+      clearTimeout(this.hrPersonHoverPrefetchTimer);
+      this.hrPersonHoverPrefetchTimer = null;
+    }
     // Resume after click-path work; stay paused while To Do still owns Graph quota.
     setTimeout(() => {
       if (this.isLoadingTodoTasks) return;
@@ -2768,18 +2790,56 @@ export class AppComponent implements OnInit, OnDestroy {
   /**
    * Idle-prefetch Comments for visible HR Files people so the first click is often cached
    * (same idea as All Files folder content prefetch).
+   * Capped batch — full-list prefetch flooded Graph and caused 429s.
    */
   private scheduleHrFolderTasksPrefetch(
     folders: Array<{ name?: string }>,
   ): void {
-    // Disabled: prefetching tasks for every visible HR person flooded Graph on tab clicks.
-    return;
+    const names = folders
+      .map(f => String(f?.name ?? '').trim())
+      .filter(Boolean)
+      .filter(name => !this.fileCrawlCache.get(this.hrFolderTaskCacheKey(name)))
+      .filter(name => !this.hrTaskPrefetchInFlight.has(this.hrFolderTaskCacheKey(name)))
+      .slice(0, AppConstants.hrFilesTaskPrefetchMaxBatch);
+    if (names.length === 0) return;
+
+    if (this.hrTaskPrefetchTimer) {
+      clearTimeout(this.hrTaskPrefetchTimer);
+    }
+    this.hrTaskPrefetchTimer = setTimeout(() => {
+      this.hrTaskPrefetchTimer = null;
+      if (this.folderPrefetchPaused) return;
+      if (this.isLoadingComments || this.isLoadingMoreComments) return;
+      void this.prefetchHrFolderTasks(names);
+    }, AppConstants.hrFilesTaskPrefetchDelayMs);
+  }
+
+  /** Hover / pointerdown: start warming this person's Comments before the click. */
+  protected prefetchHrPersonComments(item: { name?: string } | null | undefined): void {
+    const name = String(item?.name ?? '').trim();
+    if (!name) return;
+    const key = this.hrFolderTaskCacheKey(name);
+    if (this.fileCrawlCache.get(key) || this.hrTaskPrefetchInFlight.has(key)) return;
+    if (this.folderPrefetchPaused && this.isLoadingTodoTasks && !this.todoFirstPassComplete) {
+      return;
+    }
+    // Debounce scroll/hover spam; pointerdown still lands within one frame of click.
+    if (this.hrPersonHoverPrefetchTimer) {
+      clearTimeout(this.hrPersonHoverPrefetchTimer);
+    }
+    this.hrPersonHoverPrefetchTimer = setTimeout(() => {
+      this.hrPersonHoverPrefetchTimer = null;
+      void this.prefetchHrFolderTasks([name]);
+    }, 120);
   }
 
   /** Silently warm `tasks:hr-folder:*` without touching the Comments UI. */
   private async prefetchHrFolderTasks(folderNames: string[]): Promise<void> {
     if (this.folderPrefetchPaused || folderNames.length === 0) return;
-    if (this.isLoadingHrFilesList || this.isLoadingTodoTasks) return;
+    if (this.isLoadingHrFilesList) return;
+    // Allow during To Do background drain — only skip while the first To Do pass
+    // still owns the spinner (pauseFolderPrefetch covers that window).
+    if (this.isLoadingTodoTasks && !this.todoFirstPassComplete) return;
 
     const pending = folderNames.filter(name => {
       const key = this.hrFolderTaskCacheKey(name);
@@ -3473,30 +3533,69 @@ export class AppComponent implements OnInit, OnDestroy {
   private async warmHrPersonalRootFoldersCache(): Promise<void> {
     if (!this.currentUser) return;
     if (this.isLoadingHrFilesList) return;
-    if (this.fileCrawlCache.get(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY)) return;
 
     try {
-      const token = await this.getSharePointToken();
-      const targetDriveId = await this.getTargetDriveId(token);
-      if (!targetDriveId) return;
-      this.hrPersonalDriveId = targetDriveId;
+      if (!this.fileCrawlCache.get(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY)) {
+        const token = await this.getSharePointToken();
+        const targetDriveId = await this.getTargetDriveId(token);
+        if (!targetDriveId) return;
+        this.hrPersonalDriveId = targetDriveId;
 
-      if (!(await this.isUserInHrPersonalAllAccessGroup())) {
-        const userFolder = await this.findUserFolder(targetDriveId, token);
-        if (!userFolder?.id) return;
-        this.hrPersonalFolderName = userFolder.name;
-        const single = [{ ...userFolder, webUrl: userFolder.webUrl ?? '', isFolder: true as const }];
-        this.fileCrawlCache.set(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY, single);
-        return;
+        if (!(await this.isUserInHrPersonalAllAccessGroup())) {
+          const userFolder = await this.findUserFolder(targetDriveId, token);
+          if (!userFolder?.id) return;
+          this.hrPersonalFolderName = userFolder.name;
+          const single = [{ ...userFolder, webUrl: userFolder.webUrl ?? '', isFolder: true as const }];
+          this.fileCrawlCache.set(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY, single);
+        } else {
+          const folders = await this.fetchHrPersonalRootFolders(targetDriveId, token, (partial) => {
+            this.fileCrawlCache.set(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY, partial);
+          });
+          this.fileCrawlCache.set(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY, folders);
+        }
       }
-
-      const folders = await this.fetchHrPersonalRootFolders(targetDriveId, token, (partial) => {
-        this.fileCrawlCache.set(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY, partial);
-      });
-      this.fileCrawlCache.set(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY, folders);
     } catch {
       // Warm is best-effort - first HR Files open will fetch normally.
     }
+
+    // Light Comments warm for the first few people so early clicks hit shared Redis.
+    this.scheduleLoginHrTaskWarm();
+  }
+
+  /**
+   * After people-list warm (or Redis hydrate), prefetch Comments for a small batch
+   * of HR folders into shared Redis. Skips when Graph is paused for clicks / To Do.
+   */
+  private scheduleLoginHrTaskWarm(): void {
+    const roots =
+      this.fileCrawlCache.get<typeof this.hrPersonalRootFolders>(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY) ??
+      this.fileCrawlCache.getStale<typeof this.hrPersonalRootFolders>(AppComponent.HR_ROOT_FOLDERS_CACHE_KEY);
+    if (!Array.isArray(roots) || roots.length === 0) return;
+
+    const names = roots
+      .map(f => String(f?.name ?? '').trim())
+      .filter(Boolean)
+      .slice(0, AppConstants.hrFilesTaskPrefetchMaxBatch);
+    if (names.length === 0) return;
+
+    if (this.hrTaskPrefetchTimer) {
+      clearTimeout(this.hrTaskPrefetchTimer);
+    }
+    this.hrTaskPrefetchTimer = setTimeout(() => {
+      this.hrTaskPrefetchTimer = null;
+      if (this.folderPrefetchPaused) {
+        // To Do still owns Graph — retry once after the usual pause window.
+        this.hrTaskPrefetchTimer = setTimeout(() => {
+          this.hrTaskPrefetchTimer = null;
+          if (this.folderPrefetchPaused) return;
+          if (this.isLoadingComments || this.isLoadingMoreComments) return;
+          void this.prefetchHrFolderTasks(names);
+        }, 8000);
+        return;
+      }
+      if (this.isLoadingComments || this.isLoadingMoreComments) return;
+      void this.prefetchHrFolderTasks(names);
+    }, AppConstants.hrFilesTaskPrefetchDelayMs);
   }
 
   private async fetchHrPersonalRootFolders(
@@ -4018,6 +4117,35 @@ export class AppComponent implements OnInit, OnDestroy {
     }
 
     return names;
+  }
+
+  /**
+   * Query high-traffic HR lists first so Comments gets a newest-first hit sooner
+   * (avoids a long blank "Loading tasks..." while empty lists run ahead of Sick/Missing Punch).
+   */
+  private prioritizeHrPersonTaskLists(listNames: string[]): string[] {
+    const rank = (name: string): number => {
+      const key = String(name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (key.includes('sickcertificate')) return 0;
+      if (key.includes('missingpunch')) return 1;
+      if (key.includes('changeofshift')) return 2;
+      if (key.includes('telework')) return 3;
+      if (key.includes('rest')) return 4;
+      if (key.startsWith('hrtask')) return 5;
+      if (
+        key.includes('probation') ||
+        key.includes('increment') ||
+        key.includes('performancereview') ||
+        key.includes('preformancereview')
+      ) {
+        return 6;
+      }
+      return 7;
+    };
+    return [...listNames].sort((a, b) => {
+      const diff = rank(a) - rank(b);
+      return diff !== 0 ? diff : a.localeCompare(b);
+    });
   }
 
   /** Add archive companion lists (e.g. ProcTasksArchive for procurement). */
@@ -4806,10 +4934,11 @@ export class AppComponent implements OnInit, OnDestroy {
       this.folderTaskGraphInFlight += 1;
       // Do not wait for To Do — people with 800+ tasks were blocked for minutes
       // before Comments even started. Folder click already cancelled To Do Graph.
-      const token = await this.getSharePointToken();
+      const tokenPromise = this.getSharePointToken();
+      const formPromise = this.ensureFormConfigLoaded();
+      const token = await tokenPromise;
       if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
-
-      await this.ensureFormConfigLoaded();
+      await formPromise;
       if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
 
       await this.ensureSiteMetadata(
@@ -4818,56 +4947,80 @@ export class AppComponent implements OnInit, OnDestroy {
         token,
       );
 
-      const listsToQuery = this.getTaskListsToQuery(this.cachedSiteLists).filter(listName =>
-        this.cachedSiteLists.some((l: any) =>
-          (l.name ?? '').toLowerCase() === listName.toLowerCase() ||
-          (l.displayName ?? '').toLowerCase() === listName.toLowerCase()
-        )
+      const listsToQuery = this.prioritizeHrPersonTaskLists(
+        this.getTaskListsToQuery(this.cachedSiteLists).filter(listName =>
+          this.cachedSiteLists.some((l: any) =>
+            (l.name ?? '').toLowerCase() === listName.toLowerCase() ||
+            (l.displayName ?? '').toLowerCase() === listName.toLowerCase()
+          )
+        ),
       );
       if (!softRefresh) {
         this.commentsMessage = 'Loading tasks...';
         this.refreshView();
+        // Some people have no hits on the first lists — don't leave the blank
+        // full-screen spinner up for the whole fan-out. Switch to inline status.
+        window.setTimeout(() => {
+          if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+          if (!this.isLoadingComments || this.commentItems.length > 0) return;
+          this.isLoadingComments = false;
+          this.isLoadingMoreComments = true;
+          this.commentsMessage = 'Looking up tasks…';
+          this.refreshView();
+        }, 900);
       }
 
-      // Paint progressively as lists return hits; finish when seed completes.
+      // Newest-first progressive paint: clear spinner on first hits, then silent top-ups.
+      let interactivePaintDone = softRefresh;
+      const publishMapped = (mapped: any[], asBackground: boolean) => {
+        if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+        if (softRefresh && mapped.length === 0) return;
+        const items = this.applyAllFilesFolderSubmitter(mergeWithCachedFolderTasks(mapped));
+        const sorted = this.sortCommentItemsByDateDesc(items);
+
+        if (!interactivePaintDone && sorted.length === 0) {
+          this.publishFolderTaskProgress(sorted, {
+            done: false,
+            emptyMessage: 'No tasks found.',
+          });
+          return;
+        }
+
+        if (sorted.length > 0 || softRefresh) {
+          this.fileCrawlCache.set(folderCacheKey, sorted);
+        }
+
+        if (!asBackground && !interactivePaintDone && sorted.length > 0) {
+          interactivePaintDone = true;
+          this.lastHrFilesCommentsFolder = folderName;
+          this.publishFolderTaskProgress(sorted, {
+            done: true,
+            emptyMessage: 'No tasks found.',
+          });
+          return;
+        }
+
+        this.publishFolderTaskProgress(sorted, {
+          done: true,
+          background: interactivePaintDone,
+          emptyMessage: 'No tasks found.',
+        });
+      };
+
       const fastMapped = await this.collectHrPersonalTasksFromLists(
         listsToQuery,
         folderName,
         token,
         loadSeq,
         AppConstants.hrFilesTaskListPageLimit,
-        (partial) => {
-          if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
-          if (softRefresh && partial.length === 0) return;
-          const items = this.applyAllFilesFolderSubmitter(mergeWithCachedFolderTasks(partial));
-          // Persist partial hits immediately so leaving mid-load still returns instant.
-          if (items.length > 0) {
-            this.fileCrawlCache.set(
-              folderCacheKey,
-              this.sortCommentItemsByDateDesc(items),
-            );
-          }
-          this.publishFolderTaskProgress(items, {
-            done: false,
-            emptyMessage: 'No tasks found.',
-          });
-        },
+        (partial) => publishMapped(partial, interactivePaintDone),
         {
           softRefresh,
           onSeedComplete: (seedItems) => {
             if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
-            // Soft refresh: keep cached UI if this pass found nothing (transient miss).
             if (softRefresh && seedItems.length === 0) return;
-            const items = this.applyAllFilesFolderSubmitter(mergeWithCachedFolderTasks(seedItems));
-            this.fileCrawlCache.set(
-              folderCacheKey,
-              this.sortCommentItemsByDateDesc(items),
-            );
+            publishMapped(seedItems, interactivePaintDone);
             this.lastHrFilesCommentsFolder = folderName;
-            this.publishFolderTaskProgress(items, {
-              done: true,
-              emptyMessage: 'No tasks found.',
-            });
           },
         },
       );
@@ -4875,16 +5028,8 @@ export class AppComponent implements OnInit, OnDestroy {
 
       if (softRefresh && fastMapped.length === 0) return;
 
-      const finalItems = this.applyAllFilesFolderSubmitter(mergeWithCachedFolderTasks(fastMapped));
-      this.fileCrawlCache.set(
-        folderCacheKey,
-        this.sortCommentItemsByDateDesc(finalItems),
-      );
+      publishMapped(fastMapped, true);
       this.lastHrFilesCommentsFolder = folderName;
-      this.publishFolderTaskProgress(finalItems, {
-        done: true,
-        emptyMessage: 'No tasks found.',
-      });
     } catch (err: any) {
       if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
       if (softRefresh) return;
@@ -5005,20 +5150,15 @@ export class AppComponent implements OnInit, OnDestroy {
           : (isSourceEForm
             ? AppConstants.hrFilesSourceEFormLookupSupplementPages
             : AppConstants.hrFilesLookupSupplementPages);
+        // Cold first pass: newest-first pages only so Comments paints recent tasks fast.
+        // Deeper LookupId + assignee continue after onSeedComplete.
         const lookupMaxPages = softRefresh
           ? AppConstants.hrFilesSoftRefreshLookupPages
-          : AppConstants.hrFilesPersonLookupMaxPages;
+          : AppConstants.hrFilesFirstPaintLookupPages;
 
-        const supplementPromise = supplementPages <= 0
-          ? Promise.resolve([] as any[])
-          : this.taskQuery.fetchSharePointListPages(
-              this.cachedSiteId!,
-              listObj.id,
-              token,
-              AppConstants.hrTasksFastLoadPageSize,
-              supplementPages,
-              true,
-            );
+        // Cold click: LookupId (+ Title) only so first Comments paint isn't fighting
+        // assignee + company-wide supplement for Graph slots.
+        const deferHeavyFanOut = !softRefresh;
 
         const lookupPromise = personLookupId
           ? this.taskQuery.fetchSharePointListItemsForPersonLookup(
@@ -5036,23 +5176,24 @@ export class AppComponent implements OnInit, OnDestroy {
             )
           : Promise.resolve(null);
 
-        // Soft refresh: person LookupId + Title already catch new/updated rows.
-        // Skip assignee fan-out so idle polls do not double Graph traffic / 400 probes.
-        const assigneePromise = !softRefresh && personLookupId
-          ? this.taskQuery.fetchSharePointListItemsForAssigneeLookup(
-              this.cachedSiteId!,
-              listObj.id,
-              token,
-              personLookupId,
-              {
-                maxPages: lookupMaxPages,
-                onPage: (pageItems) => {
-                  if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
-                  publishListHits(listName, mapRaw(pageItems));
+        // Soft refresh keeps assignee off (LookupId + Title enough). Cold defers it
+        // to the post-seed top-up so first paint gets Graph capacity sooner.
+        const assigneePromise =
+          !deferHeavyFanOut && !softRefresh && personLookupId
+            ? this.taskQuery.fetchSharePointListItemsForAssigneeLookup(
+                this.cachedSiteId!,
+                listObj.id,
+                token,
+                personLookupId,
+                {
+                  maxPages: lookupMaxPages,
+                  onPage: (pageItems) => {
+                    if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+                    publishListHits(listName, mapRaw(pageItems));
+                  },
                 },
-              },
-            )
-          : Promise.resolve(null);
+              )
+            : Promise.resolve(null);
 
         const titlePromise = isHrTitleMatchedTaskList(listName) && (folderEmail || folderPin)
           ? this.taskQuery.fetchSharePointListItemsByTitleEmail(
@@ -5070,6 +5211,18 @@ export class AppComponent implements OnInit, OnDestroy {
               },
             )
           : Promise.resolve(null);
+
+        const supplementPromise =
+          deferHeavyFanOut || supplementPages <= 0
+            ? Promise.resolve([] as any[])
+            : this.taskQuery.fetchSharePointListPages(
+                this.cachedSiteId!,
+                listObj.id,
+                token,
+                AppConstants.hrTasksFastLoadPageSize,
+                supplementPages,
+                true,
+              );
 
         const [lookupItems, assigneeItems, titleItems, supplement] = await Promise.all([
           lookupPromise,
@@ -5128,14 +5281,149 @@ export class AppComponent implements OnInit, OnDestroy {
       }
     }
 
+    // Interactive seed: newest LookupId/Title pages only — clears "Loading more" in the UI.
     const seedItems = this.flattenHrMappedByList(mappedByList);
     options?.onSeedComplete?.(seedItems);
     if (softRefresh) {
-      return seedItems;
+      // Light assignee top-up so incomplete Redis caches can heal without a full cold crawl.
+      if (personLookupId && !this.isStaleAllFilesFolderTaskLoad(loadSeq)) {
+        const listsForTopUp = [...listObjByName.entries()];
+        for (let i = 0; i < listsForTopUp.length; i += concurrency) {
+          if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) break;
+          const batch = listsForTopUp.slice(i, i + concurrency);
+          await Promise.all(
+            batch.map(async ([listName, listObj]) => {
+              if (!listObj?.id) return;
+              const mapRaw = (raw: any[]) =>
+                this.mapHrFolderRawItems(
+                  raw,
+                  listName,
+                  listObj,
+                  folderName,
+                  personLookupId,
+                  folderMatchHints,
+                  userEmail,
+                  userUpn,
+                );
+              const assigneeItems = await this.taskQuery.fetchSharePointListItemsForAssigneeLookup(
+                this.cachedSiteId!,
+                listObj.id,
+                token,
+                personLookupId,
+                {
+                  maxPages: AppConstants.hrFilesSoftRefreshLookupPages,
+                  onPage: (pageItems) => {
+                    if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+                    publishListHits(listName, mapRaw(pageItems));
+                  },
+                },
+              );
+              if (assigneeItems?.length) {
+                publishListHits(listName, mapRaw(assigneeItems));
+              }
+            }),
+          );
+          if (onPartial && mappedByList.size > 0) {
+            onPartial(this.flattenHrMappedByList(mappedByList));
+          }
+        }
+      }
+      return this.flattenHrMappedByList(mappedByList);
+    }
+
+    // Background: deeper LookupId pages + assignee + supplement (silent UI merges).
+    if (personLookupId && !this.isStaleAllFilesFolderTaskLoad(loadSeq)) {
+      const listsForTopUp = [...listObjByName.entries()];
+      const deepLookupPages = AppConstants.hrFilesPersonLookupMaxPages;
+      for (let i = 0; i < listsForTopUp.length; i += concurrency) {
+        if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) break;
+        const batch = listsForTopUp.slice(i, i + concurrency);
+        await Promise.all(
+          batch.map(async ([listName, listObj]) => {
+            if (!listObj?.id) return;
+            const mapRaw = (raw: any[]) =>
+              this.mapHrFolderRawItems(
+                raw,
+                listName,
+                listObj,
+                folderName,
+                personLookupId,
+                folderMatchHints,
+                userEmail,
+                userUpn,
+              );
+            const isSourceEForm = isHrSourceEFormList(listName);
+            const topUpSupplementPages = isSourceEForm
+              ? AppConstants.hrFilesSourceEFormLookupSupplementPages
+              : AppConstants.hrFilesLookupSupplementPages;
+
+            const [deepLookupItems, assigneeItems, supplement] = await Promise.all([
+              deepLookupPages > AppConstants.hrFilesFirstPaintLookupPages
+                ? this.taskQuery.fetchSharePointListItemsForPersonLookup(
+                    this.cachedSiteId!,
+                    listObj.id,
+                    token,
+                    personLookupId,
+                    {
+                      maxPages: deepLookupPages,
+                      onPage: (pageItems) => {
+                        if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+                        publishListHits(listName, mapRaw(pageItems));
+                      },
+                    },
+                  )
+                : Promise.resolve(null),
+              this.taskQuery.fetchSharePointListItemsForAssigneeLookup(
+                this.cachedSiteId!,
+                listObj.id,
+                token,
+                personLookupId,
+                {
+                  maxPages: deepLookupPages,
+                  onPage: (pageItems) => {
+                    if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+                    publishListHits(listName, mapRaw(pageItems));
+                  },
+                },
+              ),
+              topUpSupplementPages <= 0
+                ? Promise.resolve([] as any[])
+                : this.taskQuery.fetchSharePointListPages(
+                    this.cachedSiteId!,
+                    listObj.id,
+                    token,
+                    AppConstants.hrTasksFastLoadPageSize,
+                    topUpSupplementPages,
+                    true,
+                  ),
+            ]);
+
+            if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+            if (deepLookupItems?.length) {
+              publishListHits(listName, mapRaw(deepLookupItems));
+            }
+            if (assigneeItems?.length) {
+              publishListHits(listName, mapRaw(assigneeItems));
+            }
+            if (supplement.length) {
+              publishListHits(listName, mapRaw(supplement));
+            }
+          }),
+        );
+
+        if (onPartial && mappedByList.size > 0) {
+          onPartial(this.flattenHrMappedByList(mappedByList));
+        }
+        if (i + concurrency < listsForTopUp.length) {
+          await this.sleep(AppComponent.HR_TASK_LIST_BATCH_GAP_MS);
+        }
+      }
     }
 
     // Second pass: workflow siblings that share the same eForm ID AND the same task name.
-    const seedTasksForSiblings = this.preferCurrentUserSeedTasks(seedItems);
+    const seedTasksForSiblings = this.preferCurrentUserSeedTasks(
+      this.flattenHrMappedByList(mappedByList),
+    );
     const eFormKeyToTaskNames = collectEFormKeyToTaskNames(seedTasksForSiblings);
     if (eFormKeyToTaskNames.size > 0 && !this.isStaleAllFilesFolderTaskLoad(loadSeq)) {
       const listsWithHits = [...mappedByList.keys()];

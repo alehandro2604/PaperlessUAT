@@ -86,6 +86,11 @@ export const AppConstants = {
    * catches both new rows and updates to older ones without re-reading 800+ tasks.
    */
   hrFilesSoftRefreshLookupPages: 3,
+  /**
+   * Cold open first paint: newest-first LookupId pages only, then clear the spinner.
+   * Deeper pages + assignee continue silently in the background.
+   */
+  hrFilesFirstPaintLookupPages: 3,
   /** One newest unfiltered page on soft refresh — catches assignee-only rows LookupId misses. */
   hrFilesSoftRefreshSupplementPages: 1,
   /** After the first person column returns hits, extra columns only need a top-up. */
@@ -104,9 +109,9 @@ export const AppConstants = {
    * Idle-prefetch HR Files person tasks (like All Files folder prefetch).
    * Keep moderate — each person fans out across many task lists.
    */
-  hrFilesTaskPrefetchMaxBatch: 6,
+  hrFilesTaskPrefetchMaxBatch: 12,
   hrFilesTaskPrefetchConcurrency: 2,
-  hrFilesTaskPrefetchDelayMs: 800,
+  hrFilesTaskPrefetchDelayMs: 500,
   hrFilesTaskPrefetchBatchGapMs: 400,
 
   /**

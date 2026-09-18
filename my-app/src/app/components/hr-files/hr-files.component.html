@@ -47,6 +47,8 @@
     class="user-list-item list-item-card"
     [class.active]="isItemSelected(item)"
     (click)="onItemClick(item)"
+    (pointerenter)="onItemPrefetch(item)"
+    (pointerdown)="onItemPrefetch(item)"
   >
     <div class="list-item-avatar" aria-hidden="true">{{ getDisplayInitial(item.name) }}</div>
     <div class="user-info">

@@ -98,7 +98,7 @@ export class SharePointTaskQueryService {
           nextPath = toGraphPath(page?.['@odata.nextLink']);
         }
       } catch (err: any) {
-        if ((err?.status ?? err?.error?.status) === 400) {
+        if (this.isFilterProbeFailureStatus(err?.status ?? err?.error?.status)) {
           this.markListFilterField(listId, field, false);
         }
       }
@@ -113,15 +113,16 @@ export class SharePointTaskQueryService {
   /** SharePoint User Information List Id keyed by lowercase email. */
   private readonly sharePointUserLookupIdByEmail = new Map<string, string>();
   /**
-   * Per-list Graph $filter field viability: true = filterable, false = previously 400'd.
-   * Avoids re-probing known-bad columns on every folder/task load (console flood).
-   * Also persisted to localStorage so a refresh does not re-spam DevTools with 400s.
+   * Per-list Graph $filter field viability: true = filterable, false = previously
+   * 400/404'd. Avoids re-probing known-bad columns on every folder/task load
+   * (console flood + Graph slot waste). Also persisted to localStorage so a
+   * refresh does not re-spam DevTools.
    */
   private readonly listFilterFieldStatus = new Map<string, Map<string, boolean>>();
   private listFilterStatusHydrated = false;
-  /** Person/group columns discovered via Graph columns API (avoids filter probes that 400). */
+  /** Person/group columns discovered via Graph columns API (avoids filter probes that 400/404). */
   private readonly listPersonColumnsCache = new Map<string, Array<{ name: string; allowMultiple: boolean }>>();
-  /** Lists where AssignedToLookupId filter already returned 400 - skip on future To Do loads. */
+  /** Lists where AssignedToLookupId filter already returned 400/404 - skip on future To Do loads. */
   private readonly assigneeLookupBlockedListIds = new Set<string>();
   private readonly sharePointListOrderBySupported = new Map<string, boolean>();
 
@@ -220,7 +221,7 @@ export class SharePointTaskQueryService {
     this.persistListFilterStatus();
   }
 
-  /** Known-good fields first, then untried; skip fields that already returned 400 for this list. */
+  /** Known-good fields first, then untried; skip fields that already returned 400/404 for this list. */
   private orderFilterableFields(listId: string, candidates: string[]): string[] {
     const good: string[] = [];
     const unknown: string[] = [];
@@ -231,6 +232,11 @@ export class SharePointTaskQueryService {
       else unknown.push(field);
     }
     return [...good, ...unknown];
+  }
+
+  /** True when Graph rejected a $filter probe — blacklist so we do not retry every person open. */
+  private isFilterProbeFailureStatus(status: unknown): boolean {
+    return status === 400 || status === 404;
   }
 
   private async getListPersonColumns(
@@ -330,8 +336,8 @@ export class SharePointTaskQueryService {
           }
         } catch (err: any) {
           const status = err?.status ?? err?.error?.status;
-          // 400 = not filterable; timeout/other = don't keep retrying this field forever.
-          if (status === 400 || status == null) {
+          // 400/404 = not filterable; timeout/other = don't keep retrying this field forever.
+          if (this.isFilterProbeFailureStatus(status) || status == null) {
             this.markListFilterField(listId, field, false);
           }
           // Field not filterable on this list - try next field/key.
@@ -419,7 +425,7 @@ export class SharePointTaskQueryService {
           }
         } catch (err: any) {
           const status = err?.status ?? err?.error?.status;
-          if (status === 400) {
+          if (this.isFilterProbeFailureStatus(status)) {
             this.markListFilterField(userInfoListId, 'EMail', false);
           }
           // Fall through to a short scan of the User Information List.
@@ -551,7 +557,7 @@ export class SharePointTaskQueryService {
           this.markListOrderBySupported(listId, false);
           return 'retry-unordered';
         }
-        if (status === 400) {
+        if (this.isFilterProbeFailureStatus(status)) {
           this.markListFilterField(listId, field, false);
         }
         return 'bad-field';
@@ -572,7 +578,7 @@ export class SharePointTaskQueryService {
         ? Math.min(maxPages, AppConstants.hrFilesLookupExtraFieldPages)
         : maxPages;
       // Prefer newest-first while Comments paint progressively. Probe $orderby at most
-      // once per list (re-read each field): success → keep using; 400 → remember and skip.
+      // once per list (re-read each field): success → keep using; 400/404 → remember and skip.
       const orderOk = this.getListOrderBySupported(listId) !== false;
       let result = await pageField(field, filter, orderOk, fieldMaxPages);
       if (result === 'retry-unordered') {
@@ -667,7 +673,7 @@ export class SharePointTaskQueryService {
       return items;
     } catch (err: any) {
       const status = err?.status ?? err?.error?.status;
-      if (status === 400) {
+      if (this.isFilterProbeFailureStatus(status)) {
         this.markListFilterField(listId, 'AssignedToLookupId', false);
         this.assigneeLookupBlockedListIds.add(listId);
         return null;

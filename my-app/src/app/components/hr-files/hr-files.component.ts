@@ -25,6 +25,7 @@ export class HrFilesComponent implements OnChanges {
   @Input() warningMessage = '';
 
   @Output() itemSelected = new EventEmitter<HrFileListItem>();
+  @Output() itemPrefetchRequested = new EventEmitter<HrFileListItem>();
   @Output() loadRequested = new EventEmitter<void>();
 
   protected searchQuery = '';
@@ -84,6 +85,11 @@ export class HrFilesComponent implements OnChanges {
   protected onItemClick(item: HrFileListItem): void {
     this.selectedItemId = item.id;
     this.itemSelected.emit(item);
+  }
+
+  /** Start Comments warm while the user aims / presses — before click navigation. */
+  protected onItemPrefetch(item: HrFileListItem): void {
+    this.itemPrefetchRequested.emit(item);
   }
 
   protected isItemSelected(item: HrFileListItem): boolean {
