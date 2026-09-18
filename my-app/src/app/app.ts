@@ -609,7 +609,13 @@ export class AppComponent implements OnInit, OnDestroy {
    */
   private publishFolderTaskProgress(
     items: any[],
-    options: { done?: boolean; emptyMessage?: string; background?: boolean } = {},
+    options: {
+      done?: boolean;
+      emptyMessage?: string;
+      background?: boolean;
+      /** While true, show "Loading more tasks…" during silent background Graph top-up. */
+      keepLoadingMore?: boolean;
+    } = {},
   ): void {
     const sorted = this.sortCommentItemsByDateDesc(
       this.filterTasksForSelectedAllFilesFolder(items)
@@ -617,10 +623,11 @@ export class AppComponent implements OnInit, OnDestroy {
     this.commentItems = sorted;
     void this.publishSelectedFolderChildSubjects(sorted, !!options.done && !options.background);
 
-    // Silent top-up after first paint — keep Load more position, never re-show spinner.
+    // Silent top-up after first paint — keep Load more position.
+    // `keepLoadingMore` stays true while deeper Graph pages are still coming in.
     if (options.background) {
       this.isLoadingComments = false;
-      this.isLoadingMoreComments = false;
+      this.isLoadingMoreComments = !!options.keepLoadingMore;
       if (sorted.length > 0) {
         this.commentsMessage = '';
       }
@@ -3825,7 +3832,8 @@ export class AppComponent implements OnInit, OnDestroy {
       );
       this.commentsMessage = cachedTasks.length ? '' : 'No tasks found.';
       this.isLoadingComments = false;
-      this.isLoadingMoreComments = cachedTasks.length > 0;
+      // Soft-refresh / deep heal sets Loading more — don't imply the cache is final.
+      this.isLoadingMoreComments = false;
     } else {
       this.commentItems = [];
       this.commentsMessage = '';
@@ -4970,11 +4978,15 @@ export class AppComponent implements OnInit, OnDestroy {
         }, 900);
       }
 
-      // Newest-first progressive paint: clear spinner on first hits, then silent top-ups.
+      // Newest-first progressive paint: clear full-screen spinner on first hits, then
+      // keep "Loading more tasks…" until the deep background crawl finishes.
       let interactivePaintDone = softRefresh;
-      const publishMapped = (mapped: any[], asBackground: boolean) => {
+      const publishMapped = (
+        mapped: any[],
+        opts: { background?: boolean; complete?: boolean } = {},
+      ) => {
         if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
-        if (softRefresh && mapped.length === 0) return;
+        if (softRefresh && mapped.length === 0 && !opts.complete) return;
         const items = this.applyAllFilesFolderSubmitter(mergeWithCachedFolderTasks(mapped));
         const sorted = this.sortCommentItemsByDateDesc(items);
 
@@ -4986,23 +4998,30 @@ export class AppComponent implements OnInit, OnDestroy {
           return;
         }
 
-        if (sorted.length > 0 || softRefresh) {
+        if (sorted.length > 0 || softRefresh || opts.complete) {
           this.fileCrawlCache.set(folderCacheKey, sorted);
         }
 
-        if (!asBackground && !interactivePaintDone && sorted.length > 0) {
+        if (!opts.background && !interactivePaintDone && sorted.length > 0) {
           interactivePaintDone = true;
           this.lastHrFilesCommentsFolder = folderName;
           this.publishFolderTaskProgress(sorted, {
             done: true,
+            keepLoadingMore: !opts.complete,
             emptyMessage: 'No tasks found.',
           });
+          // First paint uses done:true which clears loading-more — put it back until deep crawl ends.
+          if (!opts.complete) {
+            this.isLoadingMoreComments = true;
+            this.refreshView();
+          }
           return;
         }
 
         this.publishFolderTaskProgress(sorted, {
           done: true,
-          background: interactivePaintDone,
+          background: interactivePaintDone || !!opts.background,
+          keepLoadingMore: interactivePaintDone && !opts.complete,
           emptyMessage: 'No tasks found.',
         });
       };
@@ -5013,22 +5032,27 @@ export class AppComponent implements OnInit, OnDestroy {
         token,
         loadSeq,
         AppConstants.hrFilesTaskListPageLimit,
-        (partial) => publishMapped(partial, interactivePaintDone),
+        (partial) => publishMapped(partial, { background: interactivePaintDone }),
         {
           softRefresh,
           onSeedComplete: (seedItems) => {
             if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
             if (softRefresh && seedItems.length === 0) return;
-            publishMapped(seedItems, interactivePaintDone);
+            publishMapped(seedItems, { background: interactivePaintDone });
             this.lastHrFilesCommentsFolder = folderName;
           },
         },
       );
       if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
 
-      if (softRefresh && fastMapped.length === 0) return;
+      if (softRefresh && fastMapped.length === 0) {
+        // Still finish UI loading state even when Graph returned nothing new.
+        this.isLoadingMoreComments = false;
+        this.refreshView();
+        return;
+      }
 
-      publishMapped(fastMapped, true);
+      publishMapped(fastMapped, { background: true, complete: true });
       this.lastHrFilesCommentsFolder = folderName;
     } catch (err: any) {
       if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
@@ -5281,57 +5305,56 @@ export class AppComponent implements OnInit, OnDestroy {
       }
     }
 
-    // Interactive seed: newest LookupId/Title pages only — clears "Loading more" in the UI.
+    // Interactive seed: newest LookupId/Title pages only — paints recent tasks first.
     const seedItems = this.flattenHrMappedByList(mappedByList);
     options?.onSeedComplete?.(seedItems);
-    if (softRefresh) {
-      // Light assignee top-up so incomplete Redis caches can heal without a full cold crawl.
-      if (personLookupId && !this.isStaleAllFilesFolderTaskLoad(loadSeq)) {
-        const listsForTopUp = [...listObjByName.entries()];
-        for (let i = 0; i < listsForTopUp.length; i += concurrency) {
-          if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) break;
-          const batch = listsForTopUp.slice(i, i + concurrency);
-          await Promise.all(
-            batch.map(async ([listName, listObj]) => {
-              if (!listObj?.id) return;
-              const mapRaw = (raw: any[]) =>
-                this.mapHrFolderRawItems(
-                  raw,
-                  listName,
-                  listObj,
-                  folderName,
-                  personLookupId,
-                  folderMatchHints,
-                  userEmail,
-                  userUpn,
-                );
-              const assigneeItems = await this.taskQuery.fetchSharePointListItemsForAssigneeLookup(
-                this.cachedSiteId!,
-                listObj.id,
-                token,
+
+    // Soft refresh used to return here after a light assignee pass, which left incomplete
+    // Redis snapshots (e.g. 26 of ~52) stuck forever. Always continue into the deep crawl.
+    if (softRefresh && personLookupId && !this.isStaleAllFilesFolderTaskLoad(loadSeq)) {
+      const listsForTopUp = [...listObjByName.entries()];
+      for (let i = 0; i < listsForTopUp.length; i += concurrency) {
+        if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) break;
+        const batch = listsForTopUp.slice(i, i + concurrency);
+        await Promise.all(
+          batch.map(async ([listName, listObj]) => {
+            if (!listObj?.id) return;
+            const mapRaw = (raw: any[]) =>
+              this.mapHrFolderRawItems(
+                raw,
+                listName,
+                listObj,
+                folderName,
                 personLookupId,
-                {
-                  maxPages: AppConstants.hrFilesSoftRefreshLookupPages,
-                  onPage: (pageItems) => {
-                    if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
-                    publishListHits(listName, mapRaw(pageItems));
-                  },
-                },
+                folderMatchHints,
+                userEmail,
+                userUpn,
               );
-              if (assigneeItems?.length) {
-                publishListHits(listName, mapRaw(assigneeItems));
-              }
-            }),
-          );
-          if (onPartial && mappedByList.size > 0) {
-            onPartial(this.flattenHrMappedByList(mappedByList));
-          }
+            const assigneeItems = await this.taskQuery.fetchSharePointListItemsForAssigneeLookup(
+              this.cachedSiteId!,
+              listObj.id,
+              token,
+              personLookupId,
+              {
+                maxPages: AppConstants.hrFilesSoftRefreshLookupPages,
+                onPage: (pageItems) => {
+                  if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
+                  publishListHits(listName, mapRaw(pageItems));
+                },
+              },
+            );
+            if (assigneeItems?.length) {
+              publishListHits(listName, mapRaw(assigneeItems));
+            }
+          }),
+        );
+        if (onPartial && mappedByList.size > 0) {
+          onPartial(this.flattenHrMappedByList(mappedByList));
         }
       }
-      return this.flattenHrMappedByList(mappedByList);
     }
 
-    // Background: deeper LookupId pages + assignee + supplement (silent UI merges).
+    // Deep LookupId + full assignee (cold and soft-refresh heal) so Load more sees the full set.
     if (personLookupId && !this.isStaleAllFilesFolderTaskLoad(loadSeq)) {
       const listsForTopUp = [...listObjByName.entries()];
       const deepLookupPages = AppConstants.hrFilesPersonLookupMaxPages;
