@@ -33,7 +33,7 @@
 
 .change-task-date-btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(0, 110, 255, 0.18);
+  box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.22);
 }
 
 .change-task-date-btn .fi {
@@ -43,17 +43,24 @@
 
 .change-task-date-panel {
   position: absolute;
-  top: calc(100% + 8px);
+  top: calc(100% + 6px);
   left: 0;
   width: 220px;
-  padding: 12px;
-  border-radius: 10px;
-  border: 1px solid var(--panel-border, #d1d1d1);
-  background: var(--white, #fff);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.14);
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--panel-border, #d1d1d1) 70%, transparent);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--brand-blue, #0078d4) 6%, #ffffff) 0%,
+      #ffffff 34px
+    );
+  box-shadow:
+    0 3px 6px rgba(15, 23, 42, 0.04),
+    0 12px 28px rgba(15, 23, 42, 0.12);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   z-index: 40;
   font-family: "Poppins", sans-serif;
   color: var(--text-dark, #1b2a3a);
@@ -63,13 +70,21 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 2px 2px;
+  gap: 6px;
+  padding: 0 1px;
 }
 
 .change-task-date-panel .cal-title {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
+  letter-spacing: -0.01em;
   color: var(--text-dark, #1b2a3a);
+}
+
+.change-task-date-panel .cal-nav-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
 .change-task-date-panel .cal-nav {
@@ -77,117 +92,239 @@
   height: 22px;
   border: 0;
   border-radius: 6px;
-  background: transparent;
-  color: #8a94a0;
+  background: color-mix(in srgb, var(--brand-blue, #0078d4) 8%, #ffffff);
+  color: var(--brand-blue, #0078d4);
   font-size: 15px;
   line-height: 1;
   cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease;
+  display: grid;
+  place-items: center;
+  transition: background-color 120ms ease, color 120ms ease, transform 100ms ease;
 }
 
-.change-task-date-panel .cal-nav:hover {
-  background: #f2f4f7;
-  color: var(--text-dark, #1b2a3a);
+.change-task-date-panel .cal-nav:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--brand-blue, #0078d4) 16%, #ffffff);
+  color: var(--brand-blue-dark, #003e70);
+}
+
+.change-task-date-panel .cal-nav:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.change-task-date-panel .cal-nav:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.change-task-date-panel .cal-nav:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.2);
 }
 
 .change-task-date-panel .cal-grid {
   display: grid;
-  grid-template-columns: repeat(7, 30px);
-  justify-content: space-between;
-  row-gap: 1px;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 0;
+  padding: 0;
 }
 
 .change-task-date-panel .cal-weekday {
-  height: 22px;
+  height: 18px;
   display: grid;
   place-items: center;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  color: #9aa3ad;
+  color: #8b949e;
 }
 
 .change-task-date-panel .cal-day {
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
+  margin: 0 auto;
   border: 0;
-  border-radius: 50%;
+  border-radius: 8px;
   background: transparent;
   font: inherit;
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dark, #1b2a3a);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    box-shadow 120ms ease,
+    transform 100ms ease;
+}
+
+.change-task-date-panel .cal-day:hover:not(:disabled):not(.is-selected) {
+  background: color-mix(in srgb, var(--brand-blue, #0078d4) 10%, #ffffff);
+  color: var(--brand-blue, #0078d4);
+}
+
+.change-task-date-panel .cal-day:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.change-task-date-panel .cal-day.is-outside {
+  color: #b0b7c0;
+  font-weight: 500;
+}
+
+.change-task-date-panel .cal-day.is-today:not(.is-selected) {
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--brand-blue, #0078d4) 55%, transparent);
+  color: var(--brand-blue, #0078d4);
+}
+
+.change-task-date-panel .cal-day.is-selected {
+  background: var(--brand-blue, #0078d4);
+  color: #ffffff;
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--brand-blue, #0078d4) 30%, transparent);
+}
+
+.change-task-date-panel .cal-day.is-selected:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--brand-blue, #0078d4) 88%, #003e70);
+  color: #ffffff;
+}
+
+.change-task-date-panel .cal-day:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.change-task-date-panel .cal-day:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.22);
+}
+
+.change-task-date-panel .cal-shortcuts {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.change-task-date-panel .cal-shortcut {
+  border: 0;
+  background: transparent;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--brand-blue, #0078d4);
+  cursor: pointer;
+  border-radius: 5px;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.change-task-date-panel .cal-shortcut:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--brand-blue, #0078d4) 10%, #ffffff);
   color: var(--brand-blue-dark, #003e70);
+}
+
+.change-task-date-panel .cal-shortcut:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.change-task-date-panel .cal-shortcut:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.2);
 }
 
 .change-task-date-input {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid #d1d1d1;
+  border: 1px solid var(--panel-border, #d1d1d1);
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 5px 8px;
   font: inherit;
-  font-size: 13px;
+  font-size: 12px;
   color: inherit;
   background: #fff;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
 .change-task-date-input:focus {
   outline: none;
-  border-color: #006eff;
-  box-shadow: 0 0 0 3px rgba(0, 110, 255, 0.12);
+  border-color: var(--brand-blue, #0078d4);
+  box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.14);
+}
+
+.change-task-date-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .change-task-date-error {
   margin: 0;
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.3;
   color: #b91c1c;
 }
 
 .change-task-date-actions {
   display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 4px;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  margin-top: 0;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--panel-border, #d1d1d1) 70%, transparent);
+}
+
+.change-task-date-action-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .change-task-date-action {
-  border-radius: 8px;
-  padding: 6px 12px;
+  border-radius: 7px;
+  padding: 5px 10px;
   font: inherit;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 100ms ease;
+}
+
+.change-task-date-action:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 .change-task-date-action.secondary {
-  border: 1px solid #d1d1d1;
+  border: 1px solid var(--panel-border, #d1d1d1);
   background: transparent;
   color: inherit;
 }
 
-.change-task-date-action.secondary:hover {
-  background: #f7f7f7;
-  border-color: #bdbdbd;
+.change-task-date-action.secondary:hover:not(:disabled) {
+  background: #f5f7fa;
+  border-color: #c5cbd3;
 }
 
 .change-task-date-action.primary {
   border: none;
-  background: #006eff;
+  background: var(--brand-blue, #0078d4);
   color: #fff;
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--brand-blue, #0078d4) 24%, transparent);
 }
 
 .change-task-date-action.primary:hover:not(:disabled) {
-  background: #5f98fb;
+  background: color-mix(in srgb, var(--brand-blue, #0078d4) 88%, #003e70);
 }
 
-.change-task-date-action.primary:disabled {
+.change-task-date-action.primary:disabled,
+.change-task-date-action.secondary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+  box-shadow: none;
 }
 
 .change-task-date-action:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(0, 110, 255, 0.22);
+  box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.22);
 }

@@ -13,6 +13,14 @@ import {
 import { FormsModule } from '@angular/forms';
 import { TodoService } from '../../../services/todo.service';
 
+interface CalendarDay {
+  day: number;
+  iso: string;
+  inMonth: boolean;
+  isToday: boolean;
+  isSelected: boolean;
+}
+
 @Component({
   selector: 'app-change-task-date',
   standalone: true,
@@ -27,8 +35,15 @@ export class ChangeTaskDateComponent implements OnChanges {
 
   isOpen = false;
   selectedDate = '';
+  displayDate = '';
   isSaving = false;
   saveError = '';
+
+  readonly weekdays = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+  viewYear = new Date().getFullYear();
+  viewMonth = new Date().getMonth();
+  calendarDays: CalendarDay[] = [];
+  monthLabel = '';
 
   constructor(
     private readonly host: ElementRef<HTMLElement>,
@@ -37,7 +52,9 @@ export class ChangeTaskDateComponent implements OnChanges {
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['task']) {
-      this.selectedDate = this.toInputDate(this.readDueDate(this.task));
+      this.setSelectedDate(this.toInputDate(this.readDueDate(this.task)));
+      this.syncViewToSelected();
+      this.rebuildCalendar();
     }
   }
 
@@ -46,8 +63,10 @@ export class ChangeTaskDateComponent implements OnChanges {
     event.stopPropagation();
     this.isOpen = !this.isOpen;
     if (this.isOpen) {
-      this.selectedDate = this.toInputDate(this.readDueDate(this.task));
+      this.setSelectedDate(this.toInputDate(this.readDueDate(this.task)));
       this.saveError = '';
+      this.syncViewToSelected();
+      this.rebuildCalendar();
     }
   }
 
@@ -55,12 +74,57 @@ export class ChangeTaskDateComponent implements OnChanges {
     event.stopPropagation();
   }
 
+  shiftMonth(delta: number, event?: MouseEvent): void {
+    event?.preventDefault();
+    event?.stopPropagation();
+    const next = new Date(this.viewYear, this.viewMonth + delta, 1);
+    this.viewYear = next.getFullYear();
+    this.viewMonth = next.getMonth();
+    this.rebuildCalendar();
+  }
+
+  selectDay(iso: string, event?: MouseEvent): void {
+    event?.preventDefault();
+    event?.stopPropagation();
+    this.setSelectedDate(iso);
+    this.syncViewToSelected();
+    this.rebuildCalendar();
+  }
+
+  selectToday(event?: MouseEvent): void {
+    event?.preventDefault();
+    event?.stopPropagation();
+    this.setSelectedDate(this.formatLocalDate(new Date()));
+    this.syncViewToSelected();
+    this.rebuildCalendar();
+  }
+
+  clearDate(event?: MouseEvent): void {
+    event?.preventDefault();
+    event?.stopPropagation();
+    this.setSelectedDate('');
+    this.rebuildCalendar();
+  }
+
+  onManualDateChange(value: string): void {
+    this.displayDate = value;
+    const parsed = this.parseDisplayDate(value);
+    if (parsed === null && value.trim() !== '') return;
+    this.selectedDate = parsed ?? '';
+    if (this.selectedDate) {
+      this.syncViewToSelected();
+      this.rebuildCalendar();
+    } else {
+      this.rebuildCalendar();
+    }
+  }
+
   onCancel(event?: MouseEvent): void {
     event?.preventDefault();
     event?.stopPropagation();
     this.isOpen = false;
     this.saveError = '';
-    this.selectedDate = this.toInputDate(this.readDueDate(this.task));
+    this.setSelectedDate(this.toInputDate(this.readDueDate(this.task)));
   }
 
   async onApply(event: MouseEvent): Promise<void> {
@@ -100,6 +164,103 @@ export class ChangeTaskDateComponent implements OnChanges {
     if (event.key === 'Escape') this.onCancel();
   }
 
+  private syncViewToSelected(): void {
+    const base = this.selectedDate
+      ? new Date(`${this.selectedDate}T00:00:00`)
+      : new Date();
+    if (Number.isNaN(base.getTime())) return;
+    this.viewYear = base.getFullYear();
+    this.viewMonth = base.getMonth();
+  }
+
+  private rebuildCalendar(): void {
+    const monthNames = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December',
+    ];
+    this.monthLabel = `${monthNames[this.viewMonth]} ${this.viewYear}`;
+
+    const first = new Date(this.viewYear, this.viewMonth, 1);
+    const startOffset = first.getDay();
+    const gridStart = new Date(this.viewYear, this.viewMonth, 1 - startOffset);
+    const todayIso = this.formatLocalDate(new Date());
+
+    const days: CalendarDay[] = [];
+    for (let i = 0; i < 42; i++) {
+      const date = new Date(
+        gridStart.getFullYear(),
+        gridStart.getMonth(),
+        gridStart.getDate() + i
+      );
+      const iso = this.formatLocalDate(date);
+      days.push({
+        day: date.getDate(),
+        iso,
+        inMonth: date.getMonth() === this.viewMonth,
+        isToday: iso === todayIso,
+        isSelected: !!this.selectedDate && iso === this.selectedDate,
+      });
+    }
+    this.calendarDays = days;
+  }
+
+  private setSelectedDate(iso: string): void {
+    this.selectedDate = iso;
+    this.displayDate = iso ? this.toDisplayDate(iso) : '';
+  }
+
+  private toDisplayDate(iso: string): string {
+    const match = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return iso;
+    return `${match[3]}/${match[2]}/${match[1]}`;
+  }
+
+  /** Accepts `DD/MM/YYYY` or `YYYY-MM-DD`. Returns ISO or null if incomplete/invalid. */
+  private parseDisplayDate(value: string): string | null {
+    const trimmed = value.trim();
+    if (!trimmed) return '';
+    const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (isoMatch) {
+      return this.isValidYmd(+isoMatch[1], +isoMatch[2], +isoMatch[3])
+        ? trimmed
+        : null;
+    }
+    const dmyMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (!dmyMatch) return null;
+    const day = +dmyMatch[1];
+    const month = +dmyMatch[2];
+    const year = +dmyMatch[3];
+    if (!this.isValidYmd(year, month, day)) return null;
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  private isValidYmd(year: number, month: number, day: number): boolean {
+    if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+    const dt = new Date(year, month - 1, day);
+    return (
+      dt.getFullYear() === year &&
+      dt.getMonth() === month - 1 &&
+      dt.getDate() === day
+    );
+  }
+
+  private formatLocalDate(date: Date): string {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
   private readDueDate(task: any): string {
     const details = task?.eFormDetails ?? {};
     return String(
@@ -111,7 +272,7 @@ export class ChangeTaskDateComponent implements OnChanges {
     ).trim();
   }
 
-  /** Normalize any date-ish value to `YYYY-MM-DD` for `<input type="date">`. */
+  /** Normalize any date-ish value to `YYYY-MM-DD`. */
   private toInputDate(value: string): string {
     if (!value) return '';
     const isoMatch = value.match(/^(\d{4}-\d{2}-\d{2})/);

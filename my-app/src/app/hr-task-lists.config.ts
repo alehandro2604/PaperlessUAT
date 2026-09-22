@@ -8,7 +8,7 @@
 export const HR_TASK_LIST_NAMES: readonly string[] = [
   'HRTaskChangeOfShiftIESC', 'HRTaskTeleworkReports', 'HRTaskTelework',
   'HRTaskRest', 'HRTaskSickLeaveByAppointment', 'HRTaskProbation', 'HRTaskMissingPunch',
-  'PerformanceReview_Tasks', 'PerformanceReview_Tasks_IESC',
+  'PerformanceReview_Tasks',
 ];
 
 /**

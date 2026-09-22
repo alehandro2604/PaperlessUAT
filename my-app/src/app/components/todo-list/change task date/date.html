@@ -16,32 +16,99 @@
     aria-label="Change task date"
     (click)="onPanelClick($event)"
   >
-    <label class="change-task-date-label" for="change-task-date-input">Due date</label>
+    <div class="cal-header">
+      <span class="cal-title">{{ monthLabel }}</span>
+      <div class="cal-nav-group">
+        <button
+          type="button"
+          class="cal-nav"
+          aria-label="Previous month"
+          [disabled]="isSaving"
+          (click)="shiftMonth(-1, $event)"
+        >
+          ‹
+        </button>
+        <button
+          type="button"
+          class="cal-nav"
+          aria-label="Next month"
+          [disabled]="isSaving"
+          (click)="shiftMonth(1, $event)"
+        >
+          ›
+        </button>
+      </div>
+    </div>
+
+    <div class="cal-grid" role="grid" [attr.aria-label]="monthLabel">
+      <span class="cal-weekday" *ngFor="let day of weekdays">{{ day }}</span>
+      <button
+        type="button"
+        class="cal-day"
+        *ngFor="let cell of calendarDays"
+        role="gridcell"
+        [class.is-outside]="!cell.inMonth"
+        [class.is-today]="cell.isToday"
+        [class.is-selected]="cell.isSelected"
+        [attr.aria-selected]="cell.isSelected"
+        [attr.aria-current]="cell.isToday ? 'date' : null"
+        [disabled]="isSaving"
+        (click)="selectDay(cell.iso, $event)"
+      >
+        {{ cell.day }}
+      </button>
+    </div>
+
     <input
       id="change-task-date-input"
-      type="date"
+      type="text"
       class="change-task-date-input"
-      [(ngModel)]="selectedDate"
+      placeholder="DD/MM/YYYY"
+      aria-label="Type a date"
+      [ngModel]="displayDate"
       [disabled]="isSaving"
+      (ngModelChange)="onManualDateChange($event)"
     />
+
     <p class="change-task-date-error" *ngIf="saveError">{{ saveError }}</p>
+
     <div class="change-task-date-actions">
-      <button
-        type="button"
-        class="change-task-date-action secondary"
-        [disabled]="isSaving"
-        (click)="onCancel($event)"
-      >
-        Cancel
-      </button>
-      <button
-        type="button"
-        class="change-task-date-action primary"
-        [disabled]="!selectedDate || isSaving"
-        (click)="onApply($event)"
-      >
-        {{ isSaving ? 'Saving…' : 'Apply' }}
-      </button>
+      <div class="cal-shortcuts">
+        <button
+          type="button"
+          class="cal-shortcut"
+          [disabled]="isSaving"
+          (click)="clearDate($event)"
+        >
+          Clear
+        </button>
+        <button
+          type="button"
+          class="cal-shortcut"
+          [disabled]="isSaving"
+          (click)="selectToday($event)"
+        >
+          Today
+        </button>
+      </div>
+      <div class="change-task-date-action-group">
+        <button
+          type="button"
+          class="change-task-date-action secondary"
+          [disabled]="isSaving"
+          (click)="onCancel($event)"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="change-task-date-action primary"
+          [disabled]="!selectedDate || isSaving"
+          (click)="onApply($event)"
+        >
+          {{ isSaving ? 'Saving…' : 'Apply' }}
+        </button>
+      </div>
     </div>
   </div>
 </div>

@@ -604,11 +604,11 @@ export class TodoListComponent implements OnInit, OnDestroy {
       .filter((g): g is SubmitterGroup => g !== null);
   }
   
+  // make this to display only the initials and not numbers
   getGroupInitial(displayName: string): string {
     const v = String(displayName ?? '').trim();
     if (!v || v === '—') return '?';
-    return (v.charAt(0) || '?').toUpperCase();
-  }
+    return (v.match(/[A-Z]/g)?.join('') || '?').toUpperCase();  }
 
   onSearchChange(event: Event): void {
     this.searchTasks((event.target as HTMLInputElement).value);

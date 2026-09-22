@@ -42,10 +42,12 @@ export function formatDisplayNameFromEmail(name: string): string {
     .join(' ');
 }
 
+// make this to display only the initials and not numbers
 export function getDisplayInitial(name: string): string {
   const display = formatDisplayNameFromEmail(name);
-  return (display.charAt(0) || '?').toUpperCase();
+  return (display.match(/[A-Z]/g)?.join('') || '?').toUpperCase();
 }
+
 
 function getHrFileSearchTokens(name: string): {
   raw: string;
