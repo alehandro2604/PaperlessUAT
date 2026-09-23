@@ -41,6 +41,13 @@
   line-height: 1;
 }
 
+@media (max-width: 1024px) {
+  .change-task-date-btn {
+    width: 44px;
+    height: 44px;
+  }
+}
+
 .change-task-date-panel {
   position: absolute;
   top: calc(100% + 6px);

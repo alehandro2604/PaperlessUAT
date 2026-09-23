@@ -1,3 +1,5 @@
+import { Capacitor } from '@capacitor/core';
+
 // Single source of truth for environment config. Target: LIVE (sites/PaperlessLive).
 // There is deliberately no runtime config.json — everything reads from here.
 //
@@ -10,8 +12,11 @@ export const sharePointConfig = {
   tenantId: '331b05a3-d03f-421a-9573-f2db41268c2e',
   clientId: '45a7a07b-7d2b-4240-98cf-2847ae6245f9',
 
-  // --- LOCAL ---
-  redirectUri: 'http://localhost:4200',
+  // --- LOCAL (browser) / Android WebView ---
+  // The APK origin is https://localhost. That URI must also be a Single-page application redirect in Entra.
+  redirectUri: Capacitor.getPlatform() === 'android'
+    ? 'https://localhost'
+    : 'http://localhost:4200',
   backendUrl: 'http://localhost:3000',
 
   // --- UAT (https://swiftpaperlessuat.enemalta.lan) ---

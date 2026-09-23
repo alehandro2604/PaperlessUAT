@@ -65,6 +65,13 @@
   margin: 16px;
 }
 
+@media (max-width: 1024px) {
+  .delegate-form {
+    min-width: 0;
+    width: min(420px, calc(100vw - 32px));
+  }
+}
+
 @keyframes slideIn {
   from {
     opacity: 0;

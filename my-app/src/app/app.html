@@ -41,6 +41,18 @@
          ============================================================ -->
     <section class="card task-card" [class.active]="mobileCardView === 'task' || mobileCardView === 'todo' || mobileCardView === 'allFiles'" aria-label="Tasks">
       <div class="card-header">
+        <div class="mobile-screen-title">
+          <h2>{{ mobileSectionTitle }}</h2>
+          <button
+            *ngIf="showToDoSection"
+            type="button"
+            class="mobile-add-btn"
+            aria-label="Add task"
+            (click)="openPowerAppsModal()"
+          >
+            <i class="fi fi-br-plus" aria-hidden="true"></i>
+          </button>
+        </div>
         <div class="task-header-left">
           <div class="user-profile-display" *ngIf="currentUser && currentUser.username"
             [class.active]="!showToDoSection && !showAllFilesSection" (click)="toggleUserInfo()">
@@ -155,6 +167,14 @@
          ============================================================ -->
     <section class="card comment-card" [class.active]="mobileCardView === 'comments'" [hidden]="hideComments" aria-label="Comments">
       <div class="card-header">
+        <div class="mobile-detail-bar">
+          <button type="button" class="mobile-detail-back" (click)="closeMobileDetail()">Back</button>
+          <span class="mobile-detail-title">{{ mobileDetailTitle }}</span>
+          <div class="mobile-detail-switch" role="tablist" aria-label="Item details">
+            <button type="button" role="tab" [class.active]="mobileCardView === 'comments'" [attr.aria-selected]="mobileCardView === 'comments'" (click)="showMobileComments()">Comments</button>
+            <button type="button" role="tab" [class.active]="mobileCardView === 'attachments'" [attr.aria-selected]="mobileCardView === 'attachments'" (click)="showMobileAttachments()">Attachments</button>
+          </div>
+        </div>
         <div class="comment-title-group">
           <i class="fi fi-rr-comment-alt" aria-hidden="true"></i>
           <h2>
@@ -449,6 +469,14 @@
          ============================================================ -->
     <section class="card attachment-card" [class.active]="mobileCardView === 'attachments'" aria-label="Attachments">
       <div class="card-header">
+        <div class="mobile-detail-bar">
+          <button type="button" class="mobile-detail-back" (click)="closeMobileDetail()">Back</button>
+          <span class="mobile-detail-title">{{ mobileDetailTitle }}</span>
+          <div class="mobile-detail-switch" role="tablist" aria-label="Item details">
+            <button type="button" role="tab" [class.active]="mobileCardView === 'comments'" [attr.aria-selected]="mobileCardView === 'comments'" (click)="showMobileComments()">Comments</button>
+            <button type="button" role="tab" [class.active]="mobileCardView === 'attachments'" [attr.aria-selected]="mobileCardView === 'attachments'" (click)="showMobileAttachments()">Attachments</button>
+          </div>
+        </div>
         <div class="attachment-title-group">
           <i class="fi fi-rr-envelope" aria-hidden="true"></i>
           <h2 class="attachment-title">Attachments</h2>

@@ -1,28 +1,16 @@
 <div class="scene">
   <div class="nav-bar" id="navBar">
-    <div class="bubble-glow" id="glow"></div>
-    <div class="bubble" id="bubble">
-      <div id="bubbleSvg"></div>
-    </div>
     <div class="nav-item" [class.active]="activeIndex === 0" (click)="onTap(0)">
-      <img src="/account.png" alt="HR" class="nav-icon" />
+      <img src="/account.png" alt="" class="nav-icon" />
       <span class="nav-label">HR</span>
     </div>
     <div class="nav-item" [class.active]="activeIndex === 1" (click)="onTap(1)">
-      <img src="/todo.png" alt="To Do" class="nav-icon" />
+      <img src="/todo.png" alt="" class="nav-icon" />
       <span class="nav-label">To Do</span>
     </div>
     <div class="nav-item" [class.active]="activeIndex === 2" (click)="onTap(2)">
-      <img src="/allfiles.png" alt="All Files" class="nav-icon" />
+      <img src="/allfiles.png" alt="" class="nav-icon" />
       <span class="nav-label">All Files</span>
-    </div>
-    <div class="nav-item" [class.active]="activeIndex === 3" (click)="onTap(3)">
-      <img src="/speech-bubble.png" alt="Comments" class="nav-icon" />
-      <span class="nav-label">Comments</span>
-    </div>
-    <div class="nav-item" [class.active]="activeIndex === 4" (click)="onTap(4)">
-      <img src="/attach-file.png" alt="Attachments" class="nav-icon" />
-      <span class="nav-label">Attachments</span>
     </div>
   </div>
 </div>

@@ -1,4 +1,4 @@
-import {AfterViewInit,Component,EventEmitter, Input, OnChanges, Output, SimpleChanges, ViewEncapsulation } from '@angular/core';
+import { Component, EventEmitter, Input, Output, ViewEncapsulation } from '@angular/core';
 
 export type MobileCardView = 'task' | 'todo' | 'allFiles' | 'comments' | 'attachments' | 'files';
 
@@ -18,47 +18,6 @@ export function getMobileViewButtonLabel(view: MobileCardView): string {
   if (view === 'todo') return 'To Do';
   if (view === 'files') return 'Files';
   return 'Attachments';
-}
-
-export const mobileNavIconPaths = [
-  'account.png',
-  'todo.png',
-  'allfiles.png',
-  'speech-bubble.png',
-  'attach-file.png',
-  'file.png',
-];
-
-export function moveNavBubbleToItem(index: number): void {
-  setTimeout(() => {
-    const navBar = document.getElementById('navBar');
-    const items = navBar?.querySelectorAll('.nav-item') ?? [];
-    const bubble = document.getElementById('bubble');
-    const glow = document.getElementById('glow');
-
-    if (navBar && items[index] && bubble && glow) {
-      const barRect = navBar.getBoundingClientRect();
-      const itemRect = items[index].getBoundingClientRect();
-      const cx = itemRect.left - barRect.left + itemRect.width / 2;
-
-      bubble.style.left = cx - 25 + 'px';
-      glow.style.left = cx - 33 + 'px';
-    }
-  });
-}
-
-export function setNavBubbleIcon(index: number): void {
-  const bubbleIcon = document.getElementById('bubbleSvg');
-  if (bubbleIcon) {
-    bubbleIcon.innerHTML = `<img src="${mobileNavIconPaths[index]}" style="width:24px;height:24px;display:block;filter:brightness(0) invert(1);" />`;
-  }
-}
-
-export function setupMobileBottomNav(): void {
-  setTimeout(() => {
-    moveNavBubbleToItem(0);
-    setNavBubbleIcon(0);
-  });
 }
 
 export const MOBILE_NAV_INDEX = {
@@ -90,18 +49,17 @@ export function getAllFilesTabMobileState(): {
   return { mobileCardView: 'allFiles', activeNavIndex: MOBILE_NAV_INDEX.allFiles };
 }
 
+/** Detail screens keep the section the user came from highlighted in the bar. */
 export function getCommentsTabMobileState(): {
   mobileCardView: MobileCardView;
-  activeNavIndex: number;
 } {
-  return { mobileCardView: 'comments', activeNavIndex: MOBILE_NAV_INDEX.comments };
+  return { mobileCardView: 'comments' };
 }
 
 export function getAttachmentsTabMobileState(): {
   mobileCardView: MobileCardView;
-  activeNavIndex: number;
 } {
-  return { mobileCardView: 'attachments', activeNavIndex: MOBILE_NAV_INDEX.attachments };
+  return { mobileCardView: 'attachments' };
 }
 
 export type MobileNavClickAction =
@@ -206,26 +164,11 @@ export function handleMobileNavTap(
   styleUrls: ['./mobile-navigation-bar.css'],
   encapsulation: ViewEncapsulation.None,
 })
-export class MobileNavigationComponent implements AfterViewInit, OnChanges {
+export class MobileNavigationComponent {
   @Input() activeIndex = 0;
   @Output() navItemClick = new EventEmitter<number>();
 
-  ngAfterViewInit(): void {
-    this.updateBubble(this.activeIndex);
-  }
-
-  ngOnChanges(changes: SimpleChanges): void {
-    if (changes['activeIndex'] && !changes['activeIndex'].firstChange) {
-      this.updateBubble(this.activeIndex);
-    }
-  }
-
   onTap(index: number): void {
     this.navItemClick.emit(index);
-  }
-
-  private updateBubble(index: number): void {
-    moveNavBubbleToItem(index);
-    setNavBubbleIcon(index);
   }
 }

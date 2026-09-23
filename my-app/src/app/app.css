@@ -17,7 +17,7 @@
 
 
 
-@media (max-width: 768px) {
+@media (max-width: 1024px) {
   :host {
     overflow: visible;
   }
@@ -3203,8 +3203,13 @@
 .eform-header--mobile {
   display: none;
 }
-/* Mobile view making 1 card visible and a btn is clicked to show comments and attachments instead of task card */
-@media (max-width: 600px) {
+
+.mobile-screen-title,
+.mobile-detail-bar {
+  display: none;
+}
+/* Phone and tablet: one card at a time, with a detail screen for comments and attachments */
+@media (max-width: 1024px) {
 
   /* Main layout adjustments */
   .main-layout {
@@ -3311,6 +3316,8 @@
   .attachment-card,
   .comment-card {
     display: none;
+    margin-left: 0;
+    width: 100%;
   }
 
   .task-card.active,
@@ -3321,6 +3328,102 @@
     width: 100%;
     min-height: auto;
     justify-self: center;
+  }
+
+  .task-card .card-header,
+  .comment-card .card-header,
+  .attachment-card .card-header {
+    flex-wrap: wrap;
+  }
+
+  .comment-title-group,
+  .attachment-title-group {
+    display: none;
+  }
+
+  .mobile-screen-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    min-height: 48px;
+  }
+
+  .mobile-screen-title h2 {
+    margin: 0;
+    font-size: 20px;
+  }
+
+  .mobile-add-btn {
+    width: 44px;
+    height: 44px;
+    border: 0;
+    border-radius: 50%;
+    background: #1f66ff;
+    color: #ffffff;
+    display: grid;
+    place-items: center;
+    font-size: 20px;
+    cursor: pointer;
+  }
+
+  .mobile-detail-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    flex: 1 0 100%;
+    padding: 4px 0 8px;
+  }
+
+  .mobile-detail-back {
+    min-height: 44px;
+    padding: 0 4px;
+    border: 0;
+    background: transparent;
+    color: #1f66ff;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .mobile-detail-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 16px;
+    font-weight: 700;
+    color: #1b2a3a;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-detail-switch {
+    display: flex;
+    flex: 1 0 100%;
+    gap: 3px;
+    padding: 3px;
+    border-radius: 10px;
+    background: #f3f4f6;
+  }
+
+  .mobile-detail-switch button {
+    flex: 1;
+    min-height: 40px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: #4b5563;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .mobile-detail-switch button.active {
+    background: #ffffff;
+    color: #1f66ff;
   }
 
   /* Touch-friendly button sizes */
@@ -3909,10 +4012,10 @@
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 1024px) {
   .scene {
     position: fixed;
-    bottom: 16px;
+    bottom: max(12px, env(safe-area-inset-bottom));
     left: 50%;
     transform: translateX(-50%);
     background: #ffffff;
@@ -3949,7 +4052,8 @@
     justify-content: center;
     flex: 1;
     min-width: 0;
-    height: 44px;
+    min-height: 48px;
+    height: auto;
     cursor: pointer;
     margin: 0;
     gap: 4px;
@@ -3971,12 +4075,12 @@
   }
 
   .nav-item.active .nav-icon {
-    opacity: 0;
-    transform: scale(1.1);
+    opacity: 1;
+    filter: brightness(0) saturate(100%) invert(31%) sepia(98%) saturate(2476%) hue-rotate(212deg) brightness(101%) contrast(101%);
   }
 
   .nav-label {
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 500;
     color: #6b7280;
     transition: color 0.25s;
@@ -4033,7 +4137,12 @@
   }
 
   /* Add padding to main content to account for fixed bottom nav */
+  .bubble,
+  .bubble-glow {
+    display: none;
+  }
+
   main.main-layout {
-    padding-bottom: 80px !important;
+    padding-bottom: calc(88px + env(safe-area-inset-bottom)) !important;
   }
 }

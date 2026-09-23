@@ -1,4 +1,4 @@
-﻿/* Mobile styles — loaded via app component styleUrls */
+/* Mobile styles — loaded via app component styleUrls */
 
 
 /* Mobile-specific loader optimizations */
@@ -182,8 +182,8 @@
 .eform-header--mobile {
   display: none;
 }
-/* Mobile view making 1 card visible and a btn is clicked to show comments and attachments instead of task card */
-@media (max-width: 600px) {
+/* Phone and tablet: one card at a time, with a detail screen for comments and attachments */
+@media (max-width: 1024px) {
 
   /* Main layout adjustments */
   .main-layout {
@@ -284,6 +284,8 @@
   .attachment-card,
   .comment-card {
     display: none;
+    margin-left: 0;
+    width: 100%;
   }
 
   .task-card.active,
@@ -861,9 +863,9 @@
 }
 
 /* Floating action button — mobile only */
-@media (max-width: 768px) {
+@media (max-width: 1024px) {
   .small-action.mobile {
-    display: grid;
+    display: none !important;
     place-items: center;
     position: fixed;
     bottom: 108px;
@@ -902,6 +904,6 @@
 /* Add padding to main content to account for fixed bottom nav */
 @media (max-width: 768px) {
   main.main-layout {
-    padding-bottom: 80px !important;
+    padding-bottom: calc(88px + env(safe-area-inset-bottom)) !important;
   }
 }

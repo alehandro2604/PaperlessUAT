@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // IMPORTS & DEPENDENCIES
 // ============================================================
 import { CommonModule } from '@angular/common';
@@ -5124,6 +5124,7 @@ export class AppComponent implements OnInit, OnDestroy {
       /** Newest LookupId pages only — merge into the existing 800+ cache instead of re-reading it. */
       softRefresh?: boolean;
     },
+    
   ): Promise<any[]> {
     const userEmail = (this.currentUser?.email ?? '').toLowerCase();
     const userUpn = (this.currentUser?.userPrincipalName ?? '').toLowerCase();
@@ -6937,9 +6938,76 @@ export class AppComponent implements OnInit, OnDestroy {
   // ============================================================
   // MOBILE NAVIGATION
   // ============================================================
-  protected activeNavIndex = MOBILE_NAV_INDEX.todo;
+  protected activeNavIndex: number = MOBILE_NAV_INDEX.todo;
+
+  protected get mobileSectionTitle(): string {
+    if (this.showAllFilesSection) return 'All Files';
+    if (this.showToDoSection) return 'To Do';
+    return 'HR';
+  }
+
+  protected get mobileDetailTitle(): string {
+    return (
+      this.selectedFolderName ||
+      this.selectedSubmitter ||
+      this.currentFolderName ||
+      this.selectedEFormTitle ||
+      'Details'
+    );
+  }
+
+  /** Leave Comments / Attachments and return to the list the user came from. */
+  protected closeMobileDetail(): void {
+    if (this.showAllFilesSection) {
+      this.mobileCardView = 'allFiles';
+      this.activeNavIndex = MOBILE_NAV_INDEX.allFiles;
+    } else if (this.showToDoSection) {
+      this.mobileCardView = 'todo';
+      this.activeNavIndex = MOBILE_NAV_INDEX.todo;
+    } else {
+      this.mobileCardView = 'task';
+      this.activeNavIndex = MOBILE_NAV_INDEX.task;
+    }
+    this.refreshView();
+  }
+
+  protected showMobileComments(): void {
+    this.hideComments = false;
+    this.mobileCardView = 'comments';
+    this.syncMobileSearchInput();
+    this.refreshView();
+  }
+
+  protected showMobileAttachments(): void {
+    this.mobileCardView = 'attachments';
+    if (
+      this.currentLibraryDriveId ||
+      this.attachmentBrowsingRoot ||
+      this.currentFolderId ||
+      (this.showUserFile && this.userFiles.length > 0)
+    ) {
+      this.showUserFile = true;
+      this.refreshView();
+      return;
+    }
+    if (this.currentUser?.email) {
+      if (this.hasLoadedPersonalFiles) {
+        this.showMyFilesPanel();
+      } else {
+        this.openMyFiles();
+      }
+    }
+    this.refreshView();
+  }
 
   protected onNavItemClick(index: number): void {
+    const onDetail =
+      this.mobileCardView === 'comments' || this.mobileCardView === 'attachments';
+    if (onDetail && index === this.activeNavIndex) {
+      this.closeMobileDetail();
+      return;
+    }
+
     const action = resolveMobileNavClick(
       index,
       this.activeNavIndex,
