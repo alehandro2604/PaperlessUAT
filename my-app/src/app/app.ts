@@ -4748,20 +4748,6 @@ export class AppComponent implements OnInit, OnDestroy {
       this.refreshView();
     };
 
-    // Comments panel: paint each finished list batch instead of waiting for every list.
-    let paintedPartialComments = false;
-    const publishPartialComments = (partialItems: any[]): void => {
-      if (!updateCommentItems || hrCommentsLoadSeq === undefined || isStaleCommentsLoad()) return;
-      if (partialItems.length === 0 || this.isFolderTaskCommentsViewActive()) return;
-      this.commentItems = this.sortCommentItemsByDateDesc(partialItems);
-      this.invalidateCommentFilters(!paintedPartialComments);
-      this.commentsMessage = '';
-      this.isLoadingComments = false;
-      this.isLoadingMoreComments = true;
-      paintedPartialComments = true;
-      this.refreshView();
-    };
-
     const isCacheableRecentUserLoad =
       !subordinateTasksOnly &&
       !!range?.createdSinceIso &&
@@ -4909,9 +4895,6 @@ export class AppComponent implements OnInit, OnDestroy {
           const batchResults = await Promise.all(batch.map(listName => fetchOneList(listName)));
           listResults.push(...batchResults);
           publishPartialTodo(listResults.flat());
-          if (i + listConcurrency < listsToQuery.length) {
-            publishPartialComments(listResults.flat());
-          }
           if (i + listConcurrency < listsToQuery.length && !progressiveTodo) {
             await this.sleep(AppComponent.HR_TASK_LIST_BATCH_GAP_MS);
           }
@@ -4953,16 +4936,13 @@ export class AppComponent implements OnInit, OnDestroy {
         if (isStaleCommentsLoad()) return allItems;
         if (this.isFolderTaskCommentsViewActive()) {
           this.isLoadingComments = false;
-          if (paintedPartialComments) this.isLoadingMoreComments = false;
           this.refreshView();
           return allItems;
         }
         this.commentItems = allItems;
-        // Keep the Load more position if the user already paged through a partial paint.
-        this.invalidateCommentFilters(!paintedPartialComments);
+        this.invalidateCommentFilters();
         this.commentsMessage = '';
         this.isLoadingComments = false;
-        if (paintedPartialComments) this.isLoadingMoreComments = false;
         this.userHrTasksLoaded = true;
         this.refreshView();
         if (kickoffOlderBackfill && range?.createdSinceIso && !isStaleCommentsLoad()) {
@@ -4989,7 +4969,6 @@ export class AppComponent implements OnInit, OnDestroy {
         if (!isStaleCommentsLoad()) {
           this.commentsMessage = `Failed to load HR Tasks: ${(error as any)?.message || 'Unknown error'}.`;
           this.isLoadingComments = false;
-          if (paintedPartialComments) this.isLoadingMoreComments = false;
           this.refreshView();
         }
       }
