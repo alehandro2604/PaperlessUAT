@@ -859,6 +859,8 @@ export class TodoListComponent implements OnInit, OnDestroy {
         rawFields[key] = dueDate;
         wroteRaw = true;
         break;
+
+    
       }
     }
     if (!wroteRaw) rawFields['DueDate'] = dueDate;

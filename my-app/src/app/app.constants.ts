@@ -66,6 +66,13 @@ export const AppConstants = {
   /** Max parallel Graph list-item fetches when opening an HR Files person (avoids 429 throttling). */
   hrFilesTaskListConcurrency: 2,
   /**
+   * Click-path concurrency for one HR person (worker pool, no batch gaps).
+   * Only one person loads at a time here, so this can exceed the prefetch limit.
+   */
+  hrFilesInteractiveListConcurrency: 4,
+  /** Reopening a person within this window of a full crawl skips the Graph soft refresh. */
+  hrFilesSkipSoftRefreshMs: 5 * 60 * 1000,
+  /**
    * First pass pages per list only when LookupId cannot be used.
    * Keep small — HR Files fans out across many lists; deep scans freeze the UI.
    */
@@ -113,6 +120,10 @@ export const AppConstants = {
   hrFilesTaskPrefetchConcurrency: 2,
   hrFilesTaskPrefetchDelayMs: 500,
   hrFilesTaskPrefetchBatchGapMs: 400,
+  /** All-access users: wait this long after login before trickle-warming every HR person. */
+  hrFilesWarmAllStartDelayMs: 15000,
+  /** Gap between people in the trickle warm — keeps Graph well under 429 limits. */
+  hrFilesWarmAllGapMs: 3000,
 
   /**
    * All Files document-library folder Comments only (not HRPersonal).

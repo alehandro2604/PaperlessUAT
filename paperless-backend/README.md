@@ -42,6 +42,7 @@ npm run dev     # nodemon, auto-restart on changes (or: npm start)
 ```
 
 - `GET /api/health` — no auth; confirms server + Redis are up.
+- `GET /api/metrics/ram` — requires auth; Redis RAM by shared vs per-user cache (for sizing the VM / Azure Cache). Or on the server: `npm run ram-report`.
 - `GET /api/tasks/:personEmail?list=<listNameOrId>` — requires
   `Authorization: Bearer <token for this API>`; checks Redis first, falls back
   to Graph, caches for `CACHE_TTL_SECONDS` (default 300).

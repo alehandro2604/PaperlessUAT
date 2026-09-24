@@ -41,10 +41,22 @@
   line-height: 1;
 }
 
+/* Rounded tile so the icon reads as part of the card, not a floating glyph */
+.change-task-date-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--brand-blue, #0078d4) 10%, #ffffff);
+  color: var(--brand-blue, #0078d4);
+}
+
 @media (max-width: 1024px) {
   .change-task-date-btn {
     width: 44px;
     height: 44px;
+    background: color-mix(in srgb, var(--brand-blue, #0078d4) 10%, #ffffff);
+    color: var(--brand-blue, #0078d4);
+    font-size: 18px;
   }
 }
 

@@ -170,9 +170,23 @@
                 </div>
 
                 <div class="eform-mobile-grid">
+                  <div class="eform-mobile-field" *ngIf="eform.eFormDetails?.category">
+                    <span class="eform-mobile-label">Category</span>
+                    <span class="eform-mobile-value">{{ eform.eFormDetails.category }}</span>
+                  </div>
                   <div class="eform-mobile-field" *ngIf="eform.eFormDetails?.eFormListId">
                     <span class="eform-mobile-label">eForm List ID</span>
                     <span class="eform-mobile-value">{{ eform.eFormDetails.eFormListId }}</span>
+                  </div>
+                  <div class="eform-mobile-field">
+                    <span class="eform-mobile-label">Submitted by</span>
+                    <span class="eform-mobile-value">{{ eform.submittedBy }}</span>
+                  </div>
+                  <div
+                    class="eform-mobile-field"
+                    *ngIf="eform.eFormDetails?.customCreatedDate || eform.eFormDetails?.submittedDate">
+                    <span class="eform-mobile-label">Submitted Date</span>
+                    <span class="eform-mobile-value">{{ (eform.eFormDetails.customCreatedDate || eform.eFormDetails.submittedDate) | date:'dd/MM/yyyy hh:mm a' }}</span>
                   </div>
                   <div
                     class="eform-mobile-field"
@@ -202,20 +216,6 @@
                     *ngIf="eform.eFormDetails?.customModifiedDate">
                     <span class="eform-mobile-label">Modified Date</span>
                     <span class="eform-mobile-value">{{ eform.eFormDetails.customModifiedDate | date:'dd/MM/yyyy hh:mm a' }}</span>
-                  </div>
-                  <div class="eform-mobile-field" *ngIf="eform.eFormDetails?.category">
-                    <span class="eform-mobile-label">Category</span>
-                    <span class="eform-mobile-value">{{ eform.eFormDetails.category }}</span>
-                  </div>
-                  <div class="eform-mobile-field">
-                    <span class="eform-mobile-label">Submitted by</span>
-                    <span class="eform-mobile-value">{{ eform.submittedBy }}</span>
-                  </div>
-                  <div
-                    class="eform-mobile-field"
-                    *ngIf="eform.eFormDetails?.customCreatedDate || eform.eFormDetails?.submittedDate">
-                    <span class="eform-mobile-label">Submitted Date</span>
-                    <span class="eform-mobile-value">{{ (eform.eFormDetails.customCreatedDate || eform.eFormDetails.submittedDate) | date:'dd/MM/yyyy hh:mm a' }}</span>
                   </div>
                 </div>
               </div>

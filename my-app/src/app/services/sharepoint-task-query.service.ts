@@ -369,6 +369,12 @@ export class SharePointTaskQueryService {
     return '';
   }
 
+  /** Seed the in-memory LookupId map from a cached (e.g. shared Redis) value. */
+  primeSharePointUserLookupId(email: string, lookupId: string): void {
+    const emailLower = email.trim().toLowerCase();
+    if (emailLower && lookupId) this.sharePointUserLookupIdByEmail.set(emailLower, lookupId);
+  }
+
   /** Resolve SharePoint site-local user Id (LookupId) from email via User Information List. */
   async resolveSharePointUserLookupId(email: string, token: string): Promise<string | null> {
     const emailLower = email.trim().toLowerCase();

@@ -26,6 +26,9 @@
           <span class="future-tasks-cutoff">after {{ futureTasksCutoffDisplay }}</span>
         </span>
       </label>
+      <span class="future-tasks-note" *ngIf="showFutureTasks">
+        Showing tasks after <strong>{{ futureTasksCutoffDisplay }}</strong>
+      </span>
     </div>
   </div>
   <!-- Todo content -->
@@ -112,8 +115,9 @@
             ></app-change-task-date>
             <div class="user-info">
               <span class="user-meta">{{ sub.taskLabel }}</span>
-              <span class="user-meta" *ngIf="sub.eFormListId">eForm ID: {{ sub.eFormListId }}</span>
-              <span class="user-meta">{{ sub.tasks[0].createdDate | date:'dd/MM/yyyy HH:mm' }}</span>
+              <span class="user-meta">
+                <ng-container *ngIf="sub.eFormListId">eForm {{ sub.eFormListId }} · </ng-container>{{ sub.tasks[0].createdDate | date:'dd/MM/yyyy HH:mm' }}
+              </span>
             </div>
             <span
               class="subgroup-due-date"

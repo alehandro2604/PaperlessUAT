@@ -904,3 +904,86 @@
   border-color: var(--brand-blue);
   box-shadow: 0 0 0 2px rgba(0, 120, 212, 0.1);
 }
+
+
+/* The To Do panel is a narrow column on every screen size (phone and laptop),
+   so the stacked card layout below applies at all widths. */
+@media all {
+  /* Row 1: icon | title + meta | arrow — Row 2: due date | actions */
+  .subgroup-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "icon info arrow"
+      "due  due  actions";
+    align-items: center;
+    column-gap: 12px;
+    row-gap: 0;
+    padding: 14px;
+    border-radius: 14px;
+    background: #ffffff;
+  }
+  .subgroup-item > app-change-task-date { grid-area: icon; align-self: start; }
+  .subgroup-item .user-info { grid-area: info; gap: 3px; }
+  .subgroup-item .user-info .user-meta:first-child { font-size: 14px; line-height: 1.3; }
+  .subgroup-item .user-arrow { grid-area: arrow; margin-left: 0; }
+  .subgroup-due-date,
+  .subgroup-actions {
+    margin: 12px 0 0;
+    padding-top: 12px;
+    border-top: 1px solid #eef0f4;
+    align-self: stretch;
+  }
+  .subgroup-due-date { grid-area: due; justify-content: center; }
+  /* Pull left across the column gap so the divider is one unbroken line */
+  .subgroup-actions { grid-area: actions; justify-content: flex-end; margin-left: -12px; padding-left: 12px; }
+  .subgroup-due-date {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 14px;
+    font-weight: 700;
+    color: #b86b3d;
+  }
+  .subgroup-due-date::before {
+    content: 'DUE';
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #6b7280;
+  }
+
+  /* Filters: two equal pills, cutoff note on its own line below */
+  .todo-title-row { justify-content: stretch; }
+  .title-filters {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+    gap: 8px;
+  }
+  .filter-toggle { justify-content: center; min-height: 40px; }
+  .future-tasks-cutoff { display: none; }
+  .future-tasks-note {
+    grid-column: 1 / -1;
+    font-size: 13px;
+    color: #4b5563;
+  }
+  .future-tasks-note strong { color: #b86b3d; }
+
+  /* Expanded employee row: filled blue header */
+  .user-list-item.todo-group-item.is-expanded {
+    background: var(--brand-blue, #0078d4);
+    border-color: var(--brand-blue, #0078d4);
+    color: #ffffff;
+  }
+  .todo-group-item.is-expanded .user-identifier { color: #ffffff; }
+  .todo-group-item.is-expanded .user-meta,
+  .todo-group-item.is-expanded .user-email { color: rgba(255, 255, 255, 0.85); }
+  .todo-group-item.is-expanded .list-item-avatar,
+  .todo-group-item.is-expanded .task-count-badge {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.22);
+  }
+  .todo-group-item .user-arrow { transition: transform 140ms ease; }
+  .todo-group-item.is-expanded .user-arrow { color: #ffffff; transform: rotate(90deg); }
+}

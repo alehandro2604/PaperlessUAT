@@ -11,6 +11,7 @@ import { FormsModule } from '@angular/forms';
 import { FormConfigurationService } from '../../services/form-configuration.service';
 import { FileCrawlCacheService } from '../../services/file-crawl.service';
 import { AppDropdownComponent, AppDropdownOption } from '../app-dropdown/app-dropdown.component';
+import { Subscription } from 'rxjs';
 
 export interface SpFile {
   createdBy?: string;
@@ -235,6 +236,8 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   /** SharePoint tasks from every document-library task list — Comments search, 100/page. */
   private allLibraryTasks: LibraryTaskItem[] = [];
   isLoadingCommentTasks = false;
+  /** True for any Comments index Graph pull, including quiet ones with no spinner. */
+  private commentTasksFetchInFlight = false;
   isLoadingMoreCommentTasks = false;
   hasMoreCommentTasks = false;
   /** True while search auto-pages remaining tasks in the background. */
@@ -281,6 +284,8 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   private prefetchEmitTimer: ReturnType<typeof setTimeout> | null = null;
   private commentSearchFilterTimer: ReturnType<typeof setTimeout> | null = null;
   private lastPrefetchSignature = '';
+  private readonly subscriptions = new Subscription();
+  private viewDestroyed = false;
 
   constructor(
     private http: HttpClient,
@@ -289,19 +294,15 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     private cdr: ChangeDetectorRef,
     private formConfig: FormConfigurationService,
     private fileCrawlCache: FileCrawlCacheService,
-  ) {
-    this.formConfig.documentLibraries$.subscribe((libraries) => {
-      this.documentLibraries = libraries;
-      if (libraries.length > 0 && !this.selectedLibrary) {
-        this.selectedLibrary = libraries[0].name;
-        // Default view is "All" — load libraries sequentially (HR-style), not in parallel.
-        void this.loadAllLibrariesFiles();
-      }
-    });
-    this.formConfig.documentLibraryTaskMap$.subscribe((map) => {
-      this.documentLibraryTaskMap = map ?? {};
-      // Comments search uses per-folder All Files caches — do not warm a global 30k+ index.
-    });
+  ) {}
+
+  /**
+   * Runs change detection only while the view is alive. Async crawls finish after
+   * the user navigates away; detectChanges on a torn-down view throws.
+   */
+  private refreshView(): void {
+    if (this.viewDestroyed) return;
+    this.cdr.detectChanges();
   }
 
   private sleep(ms: number): Promise<void> {
@@ -422,12 +423,31 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     }
   }
 
-  async ngOnInit(): Promise<void> {
-    // documentLibraries$ subscription (in the constructor) populates the sorted
-    // list and triggers the initial file load once libraries are available.
+  ngOnInit(): void {
+    // Subscribe here, not in the constructor: documentLibraries$ replays synchronously
+    // when forms are already loaded, and a cached crawl would run detectChanges before
+    // the view has its component context (TypeError reading 'filterType' of null).
+    this.subscriptions.add(
+      this.formConfig.documentLibraries$.subscribe((libraries) => {
+        this.documentLibraries = libraries;
+        if (libraries.length > 0 && !this.selectedLibrary) {
+          this.selectedLibrary = libraries[0].name;
+          // Default view is "All" — load libraries sequentially (HR-style), not in parallel.
+          void this.loadAllLibrariesFiles();
+        }
+      }),
+    );
+    this.subscriptions.add(
+      this.formConfig.documentLibraryTaskMap$.subscribe((map) => {
+        this.documentLibraryTaskMap = map ?? {};
+        // Comments search uses per-folder All Files caches — do not warm a global 30k+ index.
+      }),
+    );
   }
 
   ngOnDestroy(): void {
+    this.viewDestroyed = true;
+    this.subscriptions.unsubscribe();
     this.commentTasksWarmAborted = true;
     if (this.searchDebounceTimer) clearTimeout(this.searchDebounceTimer);
     if (this.prefetchEmitTimer) clearTimeout(this.prefetchEmitTimer);
@@ -453,7 +473,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         }
         this.isLoadingAllLibraries = false;
         this.allLibrariesCrawlActive = false;
-        this.cdr.detectChanges();
+        this.refreshView();
         return;
       }
     }
@@ -466,7 +486,11 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
 
       const drivesResponse = await this.getDrivesCached(token);
 
-      this.allLibrariesFiles = [];
+      // Keep the current list on screen while reloading; each library swaps in its
+      // own rows as they arrive. Clearing up front made whole libraries (e.g. Call
+      // for Applications) vanish mid-refresh, and for good when one fetch failed.
+      const previousFiles = this.allLibrariesFiles;
+      let anyLibraryFailed = false;
       const drivesByName = new Map(
         (drivesResponse.value ?? []).map((d) => [d.name, d])
       );
@@ -490,7 +514,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
           if (this.filterType !== 'files') {
             this.applyFilters();
             this.isLoadingAllLibraries = false;
-            this.cdr.detectChanges();
+            this.refreshView();
           }
           continue;
         }
@@ -507,7 +531,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
               if (this.filterType !== 'files') {
                 this.applyFilters();
                 this.isLoadingAllLibraries = false;
-                this.cdr.detectChanges();
+                this.refreshView();
               }
             }
           );
@@ -517,13 +541,30 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
           this.writeLibraryFilesCache(library.name, items, null, drive.id);
         } catch (err) {
           console.error(`Failed to load files from library ${library.name}:`, err);
+          anyLibraryFailed = true;
+          // Put back what we had for this library rather than a partial/empty list.
+          const previousForLibrary = previousFiles.filter((f) => f.libraryName === library.name);
+          const current = this.allLibrariesFiles.filter((f) => f.libraryName === library.name);
+          if (previousForLibrary.length > current.length) {
+            const others = this.allLibrariesFiles.filter((f) => f.libraryName !== library.name);
+            this.allLibrariesFiles = [...others, ...previousForLibrary];
+          }
         }
 
         // Pace libraries so Graph doesn't throttle the session.
         await this.sleep(GRAPH_PAGE_GAP_MS);
       }
 
-      this.fileCrawlCache.set(AllFilesComponent.ALL_ROOT_CACHE_KEY, this.allLibrariesFiles);
+      // Drop rows for libraries no longer configured (list was not cleared up front).
+      const configured = new Set(this.documentLibraries.map((l) => l.name));
+      this.allLibrariesFiles = this.allLibrariesFiles.filter(
+        (f) => !f.libraryName || configured.has(f.libraryName)
+      );
+
+      // ALL_ROOT means "finished crawl" — never cache a list missing a failed library.
+      if (!anyLibraryFailed) {
+        this.fileCrawlCache.set(AllFilesComponent.ALL_ROOT_CACHE_KEY, this.allLibrariesFiles);
+      }
       this.seedLibraryCachesFromAllRoot(this.allLibrariesFiles);
     } catch (err: any) {
       console.error('Failed to load all libraries files:', err);
@@ -533,7 +574,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       }
       this.isLoadingAllLibraries = false;
       this.allLibrariesCrawlActive = false;
-      this.cdr.detectChanges();
+      this.refreshView();
     }
   }
 
@@ -614,7 +655,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         }
         if (
           this.commentTasksWarmPaused ||
-          this.isLoadingCommentTasks ||
+          this.commentTasksFetchInFlight ||
           this.isSearchingMoreCommentTasks
         ) {
           await this.sleep(COMMENT_TASKS_GAP_MS);
@@ -623,7 +664,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         const token = await this.authService.acquireSharePointToken();
         if (!token) break;
         await this.fetchNextCommentTasksPage(token);
-        if (this.filterType === 'comments') this.cdr.detectChanges();
+        if (this.filterType === 'comments') this.refreshView();
         await this.sleep(COMMENT_TASKS_GAP_MS);
       }
     } catch (err) {
@@ -642,7 +683,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     this.commentTasksSiteId = cached.siteId ?? sharePointConfig.siteId;
     if (this.filterType === 'comments') {
       this.applyFilters();
-      this.cdr.detectChanges();
+      this.refreshView();
     }
   }
 
@@ -650,7 +691,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   private async loadAllLibraryTasksForCommentsSearch(
     options: { quiet?: boolean } = {},
   ): Promise<void> {
-    if (this.isLoadingCommentTasks) return;
+    if (this.isLoadingCommentTasks || this.commentTasksFetchInFlight) return;
     if (this.allLibraryTasks.length > 0) {
       if (this.filterType === 'comments') this.applyFilters();
       return;
@@ -681,15 +722,16 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   private async refreshCommentTasksFromGraph(
     options: { quiet?: boolean } = {},
   ): Promise<void> {
-    if (this.isLoadingCommentTasks) return;
+    if (this.isLoadingCommentTasks || this.commentTasksFetchInFlight) return;
 
+    // Quiet (background) pulls must not flip the visible spinner flag — the
+    // template uses it to hide results, which made folders vanish mid-refresh.
+    this.commentTasksFetchInFlight = true;
     const showSpinner = !options.quiet && this.filterType === 'comments';
     if (showSpinner) {
       this.isLoadingCommentTasks = true;
       this.hasMoreCommentTasks = false;
-      this.cdr.detectChanges();
-    } else {
-      this.isLoadingCommentTasks = true;
+      this.refreshView();
     }
 
     try {
@@ -713,8 +755,9 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     } catch (err) {
       console.error('Failed to load library tasks for comment search:', err);
     } finally {
+      this.commentTasksFetchInFlight = false;
       this.isLoadingCommentTasks = false;
-      this.cdr.detectChanges();
+      this.refreshView();
     }
   }
 
@@ -752,14 +795,14 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         this.commentSearchFilterTimer = null;
       }
       this.applyFilters();
-      this.cdr.detectChanges();
+      this.refreshView();
       return;
     }
     if (this.commentSearchFilterTimer) return;
     this.commentSearchFilterTimer = setTimeout(() => {
       this.commentSearchFilterTimer = null;
       this.applyFilters();
-      this.cdr.detectChanges();
+      this.refreshView();
     }, COMMENT_TASKS_SEARCH_UI_THROTTLE_MS);
   }
 
@@ -787,7 +830,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   async loadMoreCommentTasks(): Promise<void> {
     if (this.isLoadingMoreCommentTasks || !this.hasMoreCommentTasks) return;
     this.isLoadingMoreCommentTasks = true;
-    this.cdr.detectChanges();
+    this.refreshView();
     try {
       const token = await this.authService.acquireSharePointToken();
       if (!token) return;
@@ -796,7 +839,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       console.error('Failed to load more comment tasks:', err);
     } finally {
       this.isLoadingMoreCommentTasks = false;
-      this.cdr.detectChanges();
+      this.refreshView();
     }
   }
 
@@ -815,7 +858,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     if (!this.searchTerm.trim() || !this.hasMoreCommentTasks) return;
 
     this.isSearchingMoreCommentTasks = true;
-    this.cdr.detectChanges();
+    this.refreshView();
     try {
       while (
         this.hasMoreCommentTasks &&
@@ -830,7 +873,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         const token = await this.authService.acquireSharePointToken();
         if (!token) break;
         await this.fetchNextCommentTasksPage(token);
-        this.cdr.detectChanges();
+        this.refreshView();
         await this.sleep(COMMENT_TASKS_GAP_MS);
       }
     } catch (err) {
@@ -850,7 +893,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     if (!this.searchTerm.trim() || !this.hasMoreFiles) return;
 
     this.isSearchingMoreFiles = true;
-    this.cdr.detectChanges();
+    this.refreshView();
     try {
       while (this.hasMoreFiles && this.searchTerm.trim() && this.filterType === 'files') {
         const before = this.allFiles.length;
@@ -862,7 +905,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       console.error('Background file search failed:', err);
     } finally {
       this.isSearchingMoreFiles = false;
-      this.cdr.detectChanges();
+      this.refreshView();
     }
   }
 
@@ -1019,7 +1062,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     this.childFoldersByFolderId.delete(folderId);
     this.expandedFolderIds.delete(folderId);
     this.pendingChildSubjectFolderIds.add(folderId);
-    this.cdr.detectChanges();
+    this.refreshView();
   }
 
   /** Display each folder named by ChildSubject/ChildSubject2 once — no other subfolders. */
@@ -1044,7 +1087,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         void this.hydrateChildFolders(parent);
       }
     }
-    this.cdr.detectChanges();
+    this.refreshView();
   }
 
   /** Called when Attachments finishes loading a folder's drive children into cache. */
@@ -1115,13 +1158,13 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
 
     if (this.expandedFolderIds.has(folder.id)) {
       this.expandedFolderIds.delete(folder.id);
-      this.cdr.detectChanges();
+      this.refreshView();
       return;
     }
     this.expandedFolderIds.clear();
     this.expandedFolderIds.add(folder.id);
     void this.hydrateChildFolders(folder);
-    this.cdr.detectChanges();
+    this.refreshView();
   }
 
   /** Resolve ChildSubject folders from library root + filtered physical drive children. */
@@ -1136,7 +1179,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         folder.id,
         this.filterAllowedChildFolders(this.mapCachedChildrenToSpFiles(cached, folder), allowedNames)
       );
-      this.cdr.detectChanges();
+      this.refreshView();
       return;
     }
 
@@ -1179,12 +1222,12 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         folder.id,
         this.filterAllowedChildFolders(this.mapCachedChildrenToSpFiles(cached, folder), allowedNames)
       );
-      this.cdr.detectChanges();
+      this.refreshView();
       return;
     }
 
     this.loadingChildFolderIds.add(folder.id);
-    this.cdr.detectChanges();
+    this.refreshView();
     try {
       const token = await this.authService.acquireSharePointToken();
       if (!token) return;
@@ -1240,7 +1283,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       console.error(`Failed to load subfolders of ${folder.name}:`, err);
     } finally {
       this.loadingChildFolderIds.delete(folder.id);
-      this.cdr.detectChanges();
+      this.refreshView();
     }
   }
 
@@ -1282,7 +1325,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         cached.complete ? null : cached.nextLink,
       );
       this.isLoading = false;
-      this.cdr.detectChanges();
+      this.refreshView();
       return;
     }
 
@@ -1296,7 +1339,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         this.applyLibraryFilesToView(fromAllRoot, driveId, null);
         this.writeLibraryFilesCache(this.selectedLibrary, fromAllRoot, null, driveId);
         this.isLoading = false;
-        this.cdr.detectChanges();
+        this.refreshView();
         return;
       }
     }
@@ -1332,7 +1375,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       this.error = err.message || 'Failed to load files';
     } finally {
       this.isLoading = false;
-      this.cdr.detectChanges();
+      this.refreshView();
     }
   }
 
@@ -1341,7 +1384,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     if (this.isLoadingMoreFiles || !this.hasMoreFiles || !this.filesNextLink) return;
 
     this.isLoadingMoreFiles = true;
-    this.cdr.detectChanges();
+    this.refreshView();
     try {
       const token = await this.authService.acquireSharePointToken();
       if (!token) return;
@@ -1372,7 +1415,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       console.error('Failed to load more files:', err);
     } finally {
       this.isLoadingMoreFiles = false;
-      this.cdr.detectChanges();
+      this.refreshView();
     }
   }
 
@@ -1622,14 +1665,14 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   refreshCommentSearchFromCaches(): void {
     if (this.filterType !== 'comments' || !this.searchTerm.trim()) return;
     this.applyFilters();
-    this.cdr.detectChanges();
+    this.refreshView();
   }
 
   /** Called by parent after quietly caching folder Attachments during search. */
   refreshAttachmentSearchFromCaches(): void {
     if (this.filterType !== 'attachments' || !this.searchTerm.trim()) return;
     this.applyFilters();
-    this.cdr.detectChanges();
+    this.refreshView();
   }
 
   /** Reload the current All Files view (folders, library files, and search caches). */
@@ -1690,7 +1733,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         break;
     }
     this.emitFoldersForPrefetch();
-    this.cdr.detectChanges();
+    this.refreshView();
   }
 
   private emitFoldersForPrefetch(): void {
@@ -1703,7 +1746,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       this.isSearchingMoreFiles ||
       this.isSearchingMoreCommentTasks ||
       this.isSearchingMoreAttachments ||
-      this.isLoadingCommentTasks ||
+      this.commentTasksFetchInFlight ||
       this.isLoadingMoreCommentTasks
     ) {
       return;
@@ -1788,7 +1831,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
 
     const seq = ++this.graphSearchSeq;
     this.isGraphSearching = true;
-    this.cdr.detectChanges();
+    this.refreshView();
 
     try {
       const token = await this.authService.acquireSharePointToken();
@@ -1815,7 +1858,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         // Progressive paint after each library.
         this.graphSearchFolders = this.mergeUniqueFolders([], found);
         this.applyFilters();
-        this.cdr.detectChanges();
+        this.refreshView();
         if (mode === 'all') await this.sleep(GRAPH_PAGE_GAP_MS);
       }
 
@@ -1827,7 +1870,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     } finally {
       if (seq === this.graphSearchSeq) {
         this.isGraphSearching = false;
-        this.cdr.detectChanges();
+        this.refreshView();
       }
     }
   }
@@ -2022,7 +2065,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       .slice(0, 20);
 
     this.isSearchingMoreAttachments = matchingFolders.length > 0;
-    this.cdr.detectChanges();
+    this.refreshView();
 
     try {
       for (const folder of matchingFolders) {
@@ -2040,7 +2083,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         if (this.filterType === 'attachments') {
           this.isSearchingMoreAttachments = false;
           this.applyFilters();
-          this.cdr.detectChanges();
+          this.refreshView();
         }
       }, 400);
     }
@@ -2063,7 +2106,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       .slice(0, 20);
 
     this.isSearchingMoreCommentTasks = matchingFolders.length > 0;
-    this.cdr.detectChanges();
+    this.refreshView();
 
     try {
       for (const folder of matchingFolders) {
@@ -2082,7 +2125,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         if (this.filterType === 'comments') {
           this.isSearchingMoreCommentTasks = false;
           this.applyFilters();
-          this.cdr.detectChanges();
+          this.refreshView();
         }
       }, 400);
     }

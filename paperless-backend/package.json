@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "ram-report": "node scripts/redis-ram-report.js"
   },
   "dependencies": {
     "@azure/msal-node": "^2.16.2",

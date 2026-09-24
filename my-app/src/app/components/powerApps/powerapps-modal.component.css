@@ -175,25 +175,35 @@
   }
 }
 
+
 @media (max-width: 480px) {
+  .modal-backdrop { padding: 16px; backdrop-filter: blur(3px); }
+
   .powerapps-modal {
-    width: 70%;
-    height: 53%;
-    max-height: 100vh;
-    border-radius: 15px;
-    margin: 0;
+    width: 100%;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    padding: 20px 16px 16px;
+    border-radius: 16px;
   }
 
-  .modal-backdrop {
-    padding: 0;
-  }
-
+  /* Title + close on row 1, full-width HR / WorkFlows tabs on row 2 */
   .powerapps-modal-header {
-    padding: 16px 16px 12px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    row-gap: 14px;
+    padding-bottom: 14px;
+    margin-bottom: 14px;
+    border-bottom-color: #e5e7eb;
   }
+  .powerapps-header-main { display: contents; }
+  .powerapps-modal-header h3 { grid-column: 1; grid-row: 1; font-size: 20px; font-weight: 700; color: #1b2a3a; }
+  .modal-close-btn { grid-column: 2; grid-row: 1; width: 36px; height: 36px; border-radius: 50%; font-size: 24px; }
+  .powerapps-tab-row { grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .HR, .WorkFlows { min-width: 0; height: 38px; }
 
-  .powerapps-link-card {
-    padding: 16px;
-    font-size: 16px;
-  }
+  .powerapps-links { max-height: none; flex: 1; min-height: 0; padding-right: 2px; }
+  .powerapps-link-card { min-height: 52px; padding: 0 14px 0 16px; font-size: 15px; }
 }

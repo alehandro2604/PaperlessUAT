@@ -6,6 +6,7 @@ const redisClient = require('./redisClient');
 const { getGraphClient } = require('./graphAuth');
 const { requireUser } = require('./authMiddleware');
 const cacheRoutes = require('./cacheRoutes');
+const { collectRamMetrics } = require('./ramMetrics');
 
 const app = express();
 
@@ -45,6 +46,20 @@ app.use(requireUser);
 
 // Generic per-user cache — Redis replacement for the app's IndexedDB store.
 app.use('/api/cache', cacheRoutes);
+
+/**
+ * Redis RAM breakdown for capacity planning (no cache contents).
+ * GET /api/metrics/ram
+ */
+app.get('/api/metrics/ram', async (req, res) => {
+  try {
+    const report = await collectRamMetrics(redisClient);
+    res.json(report);
+  } catch (err) {
+    console.error('GET /api/metrics/ram failed:', err.message || err);
+    res.status(500).json({ error: 'Failed to collect RAM metrics', detail: err.message });
+  }
+});
 
 /**
  * Cached per-person task lookup.

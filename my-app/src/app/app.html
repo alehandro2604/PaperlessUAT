@@ -219,13 +219,22 @@
           {{ commentsMessage || 'No tasks found. Click a folder in All Files to load tasks.' }}
         </p>
 
-        <app-loading-screen
-          [loading]="isLoadingComments"
-          [compact]="true"
-          [message]="commentsLoadingLabel"
-        ></app-loading-screen>
+        <!-- Skeleton rows instead of a spinner: cold loads feel shorter when the layout is already there -->
+        <div
+          class="comments-skeleton"
+          *ngIf="isLoadingComments || (isLoadingMoreComments && filteredCommentItems.length === 0)"
+          role="status"
+          [attr.aria-label]="commentsLoadingLabel"
+        >
+          <p class="comments-skeleton-label" *ngIf="isLoadingComments">{{ commentsLoadingLabel }}</p>
+          <div class="comments-skeleton-row" *ngFor="let row of commentsSkeletonRows">
+            <span class="comments-skeleton-bar comments-skeleton-bar--title"></span>
+            <span class="comments-skeleton-bar comments-skeleton-bar--meta"></span>
+            <span class="comments-skeleton-bar comments-skeleton-bar--short"></span>
+          </div>
+        </div>
 
-        <p class="comments-loading-more" *ngIf="isLoadingMoreComments && !isLoadingComments">
+        <p class="comments-loading-more" *ngIf="isLoadingMoreComments && !isLoadingComments && filteredCommentItems.length > 0">
           Loading more tasks…
         </p>
 
@@ -344,9 +353,23 @@
                 </div>
 
                 <div class="eform-mobile-grid">
+                  <div class="eform-mobile-field" *ngIf="eform.eFormDetails?.category">
+                    <span class="eform-mobile-label">Category</span>
+                    <span class="eform-mobile-value">{{ eform.eFormDetails.category }}</span>
+                  </div>
                   <div class="eform-mobile-field" *ngIf="eform.eFormDetails?.eFormListId">
                     <span class="eform-mobile-label">eForm List ID</span>
                     <span class="eform-mobile-value">{{ eform.eFormDetails.eFormListId }}</span>
+                  </div>
+                  <div class="eform-mobile-field">
+                    <span class="eform-mobile-label">Submitted by</span>
+                    <span class="eform-mobile-value">{{ eform.submittedBy }}</span>
+                  </div>
+                  <div
+                    class="eform-mobile-field"
+                    *ngIf="eform.eFormDetails?.customCreatedDate || eform.eFormDetails?.submittedDate">
+                    <span class="eform-mobile-label">Submitted Date</span>
+                    <span class="eform-mobile-value">{{ (eform.eFormDetails.customCreatedDate || eform.eFormDetails.submittedDate) | date:'dd/MM/yyyy hh:mm a' }}</span>
                   </div>
                   <div
                     class="eform-mobile-field"
@@ -376,20 +399,6 @@
                     *ngIf="eform.eFormDetails?.customModifiedDate">
                     <span class="eform-mobile-label">Modified Date</span>
                     <span class="eform-mobile-value">{{ eform.eFormDetails.customModifiedDate | date:'dd/MM/yyyy hh:mm a' }}</span>
-                  </div>
-                  <div class="eform-mobile-field" *ngIf="eform.eFormDetails?.category">
-                    <span class="eform-mobile-label">Category</span>
-                    <span class="eform-mobile-value">{{ eform.eFormDetails.category }}</span>
-                  </div>
-                  <div class="eform-mobile-field">
-                    <span class="eform-mobile-label">Submitted by</span>
-                    <span class="eform-mobile-value">{{ eform.submittedBy }}</span>
-                  </div>
-                  <div
-                    class="eform-mobile-field"
-                    *ngIf="eform.eFormDetails?.customCreatedDate || eform.eFormDetails?.submittedDate">
-                    <span class="eform-mobile-label">Submitted Date</span>
-                    <span class="eform-mobile-value">{{ (eform.eFormDetails.customCreatedDate || eform.eFormDetails.submittedDate) | date:'dd/MM/yyyy hh:mm a' }}</span>
                   </div>
                 </div>
               </div>

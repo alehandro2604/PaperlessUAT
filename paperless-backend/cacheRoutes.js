@@ -23,12 +23,6 @@ const ENTRY_TTL_SECONDS = Number(process.env.CACHE_ENTRY_TTL_SECONDS || 7 * 24 *
  * - fc:tasks:all-files-comments:… All Files comment-search snapshot
  * NOT shared: fc:tasks:hr-user:… (My Tasks — per assignee)
  */
-const SHARED_KEY_PREFIXES = [
-  'fc:files:',
-  'fc:tasks:lib:v7:',
-  'fc:tasks:hr-folder:',
-  // all-files-comments omitted — full search index exceeds Redis body limits (413)
-];
 
 const isSharedKey = (key = '') =>
   SHARED_KEY_PREFIXES.some((prefix) => String(key).startsWith(prefix));
@@ -62,6 +56,32 @@ const wrap = (fn) => (req, res) => fn(req, res).catch((err) => {
   console.error(`${req.method} ${req.originalUrl} failed:`, err.message || err);
   res.status(500).json({ error: 'Cache operation failed', detail: err.message });
 });
+
+const { filterAllowedKeys, canAccessKey } = require('./permissionCheck');
+
+const SHARED_KEY_PREFIXES = [
+  'fc:files:folder:',
+  'fc:tasks:lib:v7:',
+  'fc:tasks:hr-folder:',
+];
+
+router.get('/entry', wrap(async (req, res) => {
+  const key = String(req.query.key || '');
+  const allowed = await filterAllowedKeys(req, [key]);
+  if (!allowed.has(key)) return res.status(403).json({ error: 'Access denied' });
+  const raw = await redisClient.get(ns(req, key));
+  res.json(raw ? JSON.parse(raw) : null);
+}));
+
+
+const keys = await keysForPrefix(req, prefix);
+const sharedClientKeys = keys.filter((k) => k.startsWith('shared:')).map((k) => clientKeyFromRedis(req, k));
+const allowed = await filterAllowedKeys(req, sharedClientKeys);
+const visible = keys.filter((k) => !k.startsWith('shared:') || allowed.has(clientKeyFromRedis(req, k)));
+// use `visible` instead of `keys` for mGet + mapping
+
+
+isSharedKey = (key) => SHARED_KEY_PREFIXES.some((prefix) => String(key).startsWith(prefix));
 
 async function keysByPattern(pattern) {
   const keys = [];
