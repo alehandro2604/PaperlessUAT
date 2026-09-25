@@ -240,7 +240,83 @@
 
         <!-- Detail modal: shown when user clicks "View Details" on a card -->
         <div class="eform-content-viewer" *ngIf="selectedEFormContent">
-          
+
+          <ng-container *ngIf="selectedEFormContent.detailView as view; else plainEFormViewer">
+            <div class="task-detail-header">
+              <div class="task-detail-header-info">
+                <div class="task-detail-badges">
+                  <span class="task-detail-kind">HR Task</span>
+                  <span class="task-detail-pill" *ngIf="view.status" [attr.data-tone]="view.status.tone">{{ view.status.value }}</span>
+                </div>
+                <h3>{{ view.title }}</h3>
+                <p class="task-detail-subtitle" *ngIf="view.subtitle">{{ view.subtitle }}</p>
+              </div>
+              <button type="button" class="task-detail-close" (click)="closeFormViewer()" aria-label="Close details">&times;</button>
+            </div>
+
+            <div class="task-detail-body">
+              
+
+              <section class="task-detail-section" *ngIf="view.references.length">
+                <h4>References</h4>
+                <div class="task-detail-grid task-detail-grid--3">
+                  <div class="task-detail-tile" *ngFor="let r of view.references">
+                    <span class="task-detail-label">{{ r.label }}</span>
+                    <span class="task-detail-value">{{ r.value }}</span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="task-detail-section" *ngIf="view.people.length">
+                <h4>People</h4>
+                <div class="task-detail-grid task-detail-grid--2">
+                  <div class="task-detail-tile task-detail-tile--outline task-detail-person" *ngFor="let p of view.people">
+                    <span class="task-detail-avatar" [class.task-detail-avatar--me]="p.isMe" aria-hidden="true">{{ p.initials }}</span>
+                    <div class="task-detail-person-text">
+                      <span class="task-detail-label">{{ p.role }}</span>
+                      <span class="task-detail-value">
+                        {{ p.name }}<span class="task-detail-you" *ngIf="p.isMe"> (You)</span>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="task-detail-section" *ngIf="view.details.length">
+                <h4>Details</h4>
+                <div class="task-detail-grid task-detail-grid--2">
+                  <div class="task-detail-tile" *ngFor="let r of view.details">
+                    <span class="task-detail-label">{{ r.label }}</span>
+                    <span class="task-detail-value">{{ r.value }}</span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="task-detail-section" *ngIf="view.approvals.length">
+                <h4>Approvals</h4>
+                <div class="task-detail-list">
+                  <div class="task-detail-tile task-detail-tile--outline" *ngFor="let a of view.approvals">
+                    <span class="task-detail-label">{{ a.label }}<ng-container *ngIf="a.date"> · {{ a.date }}</ng-container></span>
+                    <span class="task-detail-value">{{ a.name }}</span>
+                    <span class="task-detail-comment" *ngIf="a.comment">{{ a.comment }}</span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="task-detail-section" *ngIf="view.timeline.length">
+                <h4>Timeline</h4>
+                <ol class="task-detail-timeline">
+                  <li *ngFor="let t of view.timeline; let last = last" [class.task-detail-timeline-current]="last">
+                    <span class="task-detail-timeline-dot" aria-hidden="true"></span>
+                    <span class="task-detail-timeline-label">{{ t.label }}</span>
+                    <span class="task-detail-timeline-date">{{ t.value }}</span>
+                  </li>
+                </ol>
+              </section>
+            </div>
+          </ng-container>
+
+          <ng-template #plainEFormViewer>
           <div class="eform-content-header">
             <div class="eform-header-info">
               <h3>{{ selectedEFormContent.fileName }}</h3>
@@ -272,6 +348,7 @@
               </ng-template>
             </div>
           </div>
+          </ng-template>
         </div>
 
         <!-- HR Tasks list — hidden while loading so cards don't appear under the spinner -->
@@ -281,184 +358,122 @@
               [attr.id]="'comment-item-' + eform.id"
               [class.comment-item-highlight]="highlightedCommentId === (eform.id + '')">
 
-              <!-- Desktop header -->
-              <div class="eform-header clean-header eform-header--desktop">
-                <div class="eform-header-left">
+              <!-- Card header: title + status pill -->
+              <div class="comment-card-top">
+                <div class="comment-card-heading">
                   <h3 class="eform-title">{{ formatFormTitle(eform.name) }}</h3>
-                  <div class="eform-top-meta">
-                    <span class="eform-id">eForm List ID: {{ eform.eFormDetails?.eFormListId }}</span>
-                    <span class="eform-category" *ngIf="eform.eFormDetails?.category">
-                      Category: {{ eform.eFormDetails.category }}
-                    </span>
-                  </div>
-                  <div class="eform-submitted-line">Submitted by: {{ eform.submittedBy }}</div>
-                  <div
-                    class="eform-meta-date"
-                    *ngIf="eform.eFormDetails?.customCreatedDate || eform.eFormDetails?.submittedDate">
-                    {{ (eform.eFormDetails.customCreatedDate || eform.eFormDetails.submittedDate) | date:'dd/MM/yyyy hh:mm a' }}
-                  </div>
+                  <p class="comment-card-subtitle">
+                    <ng-container *ngIf="eform.eFormDetails?.eFormListId">eForm #{{ eform.eFormDetails.eFormListId }}</ng-container>
+                    <ng-container *ngIf="eform.eFormDetails?.eFormListId && eform.eFormDetails?.category"> · </ng-container>
+                    <ng-container *ngIf="eform.eFormDetails?.category">{{ eform.eFormDetails.category }}</ng-container>
+                  </p>
                 </div>
-
-                <div class="eform-header-right">
-                  <span class="eform-status-badge"
-                    [class.completed]="eform.eFormDetails.status.toLowerCase().includes('approved') || eform.eFormDetails.status.toLowerCase().includes('complete')"
-                    [attr.data-status]="eform.eFormDetails.status"
-                    *ngIf="eform.eFormDetails?.status && !shouldHideCommentStatus(eform)">
-                    {{ eform.eFormDetails.status }}
-                  </span>
-                  <!-- Open: Assigned To. Completed: Completed By. Date sits under the person. -->
-                  <div
-                    class="assigned-inline"
-                    *ngIf="isEformComplete(eform) && getLastModifiedByName(eform) as completedByName">
-                    <span class="assigned-label">Completed By:</span>
-                    <span class="assigned-value">{{ completedByName }} ✓</span>
-                  </div>
-                  <div
-                    class="assigned-inline"
-                    *ngIf="!isEformComplete(eform) && getAssignedToDisplay(eform) as assignedToDisplay">
-                    <span class="assigned-label">Assigned To:</span>
-                    <span class="assigned-value" *ngIf="!showAssigneeDropdown(assignedToDisplay, eform)">
-                      {{ formatAssigneeLabel(assignedToDisplay, eform) }}
-                    </span>
-                    <app-dropdown
-                      *ngIf="showAssigneeDropdown(assignedToDisplay, eform)"
-                      class="assigned-select-dropdown"
-                      [options]="getAssigneeOptions(assignedToDisplay, eform)"
-                      [ngModel]="getAssignees(assignedToDisplay)[0]"
-                      ariaLabel="Assigned to"
-                      triggerClass="assigned-select"
-                    />
-                  </div>
-                  <div
-                    class="eform-meta-date eform-meta-date--right"
-                    *ngIf="eform.eFormDetails?.customModifiedDate">
-                    {{ eform.eFormDetails.customModifiedDate | date:'dd/MM/yyyy hh:mm a' }}
-                  </div>
-                </div>
+                <span class="comment-card-pill"
+                  [attr.data-tone]="getCommentStatusTone(eform)"
+                  [attr.data-status]="eform.eFormDetails.status"
+                  *ngIf="eform.eFormDetails?.status && !shouldHideCommentStatus(eform)">
+                  {{ eform.eFormDetails.status }}
+                </span>
               </div>
 
-              <!-- Mobile header — structured label / value layout -->
-              <div class="eform-header clean-header eform-header--mobile">
-                <div class="eform-mobile-top">
-                  <div class="eform-mobile-title">
-                    <h3 class="eform-title">{{ formatFormTitle(eform.name.replace(' HR Task', '')) }}</h3>
-                    <span class="eform-type-label">HR Task</span>
-                  </div>
-                  <span class="eform-status-badge"
-                    [class.completed]="eform.eFormDetails.status.toLowerCase().includes('approved') || eform.eFormDetails.status.toLowerCase().includes('complete')"
-                    [attr.data-status]="eform.eFormDetails.status"
-                    *ngIf="eform.eFormDetails?.status && !shouldHideCommentStatus(eform)">
-                    {{ eform.eFormDetails.status }}
+              <!-- People: submitted by / completed by (or assigned to) -->
+              <div class="comment-card-people">
+                <div class="comment-card-person">
+                  <span class="comment-card-label">Submitted by</span>
+                  <span class="comment-card-name">{{ eform.submittedBy }}</span>
+                  <span
+                    class="comment-card-date"
+                    *ngIf="eform.eFormDetails?.customCreatedDate || eform.eFormDetails?.submittedDate">
+                    {{ (eform.eFormDetails.customCreatedDate || eform.eFormDetails.submittedDate) | date:'dd/MM/yyyy · HH:mm' }}
                   </span>
                 </div>
 
-                <div class="eform-mobile-grid">
-                  <div class="eform-mobile-field" *ngIf="eform.eFormDetails?.category">
-                    <span class="eform-mobile-label">Category</span>
-                    <span class="eform-mobile-value">{{ eform.eFormDetails.category }}</span>
-                  </div>
-                  <div class="eform-mobile-field" *ngIf="eform.eFormDetails?.eFormListId">
-                    <span class="eform-mobile-label">eForm List ID</span>
-                    <span class="eform-mobile-value">{{ eform.eFormDetails.eFormListId }}</span>
-                  </div>
-                  <div class="eform-mobile-field">
-                    <span class="eform-mobile-label">Submitted by</span>
-                    <span class="eform-mobile-value">{{ eform.submittedBy }}</span>
-                  </div>
-                  <div
-                    class="eform-mobile-field"
-                    *ngIf="eform.eFormDetails?.customCreatedDate || eform.eFormDetails?.submittedDate">
-                    <span class="eform-mobile-label">Submitted Date</span>
-                    <span class="eform-mobile-value">{{ (eform.eFormDetails.customCreatedDate || eform.eFormDetails.submittedDate) | date:'dd/MM/yyyy hh:mm a' }}</span>
-                  </div>
-                  <div
-                    class="eform-mobile-field"
-                    *ngIf="isEformComplete(eform) && getLastModifiedByName(eform) as completedByName">
-                    <span class="eform-mobile-label">Completed By</span>
-                    <span class="eform-mobile-value">{{ completedByName }} ✓</span>
-                  </div>
-                  <div
-                    class="eform-mobile-field"
-                    *ngIf="!isEformComplete(eform) && getAssignedToDisplay(eform) as assignedToDisplay">
-                    <span class="eform-mobile-label">Assigned To</span>
-                    <span class="eform-mobile-value" *ngIf="!showAssigneeDropdown(assignedToDisplay, eform)">
-                      {{ formatAssigneeLabel(assignedToDisplay, eform) }}
-                    </span>
-                    <app-dropdown
-                      *ngIf="showAssigneeDropdown(assignedToDisplay, eform)"
-                      class="assigned-select-dropdown assigned-select-dropdown--mobile"
-                      [options]="getAssigneeOptions(assignedToDisplay, eform)"
-                      [ngModel]="getAssignees(assignedToDisplay)[0]"
-                      ariaLabel="Assigned to"
-                      triggerClass="assigned-select assigned-select--mobile"
-                      [fullWidth]="true"
-                    />
-                  </div>
-                  <div
-                    class="eform-mobile-field"
-                    *ngIf="eform.eFormDetails?.customModifiedDate">
-                    <span class="eform-mobile-label">Modified Date</span>
-                    <span class="eform-mobile-value">{{ eform.eFormDetails.customModifiedDate | date:'dd/MM/yyyy hh:mm a' }}</span>
-                  </div>
+                <div
+                  class="comment-card-person"
+                  *ngIf="isEformComplete(eform) && getLastModifiedByName(eform) as completedByName">
+                  <span class="comment-card-label">Completed by</span>
+                  <span class="comment-card-name">{{ completedByName }} ✓</span>
+                  <span class="comment-card-date" *ngIf="eform.eFormDetails?.customModifiedDate">
+                    {{ eform.eFormDetails.customModifiedDate | date:'dd/MM/yyyy · HH:mm' }}
+                  </span>
+                </div>
+
+                <div
+                  class="comment-card-person"
+                  *ngIf="!isEformComplete(eform) && getAssignedToDisplay(eform) as assignedToDisplay">
+                  <span class="comment-card-label">Assigned to</span>
+                  <span class="comment-card-name" *ngIf="!showAssigneeDropdown(assignedToDisplay, eform)">
+                    {{ formatAssigneeLabel(assignedToDisplay, eform) }}
+                  </span>
+                  <app-dropdown
+                    *ngIf="showAssigneeDropdown(assignedToDisplay, eform)"
+                    class="assigned-select-dropdown"
+                    [options]="getAssigneeOptions(assignedToDisplay, eform)"
+                    [ngModel]="getAssignees(assignedToDisplay)[0]"
+                    ariaLabel="Assigned to"
+                    triggerClass="assigned-select"
+                    [fullWidth]="true"
+                  />
+                  <span class="comment-card-date" *ngIf="eform.eFormDetails?.customModifiedDate">
+                    {{ eform.eFormDetails.customModifiedDate | date:'dd/MM/yyyy · HH:mm' }}
+                  </span>
                 </div>
               </div>
 
               <div class="eform-details">
-                <!-- Structured detail grid (shown once content is loaded) -->
+                <!-- Comment body and form-specific extras -->
                 <div class="eform-card-details" *ngIf="eform.isContentLoaded && eform.eFormDetails">
-                  <div class="eform-detail-grid">
-                    <!-- All Files-only fields (keep HR Tasks UI unchanged) -->
-
-
-                    <div class="eform-detail-item" *ngIf="eform.eFormDetails?.commentHtml">
-                      <div class="detail-content">
-                        <span
-                          class="detail-value comment-text"
-                          [innerHTML]="eform.eFormDetails.commentHtml"
-                          (click)="onCommentLinkClick($event)"
-                        ></span>
-                      </div>
-                    </div>
-                    <div class="eform-detail-item" *ngIf="eform.eFormDetails?.dateOfMissingPunch">
-                      <span class="detail-icon">📅</span>
-                      <div class="detail-content">
-                        <span class="detail-label">Date of Missing Punch</span>
-                        <span class="detail-value">{{ eform.eFormDetails.dateOfMissingPunch }}</span>
-                      </div>
-                    </div>
-                    <div class="eform-detail-item" *ngIf="eform.eFormDetails?.approverName">
-                      <span class="detail-icon">✅</span>
-                      <div class="detail-content">
-                        <span class="detail-label">Approver Name</span>
-                        <span class="detail-value">{{ eform.eFormDetails.approverName }}</span>
-                      </div>
-                    </div>
-                    <div class="eform-detail-item" *ngIf="eform.eFormDetails?.approverComments">
-                      <div class="detail-content">
-                        <span class="detail-label">Approver Comments</span>
-                        <span class="detail-value">{{ eform.eFormDetails.approverComments }}</span>
-                      </div>
-                    </div>
+                  <div class="comment-card-message" *ngIf="eform.eFormDetails?.commentHtml">
+                    <i class="fi fi-rr-comment-alt" aria-hidden="true"></i>
+                    <span
+                      class="detail-value comment-text"
+                      [innerHTML]="eform.eFormDetails.commentHtml"
+                      (click)="onCommentLinkClick($event)"
+                    ></span>
                   </div>
+                  <dl
+                    class="comment-card-extras"
+                    *ngIf="eform.eFormDetails?.dateOfMissingPunch || eform.eFormDetails?.approverName || eform.eFormDetails?.approverComments">
+                    <div *ngIf="eform.eFormDetails?.dateOfMissingPunch">
+                      <dt>Date of missing punch</dt>
+                      <dd>{{ eform.eFormDetails.dateOfMissingPunch }}</dd>
+                    </div>
+                    <div *ngIf="eform.eFormDetails?.approverName">
+                      <dt>Approver</dt>
+                      <dd>{{ eform.eFormDetails.approverName }}</dd>
+                    </div>
+                    <div *ngIf="eform.eFormDetails?.approverComments">
+                      <dt>Approver comments</dt>
+                      <dd>{{ eform.eFormDetails.approverComments }}</dd>
+                    </div>
+                  </dl>
                 </div>
 
                 <div class="eform-actions">
-                  <button
-                  class="eform-action-btn"
-                  (click)="openHrTaskForm(eform)"
-                  [disabled]="isLoadingEFormContent || isUserCommentCard(eform)"
-                >
-                  <i class="fi fi-rr-eye" aria-hidden="true"></i>
-                  View Details
-                </button>
                   <!--Delegate Task Component-->
                   <app-delegate-component
-                  *ngIf="!showAllFilesSection"
-                  [task]="eform"
-                  (delegateTask)="onDelegateTask($event)">
-                </app-delegate-component>
-               
-
+                    *ngIf="!showAllFilesSection"
+                    [task]="eform"
+                    (delegateTask)="onDelegateTask($event)">
+                  </app-delegate-component>
+                  <!-- Same link as "Please click HERE to update eForm" in the comment -->
+                  <a
+                    class="comment-card-btn comment-card-btn--secondary"
+                    *ngIf="eform.eFormDetails?.updateEFormUrl"
+                    [href]="eform.eFormDetails.updateEFormUrl"
+                    target="_blank"
+                    rel="noopener noreferrer">
+                    Open eForm<ng-container *ngIf="eform.eFormDetails?.eFormListId"> #{{ eform.eFormDetails.eFormListId }}</ng-container>
+                    <i class="fi fi-rr-arrow-up-right-from-square" aria-hidden="true"></i>
+                  </a>
+                  <button
+                    type="button"
+                    class="comment-card-btn comment-card-btn--primary"
+                    (click)="openHrTaskForm(eform)"
+                    [disabled]="isLoadingEFormContent || isUserCommentCard(eform)">
+                    <i class="fi fi-rr-eye" aria-hidden="true"></i>
+                    View details
+                  </button>
                 </div>
               </div>
 

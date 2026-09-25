@@ -73,12 +73,27 @@ import {
   isItemSubmittedByFolderPerson, collectTaskAssigneeValues, stringifyTaskFieldValue,
 } from './utils/person-name-matching';
 
+type HrTaskDetailTone = 'success' | 'warning' | 'danger' | 'neutral';
+
+/** Sectioned view of an HR task, rendered by the details panel. */
+interface HrTaskDetailView {
+  title: string;
+  subtitle: string;
+  status: { value: string; tone: HrTaskDetailTone } | null;
+  statuses: { label: string; value: string; tone: HrTaskDetailTone }[];
+  references: { label: string; value: string }[];
+  people: { role: string; name: string; initials: string; isMe: boolean }[];
+  details: { label: string; value: string }[];
+  approvals: { label: string; name: string; date: string; comment: string }[];
+  timeline: { label: string; value: string }[];
+}
+
 @Component({
   selector: 'app-root',
   standalone: true,
   imports: [CommonModule, FormsModule, TodoListComponent, AllFilesComponent, PowerappsModalComponent, NewCommentComponent, LoadingScreenComponent, MobileNavigationComponent, DelegateComponent, ManualRefreshComponent, AppDropdownComponent, HrFilesComponent],
   templateUrl: './app.html',
-  styleUrls: ['./app.css', './components/attachments/attachments.css', './form-list.css', './components/mobile navigation/mobile-navigation.css'],
+  styleUrls: ['./app.css', './components/attachments/attachments.css', './form-list.css', './components/mobile navigation/mobile-navigation.css', './components/task-details/task-details.css', './components/comments/comment-card.css'],
 })
 export class AppComponent implements OnInit, OnDestroy {
   @ViewChild(AllFilesComponent) private allFilesComponent?: AllFilesComponent;
@@ -389,6 +404,15 @@ export class AppComponent implements OnInit, OnDestroy {
     const status = this.getEformStatus(eform);
     if (/\b(pending|awaiting|waiting|needs?)\b.*\bapprov/.test(status)) return false;
     return status.includes('approv') || status.includes('complet');
+  }
+
+  /** Colour of the status pill on a Comments card. */
+  protected getCommentStatusTone(eform?: { status?: string; eFormDetails?: any }): HrTaskDetailTone {
+    const status = String(eform?.eFormDetails?.status ?? '').toLowerCase();
+    if (/reject|denied|cancel/.test(status)) return 'danger';
+    if (this.isEformComplete(eform)) return 'success';
+    if (/pending|progress|waiting|awaiting/.test(status)) return 'warning';
+    return 'neutral';
   }
 
   /** Completed By when approved; falls back to last editor only when no completer is stored. */
@@ -6345,6 +6369,7 @@ export class AppComponent implements OnInit, OnDestroy {
     uploadDate: string;
     eFormDetails?: any;
     detailRows?: { label: string; value: string; sectionBreak?: boolean }[];
+    detailView?: HrTaskDetailView;
   } | null = null;
   protected isLoadingEFormContent = false;
 
@@ -6478,6 +6503,117 @@ export class AppComponent implements OnInit, OnDestroy {
     return rows;
   }
 
+  /** Groups an HR task's fields into the sections shown by the details panel. */
+  private buildHrTaskDetailView(d: any, task: any): HrTaskDetailView {
+    const clean = (v: any) =>
+      !v || String(v).trim() === '' || String(v).trim() === 'Enter value here'
+        ? '' : String(v).trim();
+
+    const fmtDate = (val: string) => {
+      const dt = new Date(val);
+      return isNaN(dt.getTime())
+        ? val
+        : dt.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) +
+        ' · ' + dt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    };
+
+    const toneOf = (value: string): HrTaskDetailTone => {
+      const v = value.toLowerCase();
+      if (v.includes('reject') || v.includes('denied') || v.includes('cancel')) return 'danger';
+      if (v.includes('approv') || v.includes('complet') || v.includes('done')) return 'success';
+      if (v.includes('pending') || v.includes('progress') || v.includes('waiting')) return 'warning';
+      return 'neutral';
+    };
+
+    const initialsOf = (name: string) =>
+      name.split(/[\s-]+/).filter(Boolean).slice(0, 2).map((p) => p[0].toUpperCase()).join('');
+
+    const me = this.normalizePersonName(this.getLoggedInUserDisplayName());
+    const person = (role: string, value: any) => {
+      const name = clean(value);
+      return name
+        ? { role, name, initials: initialsOf(name), isMe: !!me && this.normalizePersonName(name) === me }
+        : null;
+    };
+
+    const status = clean(d.status);
+    const eFormListId = clean(d.eFormListId);
+    const taskId = clean(task.id);
+    const uploaded = task.submittedDate || task.lastModifiedDateTime;
+    const uploadedDate = uploaded ? new Date(uploaded) : null;
+
+    const subtitle = [
+      eFormListId && `eForm #${eFormListId}`,
+      taskId && `Task #${taskId}`,
+      uploadedDate && !isNaN(uploadedDate.getTime()) &&
+        `Uploaded ${uploadedDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })}`,
+    ].filter(Boolean).join(' · ');
+
+
+    const references = [
+      { label: 'eForm List ID', value: eFormListId },
+      { label: 'Task ID', value: taskId },
+      { label: 'Category', value: clean(d.eFormCategory) || clean(d.category) },
+    ].filter((r) => r.value);
+
+    const people = [
+      person('Requestor', d.submitter),
+      person('Assigned to', d.assignedTo2 || d.assignedTo),
+      person('Superior 1', d.assignedToSuperior1),
+      person('Superior 2', d.assignedToSuperior2field),
+    ].filter((p): p is NonNullable<typeof p> => !!p);
+
+    // Form-specific fields that don't belong in the fixed sections above.
+    const details = [
+      { label: 'Section', value: clean(d.section) },
+      { label: 'Date', value: clean(d.missedDate) },
+      { label: 'Time in', value: clean(d.timeIn) && `${clean(d.timeIn)}:00` },
+      { label: 'Time out', value: clean(d.timeOut) && `${clean(d.timeOut)}:00` },
+      { label: 'Reason', value: clean(d.reason) },
+      { label: 'From date', value: clean(d.fromDate) },
+      { label: 'To date', value: clean(d.toDate) },
+      { label: 'Hours to transfer', value: clean(d.hoursForTransfer) },
+      { label: 'From year', value: clean(d.fromYear) },
+      { label: 'To year', value: clean(d.toYear) },
+      { label: 'Engineer approval', value: clean(d.needEngineer) },
+      { label: 'Requestor PIN', value: clean(d.requestorPin) },
+      { label: 'Current stage', value: clean(d.stage) },
+      { label: 'Assigned to superior', value: clean(d.assignedToSuperior) },
+      { label: 'Assigned to step no', value: clean(d.assignedToStepNo) },
+    ].filter((r) => r.value);
+
+    const approvals = [1, 2, 3]
+      .filter((n) => clean(d[`approver${n}`]))
+      .map((n) => ({
+        label: `Approver ${n}`,
+        name: clean(d[`approver${n}`]),
+        date: clean(d[`approver${n}Date`]),
+        comment: clean(d[`approver${n}Comment`]),
+      }));
+
+    const timeline = [
+      { label: 'Submitted', value: clean(d.submittedDate) && fmtDate(d.submittedDate) },
+      { label: 'Created', value: clean(d.createdDate) && fmtDate(d.createdDate) },
+      { label: 'Last modified', value: clean(d.modifiedDate) && fmtDate(d.modifiedDate) },
+    ].filter((t) => t.value);
+
+    return {
+      statuses: [{ label: 'Status', value: status, tone: toneOf(status) }],
+      title: d.type || task.name,
+      subtitle,
+      status: status ? { value: status, tone: toneOf(status) } : null,
+      references,
+      people,
+      details,
+      approvals,
+      timeline,
+    };
+  }
+
+  private normalizePersonName(value: string): string {
+    return String(value || '').toLowerCase().replace(/[^a-z]/g, '');
+  }
+
   protected openHrTaskForm(task: any): void {
     if (!task.id) return;
 
@@ -6487,12 +6623,13 @@ export class AppComponent implements OnInit, OnDestroy {
       const content = detailRows.map((row) => `${row.label}: ${row.value}`).join('\n');
 
       this.selectedEFormContent = {
-        fileName: `${d.type || task.name} - eForm List ID ${detailRows.find((r) => r.label === 'eForm List ID')?.value ?? ''}`,
+        fileName: `${d.type || task.name} - eForm List ID ${d.eFormListId ?? ''}`,
         content,
         contentType: 'text/plain',
         uploadDate: task.submittedDate || task.lastModifiedDateTime,
         eFormDetails: d,
         detailRows,
+        detailView: this.buildHrTaskDetailView(d, task),
       };
     } catch (error) {
       this.selectedEFormContent = {

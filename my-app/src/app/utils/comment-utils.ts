@@ -17,6 +17,14 @@ const STATUSLESS_COMMENT_TITLES = new Set([
   'request for action',
 ]);
 
+//url behind the please click here to update eForm
+export function extractEFormUrlFromComment(html: string): string {
+  const match = String(html ?? '').match(
+    /Please click[\s\S]*?<a\b[^>]*\bhref=["']([^"']+)["'][^>]*>\s*HERE\s*<\/a>[\s\S]*?to update eForm/i,
+  );
+  return match ? match[1].replace(/&amp;/g, '&').trim() : '';
+}
+
 export function isSyntheticCommentCard(item: { id?: unknown }): boolean {
   return String(item.id ?? '').startsWith('comment:');
 }

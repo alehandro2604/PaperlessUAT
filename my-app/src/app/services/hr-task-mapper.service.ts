@@ -10,6 +10,7 @@ import { normalizeSharePointFileUrl } from '../file-utils';
 import { isTodoProcurementTaskList, isHrSourceEFormList } from '../hr-task-lists.config';
 import {
   isCommentEntryTitle, isStatuslessCommentTitle, extractAttachmentFromCommentHtml,
+  extractEFormUrlFromComment,
 } from '../utils/comment-utils';
 import { isDocumentLibraryTaskList } from '../utils/hr-task-matching';
 import {
@@ -401,7 +402,7 @@ export class HrTaskMapperService {
     const attachmentFromHtml = extractAttachmentFromCommentHtml(commentHtml);
     const attachmentUrl = normalizeSharePointFileUrl(attachmentFromHtml.url);
     const attachmentFileName = attachmentFromHtml.fileName;
-
+    const updateEFormUrl = normalizeSharePointFileUrl(extractEFormUrlFromComment(commentHtml));
     // ?? Body text ??????????????????????????????????????????
     const taskLabel = listName.replace('HRTask', '');
     const displayName = isCommentEntry ? sharePointTitle : taskLabel;
@@ -506,6 +507,7 @@ export class HrTaskMapperService {
         customModifiedBy,
         customModifiedDate: customModifiedDate || String(f.Modified ?? item.lastModifiedDateTime ?? '').trim(),
         rawFields: f,
+        updateEFormUrl,
       },
     };
   }
