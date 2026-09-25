@@ -42,8 +42,8 @@
   <div class="content">
     <div class="content-inner">
       <div *ngIf="filterType === 'comments' && isLoadingCommentTasks" class="loading">Loading comments…</div>
-      <div *ngIf="isSearchingMoreCommentTasks" class="loading">
-        Loading comments for matching folders…
+      <div *ngIf="filterType === 'comments' && (isSearchingMoreCommentTasks || isCrawlingCommentTasks)" class="loading">
+        Searching comments in all folders…
       </div>
       <div *ngIf="isSearchingMoreAttachments" class="loading">
         Loading attachments for matching folders…
@@ -164,22 +164,22 @@
       <div
         *ngIf="filterType === 'attachments' && !isSearchingMoreAttachments && !searchTerm.trim()"
         class="empty">
-        Search attachments from All Files folders (already loaded folder files are searched instantly).
+        Type a keyword to search inside attachments (file names and document text) in all folders.
       </div>
       <div
-        *ngIf="filterType === 'attachments' && !isSearchingMoreAttachments && searchTerm.trim() && attachmentHits.length === 0"
+        *ngIf="filterType === 'attachments' && !isSearchingMoreAttachments && !isGraphSearching && searchTerm.trim() && attachmentHits.length === 0"
         class="empty">
-        No matching attachments in loaded All Files folders.
+        No attachments contain that keyword.
       </div>
       <div
-        *ngIf="filterType === 'comments' && !isLoadingCommentTasks && !isSearchingMoreCommentTasks && !searchTerm.trim()"
+        *ngIf="filterType === 'comments' && !searchTerm.trim()"
         class="empty">
-        Search comments from All Files folders (already loaded folder comments are searched instantly).
+        Type a keyword to search inside comments in all folders.
       </div>
       <div
-        *ngIf="filterType === 'comments' && !isLoadingCommentTasks && !isSearchingMoreCommentTasks && searchTerm.trim() && commentHits.length === 0"
+        *ngIf="filterType === 'comments' && !isLoadingCommentTasks && !isSearchingMoreCommentTasks && !isCrawlingCommentTasks && searchTerm.trim() && commentHits.length === 0"
         class="empty">
-        No matching comments in loaded All Files folders.
+        No comments contain that keyword.
       </div>
     </div>
     <div

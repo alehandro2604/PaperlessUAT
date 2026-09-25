@@ -4,7 +4,8 @@ import { HttpClient } from '@angular/common/http';
 import { AuthService } from '../../services/auth.service';
 import { DocumentService } from '../../services/document.service';
 import { sharePointConfig } from '../../sharepoint.config';
-import { graphGetWithRetry, toGraphPath } from '../../microsoft-graph';
+import { graphGetWithRetry, toGraphPath, normalizeName } from '../../microsoft-graph';
+import { extractTrailingFolderId } from '../../utils/hr-task-matching';
 import { AppConstants } from '../../app.constants';
 import { getFileExtension, getFileCategory, getFileIcon } from '../../file-utils';
 import { FormsModule } from '@angular/forms';
@@ -139,6 +140,10 @@ const COMMENT_TASKS_PAGE_SIZE = 200;
 const COMMENT_TASKS_WARM_MAX = 1500;
 /** Hard cap for an active Comments search crawl (prevents 30k+ freezes). */
 const COMMENT_TASKS_SEARCH_MAX = 8000;
+/** Cap on keyword rows drawn from the task crawl so broad words don't flood the list. */
+const COMMENT_SEARCH_CRAWL_HITS_MAX = 500;
+/** Graph drive-search pages (50 each) per library for Attachments keyword search. */
+const ATTACHMENT_SEARCH_MAX_PAGES = 3;
 /** Throttle Comments search list rebuilds while background pages arrive. */
 const COMMENT_TASKS_SEARCH_UI_THROTTLE_MS = 400;
 /** Only the SharePoint columns Comments search needs (keeps Graph + memory light). */
@@ -242,8 +247,16 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   hasMoreCommentTasks = false;
   /** True while search auto-pages remaining tasks in the background. */
   isSearchingMoreCommentTasks = false;
+  /** True while Comments keyword search pages every task list in the background. */
+  isCrawlingCommentTasks = false;
   /** True while Attachments search warms matching folder contents. */
   isSearchingMoreAttachments = false;
+  /** Attachment hits from Graph drive search (file names + document text, every folder). */
+  private graphAttachmentHits: AttachmentSearchHit[] = [];
+  /** Folder lookups for crawled tasks, rebuilt when the folder list grows. */
+  private taskFolderIndexByName = new Map<string, SpFile[]>();
+  private taskFolderIndexById = new Map<string, SpFile[]>();
+  private taskFolderIndexSize = -1;
   /** True while search auto-pages remaining files in the background. */
   isSearchingMoreFiles = false;
   /** True while Microsoft Graph drive search is running for the current query. */
@@ -656,7 +669,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         if (
           this.commentTasksWarmPaused ||
           this.commentTasksFetchInFlight ||
-          this.isSearchingMoreCommentTasks
+          this.isCrawlingCommentTasks
         ) {
           await this.sleep(COMMENT_TASKS_GAP_MS);
           continue;
@@ -849,17 +862,15 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
    * Matches appear progressively via applyFilters after each page.
    */
   private async continueCommentTasksSearchInBackground(): Promise<void> {
-    if (this.isSearchingMoreCommentTasks) return;
+    if (this.isCrawlingCommentTasks) return;
     if (!this.searchTerm.trim()) return;
 
-    if (this.allLibraryTasks.length === 0) {
-      await this.loadAllLibraryTasksForCommentsSearch();
-    }
-    if (!this.searchTerm.trim() || !this.hasMoreCommentTasks) return;
-
-    this.isSearchingMoreCommentTasks = true;
+    this.isCrawlingCommentTasks = true;
     this.refreshView();
     try {
+      if (this.allLibraryTasks.length === 0) {
+        await this.loadAllLibraryTasksForCommentsSearch({ quiet: true });
+      }
       while (
         this.hasMoreCommentTasks &&
         this.searchTerm.trim() &&
@@ -879,7 +890,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     } catch (err) {
       console.error('Background comment-task search failed:', err);
     } finally {
-      this.isSearchingMoreCommentTasks = false;
+      this.isCrawlingCommentTasks = false;
       this.scheduleCommentSearchFilter(true);
     }
   }
@@ -1555,6 +1566,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     this.filterType = type as 'all' | 'files' | 'attachments' | 'comments';
     this.graphSearchSeq++;
     this.graphSearchFolders = [];
+    this.graphAttachmentHits = [];
     this.isGraphSearching = false;
 
     if (this.filterType === 'files') {
@@ -1585,6 +1597,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       this.applyFilters();
       if (this.searchTerm.trim()) {
         void this.ensureAttachmentsForMatchingFolders(this.searchTerm.trim());
+        void this.searchAttachmentsViaGraph(this.searchTerm.trim());
       }
       return;
     }
@@ -1592,6 +1605,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       this.applyFilters();
       if (this.searchTerm.trim()) {
         void this.ensureCommentsForMatchingFolders(this.searchTerm.trim());
+        void this.continueCommentTasksSearchInBackground();
       }
       return;
     }
@@ -1614,13 +1628,16 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     if (!term) {
       this.graphSearchSeq++;
       this.graphSearchFolders = [];
+      this.graphAttachmentHits = [];
       this.isGraphSearching = false;
     }
 
     if (this.filterType === 'attachments') {
+      this.graphAttachmentHits = [];
       this.applyFilters();
       if (term) {
         void this.ensureAttachmentsForMatchingFolders(term);
+        void this.searchAttachmentsViaGraph(term);
       }
       return;
     }
@@ -1628,6 +1645,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       this.applyFilters();
       if (term) {
         void this.ensureCommentsForMatchingFolders(term);
+        void this.continueCommentTasksSearchInBackground();
       }
       return;
     }
@@ -1657,6 +1675,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       this.applyFilters();
       if (this.searchTerm.trim()) {
         void this.ensureCommentsForMatchingFolders(this.searchTerm.trim());
+        void this.continueCommentTasksSearchInBackground();
       }
     }
   }
@@ -1697,12 +1716,14 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     if (this.filterType === 'attachments' && this.searchTerm.trim()) {
       this.applyFilters();
       void this.ensureAttachmentsForMatchingFolders(this.searchTerm.trim());
+      void this.searchAttachmentsViaGraph(this.searchTerm.trim());
       return;
     }
 
     if (this.filterType === 'comments' && this.searchTerm.trim()) {
       this.applyFilters();
       void this.ensureCommentsForMatchingFolders(this.searchTerm.trim());
+      void this.continueCommentTasksSearchInBackground();
     }
   }
 
@@ -1745,6 +1766,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       this.isLoadingMoreFiles ||
       this.isSearchingMoreFiles ||
       this.isSearchingMoreCommentTasks ||
+      this.isCrawlingCommentTasks ||
       this.isSearchingMoreAttachments ||
       this.commentTasksFetchInFlight ||
       this.isLoadingMoreCommentTasks
@@ -2023,8 +2045,121 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       this.isSearchingMoreAttachments = false;
       return;
     }
-    this.attachmentHits = this.getAttachmentHitsFromLoadedFolders(term);
+    const localHits = this.getAttachmentHitsFromLoadedFolders(term);
+    const seen = new Set(localHits.map((h) => h.fileId));
+    const graphHits = this.graphAttachmentHits.filter((h) => h.fileId && !seen.has(h.fileId));
+    this.attachmentHits = [...localHits, ...graphHits].sort((a, b) => this.compareAttachmentHits(a, b));
     this.files = [];
+  }
+
+  private compareAttachmentHits(a: AttachmentSearchHit, b: AttachmentSearchHit): number {
+    const dateA = new Date(a.date || 0).getTime();
+    const dateB = new Date(b.date || 0).getTime();
+    if (dateA !== dateB) return dateB - dateA;
+    return (a.fileName ?? '').localeCompare(b.fileName ?? '');
+  }
+
+  /**
+   * Keyword search inside attachments: SharePoint drive search matches file names and
+   * document text, so hits come from every folder — not only folders whose name matches.
+   */
+  private async searchAttachmentsViaGraph(term: string): Promise<void> {
+    const query = term.trim();
+    if (query.length < 2) return;
+
+    const seq = ++this.graphSearchSeq;
+    this.graphAttachmentHits = [];
+    this.isGraphSearching = true;
+    this.refreshView();
+
+    try {
+      const token = await this.authService.acquireSharePointToken();
+      if (!token || seq !== this.graphSearchSeq) return;
+
+      const drivesResponse = await this.getDrivesCached(token);
+      const drivesByName = new Map(
+        (drivesResponse.value ?? []).map((d) => [d.name, d])
+      );
+
+      for (const library of this.documentLibraries) {
+        if (seq !== this.graphSearchSeq) return;
+        const drive = drivesByName.get(library.name);
+        if (!drive) continue;
+
+        const hits = await this.searchDriveAttachments(drive.id, library.name, query, token, seq);
+        if (seq !== this.graphSearchSeq) return;
+        // Progressive paint after each library.
+        this.graphAttachmentHits = [...this.graphAttachmentHits, ...hits];
+        this.applyFilters();
+        await this.sleep(GRAPH_PAGE_GAP_MS);
+      }
+    } catch (err) {
+      console.error('Graph attachment search failed:', err);
+    } finally {
+      if (seq === this.graphSearchSeq) {
+        this.isGraphSearching = false;
+        this.refreshView();
+      }
+    }
+  }
+
+  private async searchDriveAttachments(
+    driveId: string,
+    libraryName: string,
+    query: string,
+    token: string,
+    seq: number,
+  ): Promise<AttachmentSearchHit[]> {
+    const escaped = query.replace(/'/g, "''");
+    const select =
+      '$select=id,name,webUrl,folder,file,size,createdBy,lastModifiedBy,lastModifiedDateTime,parentReference';
+    let nextPath: string | null =
+      `/drives/${driveId}/root/search(q='${escaped}')?${select}&$top=50`;
+
+    const fileItems: Array<{ item: GraphDriveItemsResponse['value'][number]; rootName: string }> = [];
+    let pages = 0;
+    while (nextPath && pages < ATTACHMENT_SEARCH_MAX_PAGES) {
+      pages++;
+      const response = await graphGetWithRetry(
+        this.http,
+        nextPath,
+        token,
+        AppConstants.graphFileListingTimeoutMs
+      ) as GraphDriveItemsResponse;
+      if (seq !== this.graphSearchSeq) return [];
+
+      for (const item of response.value ?? []) {
+        if (item.folder || !item.file) continue;
+        const rootName = this.extractRootFolderNameFromPath(item.parentReference?.path)?.trim();
+        if (rootName) fileItems.push({ item, rootName });
+      }
+
+      nextPath = this.toNextPath(response['@odata.nextLink']);
+      if (nextPath) await this.sleep(GRAPH_PAGE_GAP_MS);
+    }
+
+    // Resolve each root folder once (local cache first, then Graph path lookup).
+    const folderByName = new Map<string, SpFile | null>();
+    const hits: AttachmentSearchHit[] = [];
+    for (const { item, rootName } of fileItems) {
+      if (seq !== this.graphSearchSeq) return [];
+      if (!folderByName.has(rootName)) {
+        const folder =
+          this.findCachedRootFolder(libraryName, rootName) ??
+          await this.fetchRootFolderByName(driveId, libraryName, rootName, token);
+        folderByName.set(
+          rootName,
+          folder && this.hasFolderDisplayName(folder)
+            ? { ...folder, driveId: folder.driveId || driveId, libraryName: folder.libraryName || libraryName }
+            : null,
+        );
+      }
+      const folder = folderByName.get(rootName);
+      if (!folder) continue;
+      const mapped = this.mapDriveItemToSpFile(item, driveId, libraryName);
+      hits.push(this.toAttachmentSearchHit(mapped, folder, this.findRelatedCommentBodyForFolder(folder)));
+    }
+    return hits;
   }
 
   /**
@@ -2201,12 +2336,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       }
     }
 
-    return hits.sort((a, b) => {
-      const dateA = new Date(a.date || 0).getTime();
-      const dateB = new Date(b.date || 0).getTime();
-      if (dateA !== dateB) return dateB - dateA;
-      return (a.fileName ?? '').localeCompare(b.fileName ?? '');
-    });
+    return hits.sort((a, b) => this.compareAttachmentHits(a, b));
   }
 
   private textMatchesQuery(value: string, query: string): boolean {
@@ -2358,12 +2488,92 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       addMapped(item, folder, folder.name);
     }
 
+    // Keyword matches from the task-list crawl — covers folders that were never opened.
+    let crawlHits = 0;
+    for (const task of this.allLibraryTasks) {
+      if (crawlHits >= COMMENT_SEARCH_CRAWL_HITS_MAX) break;
+      const taskId = String(task.id ?? '').trim();
+      if (!taskId || seen.has(taskId)) continue;
+      if (!this.taskCommentMatchesTerm(task.fields, query)) continue;
+      const folder = this.resolveFolderForCrawledTask(task);
+      if (!folder) continue;
+      seen.add(taskId);
+      crawlHits++;
+      hits.push({
+        taskId,
+        libraryName: String(folder.libraryName ?? task.libraryName ?? '').trim(),
+        title: folder.name,
+        author: this.extractCommentHitAuthor(task.fields),
+        date: this.extractCommentHitDate(task.fields),
+        body: this.extractCommentHitBody(task.fields),
+        folder,
+      });
+    }
+
     return hits.sort((a, b) => {
       const dateA = new Date(a.date || 0).getTime();
       const dateB = new Date(b.date || 0).getTime();
       if (dateA !== dateB) return dateB - dateA;
       return (a.title ?? '').localeCompare(b.title ?? '');
     });
+  }
+
+  /**
+   * Map a raw task-list row to its All Files folder: eForm id first, then folder/path
+   * columns, then the person the folder is named after. Null when nothing matches.
+   */
+  private resolveFolderForCrawledTask(task: LibraryTaskItem): SpFile | null {
+    this.ensureTaskFolderIndex();
+    const f = task.fields;
+    const pick = (candidates: SpFile[] | undefined): SpFile | null => {
+      if (!candidates?.length) return null;
+      return candidates.find((c) => c.libraryName === task.libraryName) ?? candidates[0];
+    };
+
+    const field11 = String(f['field_11'] ?? '').trim();
+    const eFormId = String(
+      f['eFormListId'] ?? f['ListId'] ?? (/^\d+$/.test(field11) ? field11 : '')
+    ).trim() || extractTrailingFolderId(String(f['Title'] ?? f['Name'] ?? ''));
+    const byId = eFormId ? pick(this.taskFolderIndexById.get(eFormId)) : null;
+    if (byId) return byId;
+
+    const folderRefs = ['Folder', 'FolderName', 'DocumentFolder', 'RelatedFolder', 'FileDirRef', 'FileLeafRef', 'Path', 'Title', 'Name'];
+    for (const key of folderRefs) {
+      const text = this.stringifyTaskFieldValue(f[key]);
+      if (!text) continue;
+      for (const segment of text.split(/[/\\]/)) {
+        const hit = pick(this.taskFolderIndexByName.get(normalizeName(segment)));
+        if (hit) return hit;
+      }
+    }
+
+    const people = ['EmployeeName', 'Employee', 'Requestor', 'SubmittedBy', 'Submitter', 'CustomCreatedBy'];
+    for (const key of people) {
+      const name = this.extractPersonName(f[key]);
+      const hit = name ? pick(this.taskFolderIndexByName.get(normalizeName(name))) : null;
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  private ensureTaskFolderIndex(): void {
+    const size = this.allLibrariesFiles.length + this.allFiles.length;
+    if (size === this.taskFolderIndexSize) return;
+    this.taskFolderIndexSize = size;
+    this.taskFolderIndexByName.clear();
+    this.taskFolderIndexById.clear();
+
+    const add = (map: Map<string, SpFile[]>, key: string, folder: SpFile) => {
+      if (!key) return;
+      const list = map.get(key);
+      if (!list) map.set(key, [folder]);
+      else if (!list.some((f) => f.id === folder.id)) list.push(folder);
+    };
+    for (const folder of [...this.allLibrariesFiles, ...this.allFiles]) {
+      if (!folder.isfolder || !this.hasFolderDisplayName(folder)) continue;
+      add(this.taskFolderIndexByName, normalizeName(folder.name), folder);
+      add(this.taskFolderIndexById, extractTrailingFolderId(folder.name), folder);
+    }
   }
 
   private folderTitleFromTaskCacheKey(key: string, prefix: string): string {
