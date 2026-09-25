@@ -3,12 +3,14 @@
 //   get / set / clear / entriesByPrefix / deleteByPrefix / clearAll
 // Most keys are namespaced by the caller's Entra object id (req.userOid), so
 // one user can never read or wipe another's personal entries (e.g. My Tasks).
-// Shared across every signed-in account/browser:
-//   fc:files:… (Attachments, HR people list, All Files library listings)
-//   fc:tasks:lib:v7:… / fc:tasks:hr-folder:… / fc:tasks:all-files-comments:…
-// so any authenticated user reuses the same Redis snapshot.
+// Shared across every signed-in account/browser (see SHARED_KEY_PREFIXES):
+//   fc:files:folder:… / fc:tasks:lib:v7:… / fc:tasks:hr-folder:…
+// Every read, write and delete of a shared key is checked against the
+// caller's SharePoint permissions (permissionCheck.js), so a user only ever
+// sees or changes snapshots of folders/lists they can open themselves.
 const express = require('express');
 const redisClient = require('./redisClient');
+const { filterAllowedKeys, canAccessKey } = require('./permissionCheck');
 
 const router = express.Router();
 
@@ -17,12 +19,16 @@ const ENTRY_TTL_SECONDS = Number(process.env.CACHE_ENTRY_TTL_SECONDS || 7 * 24 *
 
 /**
  * Shared across every signed-in account/browser so one crawl warms Redis for all:
- * - fc:files:…          Attachments + HR people list + All Files library listings
- * - fc:tasks:lib:v7:…   All Files folder Comments
+ * - fc:files:folder:…    All Files folder listings
+ * - fc:tasks:lib:v7:…    All Files folder Comments
  * - fc:tasks:hr-folder:… HR Files person Comments
- * - fc:tasks:all-files-comments:… All Files comment-search snapshot
- * NOT shared: fc:tasks:hr-user:… (My Tasks — per assignee)
+ * NOT shared: everything else, e.g. fc:tasks:hr-user:… (My Tasks — per assignee)
  */
+const SHARED_KEY_PREFIXES = [
+  'fc:files:folder:',
+  'fc:tasks:lib:v7:',
+  'fc:tasks:hr-folder:',
+];
 
 const isSharedKey = (key = '') =>
   SHARED_KEY_PREFIXES.some((prefix) => String(key).startsWith(prefix));
@@ -51,42 +57,31 @@ const clientKeyFromRedis = (req, redisKey) => {
   return redisKey;
 };
 
+/** Personal keys always pass; shared keys pass only if the user can open the source. */
+const canUseKey = async (req, key) => !isSharedKey(key) || canAccessKey(req, key);
+
+/** Drops shared Redis keys the caller has no SharePoint access to. */
+async function visibleKeys(req, redisKeys) {
+  const sharedClientKeys = redisKeys
+    .filter((k) => k.startsWith('shared:'))
+    .map((k) => clientKeyFromRedis(req, k));
+  if (sharedClientKeys.length === 0) return redisKeys;
+  const allowed = await filterAllowedKeys(req, sharedClientKeys);
+  return redisKeys.filter((k) => !k.startsWith('shared:') || allowed.has(clientKeyFromRedis(req, k)));
+}
+
 // Express 4 does not forward async rejections to error handlers on its own.
 const wrap = (fn) => (req, res) => fn(req, res).catch((err) => {
   console.error(`${req.method} ${req.originalUrl} failed:`, err.message || err);
   res.status(500).json({ error: 'Cache operation failed', detail: err.message });
 });
 
-const { filterAllowedKeys, canAccessKey } = require('./permissionCheck');
-
-const SHARED_KEY_PREFIXES = [
-  'fc:files:folder:',
-  'fc:tasks:lib:v7:',
-  'fc:tasks:hr-folder:',
-];
-
-router.get('/entry', wrap(async (req, res) => {
-  const key = String(req.query.key || '');
-  const allowed = await filterAllowedKeys(req, [key]);
-  if (!allowed.has(key)) return res.status(403).json({ error: 'Access denied' });
-  const raw = await redisClient.get(ns(req, key));
-  res.json(raw ? JSON.parse(raw) : null);
-}));
-
-
-const keys = await keysForPrefix(req, prefix);
-const sharedClientKeys = keys.filter((k) => k.startsWith('shared:')).map((k) => clientKeyFromRedis(req, k));
-const allowed = await filterAllowedKeys(req, sharedClientKeys);
-const visible = keys.filter((k) => !k.startsWith('shared:') || allowed.has(clientKeyFromRedis(req, k)));
-// use `visible` instead of `keys` for mGet + mapping
-
-
-isSharedKey = (key) => SHARED_KEY_PREFIXES.some((prefix) => String(key).startsWith(prefix));
-
 async function keysByPattern(pattern) {
   const keys = [];
   for await (const key of redisClient.scanIterator({ MATCH: pattern, COUNT: 200 })) {
-    keys.push(key);
+    // node-redis v5 yields batches (arrays); v4 yields single keys.
+    if (Array.isArray(key)) keys.push(...key);
+    else keys.push(key);
   }
   return keys;
 }
@@ -101,6 +96,7 @@ async function keysForPrefix(req, prefix) {
 // so pre-migration caches still paint until the next write upgrades them.
 router.get('/entry', wrap(async (req, res) => {
   const key = String(req.query.key || '');
+  if (!(await canUseKey(req, key))) return res.status(403).json({ error: 'Access denied' });
   let raw = await redisClient.get(ns(req, key));
   if (!raw && key && isSharedKey(key)) {
     raw = await redisClient.get(`cache:${req.userOid}:${key}`);
@@ -111,9 +107,9 @@ router.get('/entry', wrap(async (req, res) => {
 router.put('/entry', wrap(async (req, res) => {
   const { key, data } = req.body;
   if (!key) return res.status(400).json({ error: 'Missing key' });
+  if (!(await canUseKey(req, key))) return res.status(403).json({ error: 'Access denied' });
   const entry = JSON.stringify({ data, timestamp: Date.now() });
-  const redisKey = ns(req, key);
-  await redisClient.setEx(redisKey, ENTRY_TTL_SECONDS, entry);
+  await redisClient.setEx(ns(req, key), ENTRY_TTL_SECONDS, entry);
   // Drop legacy personal copy once upgraded to shared.
   if (isSharedKey(key)) {
     await redisClient.del(`cache:${req.userOid}:${key}`);
@@ -122,14 +118,15 @@ router.put('/entry', wrap(async (req, res) => {
 }));
 
 router.delete('/entry', wrap(async (req, res) => {
-  await redisClient.del(ns(req, String(req.query.key || '')));
+  const key = String(req.query.key || '');
+  if (!(await canUseKey(req, key))) return res.status(403).json({ error: 'Access denied' });
+  await redisClient.del(ns(req, key));
   res.json({ ok: true });
 }));
 
 // Entries whose key starts with ?prefix= (personal; shared for folder-task families).
 router.get('/entries', wrap(async (req, res) => {
-  const prefix = String(req.query.prefix || '');
-  const keys = await keysForPrefix(req, prefix);
+  const keys = await visibleKeys(req, await keysForPrefix(req, String(req.query.prefix || '')));
   if (keys.length === 0) return res.json([]);
   const values = await redisClient.mGet(keys);
   const entries = keys
@@ -143,7 +140,7 @@ router.get('/entries', wrap(async (req, res) => {
 
 // Deletes by prefix. Empty prefix wipes this user's personal keys only (clearAll).
 router.delete('/entries', wrap(async (req, res) => {
-  const keys = await keysForPrefix(req, String(req.query.prefix || ''));
+  const keys = await visibleKeys(req, await keysForPrefix(req, String(req.query.prefix || '')));
   if (keys.length > 0) await redisClient.del(keys);
   res.json({ ok: true, deleted: keys.length });
 }));
