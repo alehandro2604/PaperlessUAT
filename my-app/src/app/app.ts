@@ -78,7 +78,7 @@ import {
   standalone: true,
   imports: [CommonModule, FormsModule, TodoListComponent, AllFilesComponent, PowerappsModalComponent, NewCommentComponent, LoadingScreenComponent, MobileNavigationComponent, DelegateComponent, ManualRefreshComponent, AppDropdownComponent, HrFilesComponent],
   templateUrl: './app.html',
-  styleUrls: ['./app.css', './form-list.css', './components/mobile navigation/mobile-navigation.css'],
+  styleUrls: ['./app.css', './components/attachments/attachments.css', './form-list.css', './components/mobile navigation/mobile-navigation.css'],
 })
 export class AppComponent implements OnInit, OnDestroy {
   @ViewChild(AllFilesComponent) private allFilesComponent?: AllFilesComponent;

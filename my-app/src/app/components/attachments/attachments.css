@@ -1,0 +1,381 @@
+/* ============================================================
+   ATTACHMENTS CARD
+   Loaded after app.css (see styleUrls in app.ts). Rules are kept
+   in their original order so the cascade is unchanged.
+   ============================================================ */
+
+.attachment-card {
+  margin-left: 20%;
+  width: 80%;
+  height: 100%;
+  grid-column: span 1;
+  overflow: hidden;
+}
+
+.attachment-card h2 {
+  margin-left: 20px;
+  color: var(--brand-blue-dark);
+}
+
+.attachment-title-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.attachment-card .card-header {
+  justify-content: flex-start;
+}
+
+.attachment-card .header-actions {
+  margin-left: auto;
+}
+
+.attachment-card .attachment-search-row {
+  flex-shrink: 0;
+  padding: 10px 0 8px;
+}
+
+.attachment-card .attachment-search-row .search-field {
+  flex: 1 1 auto;
+  max-width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 1366px) {
+  .attachment-title-group .search-field {
+    flex: 1 1 140px;
+    max-width: 200px;
+    min-width: 100px;
+  }
+
+  .searchBar-att {
+    font-size: 13px;
+    padding: 5px 26px 5px 34px;
+  }
+}
+
+@media (max-width: 1200px) {
+  .attachment-title-group .search-field {
+    flex: 1 1 120px;
+    max-width: 180px;
+    min-width: 90px;
+  }
+
+  .searchBar-att {
+    font-size: 12px;
+  }
+}
+
+.attachment-title-group .fi-rr-envelope {
+  font-size: 24px;
+  color: var(--brand-blue);
+  margin-top: 10px;
+  margin-left: 10px;
+}
+
+.searchBar-att::placeholder {
+  font-size: 13px;
+}
+
+.attachment-title-group .search-field {
+  flex: 1 1 160px;
+  min-width: 120px;
+  max-width: 280px;
+}
+
+.searchBar-att {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 15px;
+  border: 1px solid #d1d1d1;
+  padding: 6px 28px 6px 36px;
+  font-size: 14px;
+}
+
+.searchBar-att:active,
+.searchBar-att:hover,
+.searchBar-att:focus {
+  border-color: var(--brand-blue);
+  box-shadow: 0 0 0 2px rgba(0, 120, 212, 0.1);
+  outline: none;
+}
+
+/* Nudge native clear (×) button to the right edge — from type="search" in app.html */
+.searchBar-att::-webkit-search-cancel-button {
+  margin-right: -10px;
+}
+
+
+/* ============================================================
+   ATTACHMENTS LIST
+   ============================================================ */
+
+.attachment-table-wrapper {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin-right: -10px;
+  padding-right: 10px;
+  scrollbar-gutter:stable;
+}
+
+.attachment-table-wrapper::-webkit-scrollbar {
+  width: 6px;
+  margin-right: -10px;
+}
+
+.attachment-table-wrapper::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.attachment-table-wrapper::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 3px;
+}
+
+.attachment-table-wrapper::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.attachment-table-header,
+.attachment-table-row {
+  display: grid;
+  grid-template-columns: 1fr 100px 140px;
+  align-items: center;
+  gap: 0 8px;
+  padding: 4px 10px;
+}
+
+/* Header — subtle, same as existing card meta text */
+.attachment-table-header {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6b7280;
+  border-bottom: 2px solid #1e62eb;
+  margin-bottom: 2px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fbff;
+}
+
+/* Rows — match existing .user-file-row padding/border */
+.attachment-table-row {
+  border-bottom: 1px solid #f3f4f6;
+  padding: 6px 10px;
+}
+
+.attachment-table-row.attachment-item-highlight {
+  background: #e8f4fc;
+  border-left: 3px solid #0c9eff;
+  box-shadow: inset 0 0 0 1px #cfe8f8;
+}
+
+.attachment-table-row:last-child {
+  border-bottom: none;
+}
+
+/* Name col */
+.att-col-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  color: #6b7280;
+  margin-right: -38px;
+}
+
+/* Date + Author */
+.att-col-date {
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #6b7280;
+  margin-left: 48px;
+  margin-right: -20px;
+}
+
+.att-col-author {
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #6b7280;
+  margin-left: 23px;
+}
+
+.att-meta {
+  font-size: 0.78rem;
+  color: #9ca3af;
+}
+
+/* Folder link — reuse your existing .folder-link purple style */
+.att-folder-link {
+  cursor: pointer;
+  color: #7c3aed;
+  /* same purple as original folder links */
+  font-weight: 600;
+  font-size: 12px;
+  /* matches .user-file-row font size */
+  text-decoration: none;
+}
+
+.att-folder-link:hover {
+  text-decoration: underline;
+}
+
+/* File link — reuse your existing <a> style */
+.att-file-link {
+  color: #006eff;
+  /* match folder colour for consistency */
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.att-file-link:hover {
+  text-decoration: underline;
+}
+
+/* Empty state */
+.att-empty {
+  padding: 12px 10px;
+  font-size: 0.82rem;
+  color: #9ca3af;
+  text-align: center;
+}
+
+.att-folder-icon {
+  width: 20px;
+  height: 20px;
+  vertical-align: middle;
+  margin-right: 5px;
+  margin-bottom: 2px;
+  /* optical alignment with text */
+}
+
+.att-file-icon {
+  width: 20px;
+  height: 20px;
+  vertical-align: middle;
+  margin-right: 5px;
+  margin-bottom: 2px;
+  /* optical alignment with text */
+}
+
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+
+@media (max-width: 1024px) {
+  .attachment-title-group .search-field {
+    flex: 1 1 110px;
+    max-width: 160px;
+    min-width: 80px;
+  }
+
+  .searchBar-att {
+    font-size: 12px;
+  }
+
+  .attachment-title-group {
+    gap: 8px;
+  }
+}
+
+@media (max-width: 768px) {
+  .attachment-title-group .search-field {
+    flex: 1 1 100px;
+    max-width: 100%;
+    min-width: 80px;
+  }
+
+  .searchBar-att {
+    font-size: 13px;
+    padding: 6px 26px 6px 34px;
+  }
+}
+
+/* Phone and tablet: one card at a time */
+@media (max-width: 1024px) {
+  .attachment-card {
+    display: none;
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .attachment-card.active {
+    display: flex;
+    grid-column: span 1;
+    width: 100%;
+    min-height: auto;
+    justify-self: center;
+  }
+
+  .attachment-card .card-header {
+    flex-wrap: wrap;
+  }
+
+  .attachment-title-group {
+    display: none;
+  }
+
+  .attachment-card .card-header {
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  }
+
+  @media (max-width: 600px) {
+    .attachment-title-group {
+      flex-wrap: wrap;
+      width: 100%;
+      gap: 6px;
+    }
+
+    .searchBar-att {
+      padding: 8px 28px 8px 36px;
+      font-size: 14px;
+    }
+
+    .searchBar-att::placeholder {
+      font-size: 13px;
+    }
+  }
+}
+
+
+/* Card-style attachment rows on every screen size */
+.attachment-table-header { display: none; }
+
+.attachment-table-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "name name" "author date";
+  gap: 2px 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid #dfe8f4;
+  border-radius: 10px;
+  background: #ffffff;
+}
+.attachment-table-row:last-child { border-bottom: 1px solid #dfe8f4; }
+
+.att-col-name {
+  grid-area: name;
+  margin-right: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.att-folder-link, .att-file-link { font-size: 14px; }
+
+.att-col-author { grid-area: author; text-align: left; margin-left: 0; }
+.att-col-date   { grid-area: date;   text-align: right; margin: 0; }
