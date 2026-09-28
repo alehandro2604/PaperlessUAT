@@ -253,10 +253,16 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   isSearchingMoreAttachments = false;
   /** Attachment hits from Graph drive search (file names + document text, every folder). */
   private graphAttachmentHits: AttachmentSearchHit[] = [];
-  /** Folder lookups for crawled tasks, rebuilt when the folder list grows. */
+  /** Folder lookups for Comments search, rebuilt when the folder lists change. */
   private taskFolderIndexByName = new Map<string, SpFile[]>();
   private taskFolderIndexById = new Map<string, SpFile[]>();
+  /** First folder per lowercase name (allLibrariesFiles before allFiles). */
+  private folderIndexByKey = new Map<string, SpFile>();
+  private taskFolderIndexLibs: SpFile[] | null = null;
+  private taskFolderIndexFiles: SpFile[] | null = null;
   private taskFolderIndexSize = -1;
+  /** Lowercased search text per task/comment object, so rebuilds don't re-parse HTML. */
+  private commentHaystackCache = new WeakMap<object, string>();
   /** True while search auto-pages remaining files in the background. */
   isSearchingMoreFiles = false;
   /** True while Microsoft Graph drive search is running for the current query. */
@@ -1015,6 +1021,15 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
 
   isFileSelected(file: SpFile): boolean {
     return this.selectedFileId === file.id;
+  }
+
+  /** Keep result cards in the DOM across rebuilds instead of redrawing all of them. */
+  trackCommentHit(_: number, hit: CommentSearchHit): string {
+    return hit.taskId;
+  }
+
+  trackAttachmentHit(_: number, hit: AttachmentSearchHit): string {
+    return hit.fileId;
   }
 
   isCommentHitSelected(hit: CommentSearchHit): boolean {
@@ -2558,10 +2573,17 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
 
   private ensureTaskFolderIndex(): void {
     const size = this.allLibrariesFiles.length + this.allFiles.length;
-    if (size === this.taskFolderIndexSize) return;
+    if (
+      size === this.taskFolderIndexSize &&
+      this.allLibrariesFiles === this.taskFolderIndexLibs &&
+      this.allFiles === this.taskFolderIndexFiles
+    ) return;
     this.taskFolderIndexSize = size;
+    this.taskFolderIndexLibs = this.allLibrariesFiles;
+    this.taskFolderIndexFiles = this.allFiles;
     this.taskFolderIndexByName.clear();
     this.taskFolderIndexById.clear();
+    this.folderIndexByKey.clear();
 
     const add = (map: Map<string, SpFile[]>, key: string, folder: SpFile) => {
       if (!key) return;
@@ -2570,7 +2592,10 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       else if (!list.some((f) => f.id === folder.id)) list.push(folder);
     };
     for (const folder of [...this.allLibrariesFiles, ...this.allFiles]) {
-      if (!folder.isfolder || !this.hasFolderDisplayName(folder)) continue;
+      if (!folder.isfolder) continue;
+      const key = this.normalizeCacheKeyPart(folder.name);
+      if (key && !this.folderIndexByKey.has(key)) this.folderIndexByKey.set(key, folder);
+      if (!this.hasFolderDisplayName(folder)) continue;
       add(this.taskFolderIndexByName, normalizeName(folder.name), folder);
       add(this.taskFolderIndexById, extractTrailingFolderId(folder.name), folder);
     }
@@ -2587,20 +2612,33 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   private findFolderByNormalizedName(normalizedFolderName: string): SpFile | null {
     const target = this.normalizeCacheKeyPart(normalizedFolderName);
     if (!target) return null;
-    return (
-      this.allLibrariesFiles.find(
-        (f) => f.isfolder && this.normalizeCacheKeyPart(f.name) === target,
-      ) ??
-      this.allFiles.find(
-        (f) => f.isfolder && this.normalizeCacheKeyPart(f.name) === target,
-      ) ??
-      null
-    );
+    this.ensureTaskFolderIndex();
+    return this.folderIndexByKey.get(target) ?? null;
+  }
+
+  /** Build search text once per object; later searches reuse it. */
+  private cachedHaystack(source: unknown, build: () => string): string {
+    if (!source || typeof source !== 'object') return build();
+    let haystack = this.commentHaystackCache.get(source);
+    if (haystack === undefined) {
+      haystack = build();
+      this.commentHaystackCache.set(source, haystack);
+    }
+    return haystack;
   }
 
   private mappedCommentMatchesTerm(item: any, term: string): boolean {
+    const haystack = this.cachedHaystack(item, () => this.buildMappedCommentHaystack(item));
+    if (!haystack) return false;
+    if (haystack.includes(term)) return true;
+    const tokens = term.split(/[\s._@+/\\-]+/).filter((t) => t.length > 0);
+    if (tokens.length <= 1) return false;
+    return tokens.every((token) => haystack.includes(token));
+  }
+
+  private buildMappedCommentHaystack(item: any): string {
     const details = item?.eFormDetails ?? {};
-    const haystack = [
+    return [
       item?.name,
       item?.description,
       item?.submittedBy,
@@ -2624,11 +2662,6 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       .map((v) => this.stripHtmlToText(String(v ?? '')).toLowerCase())
       .filter(Boolean)
       .join(' ');
-    if (!haystack) return false;
-    if (haystack.includes(term)) return true;
-    const tokens = term.split(/[\s._@+/\\-]+/).filter((t) => t.length > 0);
-    if (tokens.length <= 1) return false;
-    return tokens.every((token) => haystack.includes(token));
   }
 
   private toCommentSearchHit(item: any, folder: SpFile): CommentSearchHit {
@@ -2736,6 +2769,19 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   }
 
   private taskCommentMatchesTerm(fields: Record<string, unknown>, term: string): boolean {
+    const haystack = this.cachedHaystack(fields, () => this.buildTaskCommentHaystack(fields));
+    if (!haystack) return false;
+
+    const query = term.trim().toLowerCase();
+    if (!query) return true;
+    if (haystack.includes(query)) return true;
+
+    const tokens = query.split(/[\s._@+/\\-]+/).filter((t) => t.length > 0);
+    if (tokens.length <= 1) return false;
+    return tokens.every((token) => haystack.includes(token));
+  }
+
+  private buildTaskCommentHaystack(fields: Record<string, unknown>): string {
     // Prefer comment/body + people fields. Title/Name are included so task titles still match,
     // but folder cards are no longer what we display or open.
     const haystacks = [
@@ -2761,19 +2807,10 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       fields['Title'],
       fields['Name'],
     ];
-    const haystack = haystacks
+    return haystacks
       .map((value) => this.stringifyTaskFieldValue(value).toLowerCase())
       .filter(Boolean)
       .join(' ');
-    if (!haystack) return false;
-
-    const query = term.trim().toLowerCase();
-    if (!query) return true;
-    if (haystack.includes(query)) return true;
-
-    const tokens = query.split(/[\s._@+/\\-]+/).filter((t) => t.length > 0);
-    if (tokens.length <= 1) return false;
-    return tokens.every((token) => haystack.includes(token));
   }
 
   private stripHtmlToText(value: string): string {

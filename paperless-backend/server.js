@@ -28,7 +28,7 @@ app.use(express.json({ limit: '25mb' }));
 
 const PORT = process.env.PORT || 3000;
 const CACHE_TTL_SECONDS = Number(process.env.CACHE_TTL_SECONDS || 300);
-const SITE_PATH = process.env.SITE_PATH; // e.g. emoffice365.sharepoint.com:/sites/PaperlessLive
+const SITE_PATH = process.env.SITE_PATH; // e.g. emoffice365.sharepoint.com:/sites/PaperlessUAT
 
 // Health check — no auth needed, useful to confirm the server + Redis are up.
 app.get('/api/health', async (req, res) => {

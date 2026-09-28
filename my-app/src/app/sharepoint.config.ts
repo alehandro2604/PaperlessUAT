@@ -1,6 +1,6 @@
 import { Capacitor } from '@capacitor/core';
 
-// Single source of truth for environment config. Target: LIVE (sites/PaperlessLive).
+// Single source of truth for environment config. Target: UAT (sites/PaperlessUAT).
 // There is deliberately no runtime config.json — everything reads from here.
 //
 // LOCAL vs UAT: flip the redirectUri / backendUrl pair together.
@@ -19,14 +19,17 @@ export const sharePointConfig = {
     : 'http://localhost:4200',
   backendUrl: 'http://localhost:3000',
 
-  // --- UAT (https://swiftpaperlessuat.enemalta.lan) ---
+  // --- UAT On live URL (https://swiftpaperlessuat.enemalta.lan) ---
   // Same-origin: IIS/ARR (or nginx) must proxy /api → http://127.0.0.1:3000
   // redirectUri: 'https://swiftpaperlessuat.enemalta.lan',
   // backendUrl: '',
 
+
+
+
   siteHostName: 'emoffice365.sharepoint.com',
-  sitePath: 'sites/PaperlessLive',
-  siteId:'emoffice365.sharepoint.com,6f7b5d38-686a-40c8-8f83-5eb68880ab9b,20bef680-9015-46b5-9bfa-6d00b61c7fa9',
+  sitePath: 'sites/PaperlessUAT',
+  siteId:'emoffice365.sharepoint.com,d07b0fc2-c9d8-4793-8f51-0afb2e7d0fb7,e85f6d4d-da1c-4d28-b615-d9f7f44656c4',
   documentLibrariesTasks: [] as string[],
   hrPersonalListDisplayName: 'HRPersonal',
   // Users listed here are allowed by the app UI to browse all top-level folders

@@ -56,7 +56,7 @@
         *ngIf="filterType === 'comments' && searchTerm.trim() && !isLoadingCommentTasks && commentHits.length > 0"
         class="files-grid comment-hits-grid">
         <div
-          *ngFor="let hit of commentHits"
+          *ngFor="let hit of commentHits; trackBy: trackCommentHit"
           class="file-card comment-search-card"
           [class.active]="isCommentHitSelected(hit)"
           (click)="selectCommentHit(hit)">
@@ -81,7 +81,7 @@
         *ngIf="filterType === 'attachments' && searchTerm.trim() && attachmentHits.length > 0"
         class="files-grid comment-hits-grid">
         <div
-          *ngFor="let hit of attachmentHits"
+          *ngFor="let hit of attachmentHits; trackBy: trackAttachmentHit"
           class="file-card comment-search-card attachment-search-card"
           [class.active]="isAttachmentHitSelected(hit)"
           (click)="selectAttachmentHit(hit)">
