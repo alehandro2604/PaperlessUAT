@@ -1,0 +1,29 @@
+{
+  "name": "paperless-desktop",
+  "version": "1.0.0",
+  "description": "Paperless desktop app (Electron shell around the Angular build)",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "mt.com.enemalta.paperless.desktop",
+    "productName": "Paperless",
+    "directories": { "output": "release" },
+    "files": ["main.js", "package.json"],
+    "extraResources": [
+      { "from": "../dist/my-app/browser", "to": "app" }
+    ],
+    "win": {
+      "target": ["nsis", "portable"],
+      "artifactName": "Paperless-${version}-${target}.${ext}"
+    },
+    "nsis": { "oneClick": true, "perMachine": false }
+  }
+}
