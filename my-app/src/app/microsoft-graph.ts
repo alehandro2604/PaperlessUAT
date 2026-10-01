@@ -41,7 +41,7 @@ let graphThrottledUntilMs = 0;
 let activeGraphRequests = 0;
 const graphSlotWaiters: Array<() => void> = [];
 
-async function acquireGraphSlot(): Promise<void> {
+async function acquireGraphSlot(priority = false): Promise<void> {
   const wait = graphThrottledUntilMs - Date.now();
   if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
 
@@ -49,7 +49,10 @@ async function acquireGraphSlot(): Promise<void> {
     activeGraphRequests += 1;
     return;
   }
-  await new Promise<void>(resolve => graphSlotWaiters.push(resolve));
+  // Priority callers go to the front so they are not stuck behind background warm-up.
+  await new Promise<void>(resolve =>
+    priority ? graphSlotWaiters.unshift(resolve) : graphSlotWaiters.push(resolve)
+  );
   activeGraphRequests += 1;
 }
 
@@ -92,12 +95,13 @@ export async function graphGetWithRetry(
   token: string,
   timeoutMs: number = AppConstants.graphDefaultTimeoutMs,
   extraHeaders: Record<string, string> = {},
-  maxRetries: number = 4
+  maxRetries: number = 4,
+  priority: boolean = false
 ): Promise<any> {
   let attempt = 0;
 
   while (true) {
-    await acquireGraphSlot();
+    await acquireGraphSlot(priority);
 
     let failure: any = null;
     try {

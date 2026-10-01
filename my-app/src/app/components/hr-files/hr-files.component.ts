@@ -1,11 +1,25 @@
 import { CommonModule } from '@angular/common';
-import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges } from '@angular/core';
+import {
+  ChangeDetectorRef,
+  Component,
+  DestroyRef,
+  EventEmitter,
+  Input,
+  OnChanges,
+  OnInit,
+  Output,
+  SimpleChanges,
+  inject,
+} from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { DomainUserService } from '../../services/domain-user.service';
 import { AppDropdownComponent, AppDropdownOption } from '../app-dropdown/app-dropdown.component';
 import {
+  enrichHrFileItems,
   filterAndSortHrFileItems,
-  formatDisplayNameFromEmail,
+  formatDisplayName,
   getDisplayInitial,
+  HrDomainUserLookup,
   HrFileListItem,
   HrFilesSortDirection,
 } from './hr-files.utils';
@@ -17,7 +31,7 @@ import {
   templateUrl: './hr-files.component.html',
   styleUrls: ['./hr-files.component.css'],
 })
-export class HrFilesComponent implements OnChanges {
+export class HrFilesComponent implements OnInit, OnChanges {
   @Input() items: HrFileListItem[] = [];
   @Input() isLoading = false;
   @Input() progressMessage = '';
@@ -39,13 +53,58 @@ export class HrFilesComponent implements OnChanges {
     { value: 'descending', label: 'Descending' },
   ];
 
-  protected readonly formatDisplayNameFromEmail = formatDisplayNameFromEmail;
+  private readonly domainUserService = inject(DomainUserService);
+  private readonly cdr = inject(ChangeDetectorRef);
+  private destroyed = false;
+  private domainUsers: HrDomainUserLookup = { byEmail: new Map(), byPin: new Map() };
+  /** items + FullName / PinNo from AllDomainUsers (the original `items` are never modified). */
+  private enrichedItems: HrFileListItem[] = [];
+
+  protected readonly formatDisplayName = formatDisplayName;
   protected readonly getDisplayInitial = getDisplayInitial;
+
+  constructor() {
+    inject(DestroyRef).onDestroy(() => (this.destroyed = true));
+  }
+
+  ngOnInit(): void {
+    this.loadDomainUsers();
+  }
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['items']) {
+      // The first load can run before sign-in has finished; try again once folders arrive.
+      if (!changes['items'].firstChange && this.items.length && !this.hasDomainUsers) {
+        this.loadDomainUsers();
+      }
+      this.enrichedItems = enrichHrFileItems(this.items, this.domainUsers);
       this.resetPagination();
     }
+  }
+
+  private get hasDomainUsers(): boolean {
+    return this.domainUsers.byEmail.size > 0 || this.domainUsers.byPin.size > 0;
+  }
+
+  private loadDomainUsers(): void {
+    // Paint names from the last saved copy first, so the list never waits on SharePoint.
+    this.domainUsers = this.domainUserService.peekUsers() ?? this.domainUsers;
+    this.enrichedItems = enrichHrFileItems(this.items, this.domainUsers);
+
+    void this.domainUserService.getUsers().then(users => {
+      if (this.destroyed || (!users.byEmail.size && !users.byPin.size)) return;
+      this.domainUsers = users;
+      this.enrichedItems = enrichHrFileItems(this.items, users);
+      const unmatched = this.enrichedItems.filter(item => !item.fullName && !item.pinNo);
+      if (unmatched.length) {
+        console.info(
+          `[HrFiles] ${unmatched.length} of ${this.items.length} folders not found in AllDomainUsers`,
+          unmatched.slice(0, 20).map(item => item.name),
+        );
+      }
+      this.cdr.markForCheck();
+      this.cdr.detectChanges();
+    });
   }
 
   protected get hasLoaded(): boolean {
@@ -53,7 +112,7 @@ export class HrFilesComponent implements OnChanges {
   }
 
   protected get filteredItems(): HrFileListItem[] {
-    return filterAndSortHrFileItems(this.items, this.searchQuery, this.sortDirection);
+    return filterAndSortHrFileItems(this.enrichedItems, this.searchQuery, this.sortDirection);
   }
 
   protected get pagedItems(): HrFileListItem[] {

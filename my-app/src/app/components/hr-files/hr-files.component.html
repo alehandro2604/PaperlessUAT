@@ -50,9 +50,9 @@
     (pointerenter)="onItemPrefetch(item)"
     (pointerdown)="onItemPrefetch(item)"
   >
-    <div class="list-item-avatar" aria-hidden="true">{{ getDisplayInitial(item.name) }}</div>
-    <div class="user-info">
-      <span class="user-identifier">{{ formatDisplayNameFromEmail(item.name) }}</span>
+<div class="list-item-avatar" aria-hidden="true">{{ getDisplayInitial(item) }}</div>
+<div class="user-info">
+      <span class="user-identifier">{{ formatDisplayName(item) }}</span>
       <span class="user-email" *ngIf="item.name.includes('@')">{{ item.name }}</span>
     </div>
     <i class="fi fi-br-angle-right user-arrow" aria-hidden="true"></i>
