@@ -48,6 +48,16 @@
       <div *ngIf="isSearchingMoreAttachments" class="loading">
         Loading attachments for matching folders…
       </div>
+      <div
+        *ngIf="(filterType === 'all' || filterType === 'files') && (isLoading || isLoadingAllLibraries) && files.length === 0"
+        class="loading">
+        Loading folders…
+      </div>
+      <div
+        *ngIf="(filterType === 'all' || filterType === 'files') && error && !isLoading && !isLoadingAllLibraries"
+        class="empty">
+        {{ error }}
+      </div>
       <div *ngIf="isGraphSearching" class="loading">Searching SharePoint…</div>
       <div *ngIf="isSearchingMoreFiles && !isGraphSearching" class="loading">Searching more folders…</div>
 
@@ -56,7 +66,7 @@
         *ngIf="filterType === 'comments' && searchTerm.trim() && !isLoadingCommentTasks && commentHits.length > 0"
         class="files-grid comment-hits-grid">
         <div
-          *ngFor="let hit of commentHits"
+          *ngFor="let hit of commentHits; trackBy: trackCommentHit"
           class="file-card comment-search-card"
           [class.active]="isCommentHitSelected(hit)"
           (click)="selectCommentHit(hit)">
@@ -81,7 +91,7 @@
         *ngIf="filterType === 'attachments' && searchTerm.trim() && attachmentHits.length > 0"
         class="files-grid comment-hits-grid">
         <div
-          *ngFor="let hit of attachmentHits"
+          *ngFor="let hit of attachmentHits; trackBy: trackAttachmentHit"
           class="file-card comment-search-card attachment-search-card"
           [class.active]="isAttachmentHitSelected(hit)"
           (click)="selectAttachmentHit(hit)">
