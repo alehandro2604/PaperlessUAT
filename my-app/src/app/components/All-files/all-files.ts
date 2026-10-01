@@ -1585,7 +1585,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   get libraryDropdownOptions(): AppDropdownOption[] {
     return this.documentLibraries.map((lib: any) => ({
       value: lib.name,
-      label: lib.displayName ?? lib.name,
+      label: this.removeEformFromLibraryName(lib.displayName ?? lib.name),
     }));
   }
 
@@ -2991,6 +2991,12 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     }
 
     return null;
+  }
+
+  /** Display only: "Procurement eForm" -> "Procurement". The real library name is left untouched. */
+  private removeEformFromLibraryName(libraryName: string): string {
+    const label = libraryName.replace(/\be-?forms?\b/gi, '').replace(/\s{2,}/g, ' ').trim();
+    return label || libraryName;
   }
 
   onLibraryChange(libraryName: string): void {
