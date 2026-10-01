@@ -85,6 +85,8 @@ export const AppConstants = {
   hrFilesSourceEFormLookupSupplementPages: 2,
   /** Extra pages for Sick Certificate / source eForm lists when LookupId misses. */
   hrFilesSourceEFormScanPages: 6,
+  /** eForm ids combined with `or` in one related-steps query (falls back to 1 if a list rejects it). */
+  hrFilesEFormKeyFilterChunkSize: 12,
   /** Graph $top for person LookupId queries (larger pages = fewer round-trips). */
   hrFilesPersonLookupPageSize: 200,
   /**

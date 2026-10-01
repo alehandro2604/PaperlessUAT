@@ -140,8 +140,8 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private hrFolderTaskCacheKey(folderName: string): string {
-    // v8: strict name-part match (adrian ≠ adriana) + LookupId-first seed filter.
-    return `tasks:hr-folder:v8:${this.normalizeCacheKeyPart(folderName)}`;
+    // v9: only finished crawls are persisted — drops older snapshots that may be partial.
+    return `tasks:hr-folder:v9:${this.normalizeCacheKeyPart(folderName)}`;
   }
 
   /** Shared-Redis `{ email, lookupId }` for an HR person folder (under the shared hr-folder prefix). */
@@ -164,6 +164,7 @@ export class AppComponent implements OnInit, OnDestroy {
       const key = this.hrFolderTaskCacheKey(folder);
       this.fileCrawlCache.invalidate(key);
       this.hrFolderCompleteAt.delete(key);
+      this.hrFolderPartialKeys.delete(key);
       return;
     }
     const mappedTaskList = this.getTaskListForLibrary(libraryName);
@@ -309,6 +310,12 @@ export class AppComponent implements OnInit, OnDestroy {
    * Redis snapshot). Reopening within `hrFilesSkipSoftRefreshMs` skips the Graph refresh.
    */
   private readonly hrFolderCompleteAt = new Map<string, number>();
+  /**
+   * HR folder keys whose in-memory snapshot came from a crawl that has not finished
+   * (first paints, prefetch seeds, cancelled loads). These stay out of shared Redis
+   * and are resumed, never presented as the final list.
+   */
+  private readonly hrFolderPartialKeys = new Set<string>();
   /** Prevent stale All Files task loads when folders are clicked rapidly. */
   private allFilesFolderTaskLoadSeq = 0;
 
@@ -1526,6 +1533,18 @@ export class AppComponent implements OnInit, OnDestroy {
       this.fileCrawlCache.getStale(this.hrFolderTaskCacheKey(folder));
     if (!Array.isArray(cached)) return;
 
+    // Leaving the view cancels any crawl in flight. Unless a crawl for this person finished
+    // recently, start it again instead of presenting the cached list as final.
+    const cacheKey = this.hrFolderTaskCacheKey(folder);
+    const completeAt = this.hrFolderCompleteAt.get(cacheKey);
+    const finishedRecently =
+      completeAt !== undefined && Date.now() - completeAt <= AppConstants.hrFilesSkipSoftRefreshMs;
+    if (this.hrFolderPartialKeys.has(cacheKey) || !finishedRecently) {
+      this.hideComments = false;
+      this.loadAllFilesTasksForLibrary(this.targetLibraryName, folder);
+      return;
+    }
+
     this.selectedFolderName = folder;
     this.selectedHrPersonalTaskFolder = folder;
     this.hideComments = false;
@@ -2166,7 +2185,9 @@ export class AppComponent implements OnInit, OnDestroy {
       if (Array.isArray(cached) && cached.length > 0) {
         const completeAt = this.hrFolderCompleteAt.get(cacheKey);
         const needsRefresh =
-          completeAt === undefined || Date.now() - completeAt > AppConstants.hrFilesSkipSoftRefreshMs;
+          completeAt === undefined ||
+          Date.now() - completeAt > AppConstants.hrFilesSkipSoftRefreshMs ||
+          this.hrFolderPartialKeys.has(cacheKey);
         this.applyCachedFolderTaskItems(cached, loadFolder, needsRefresh);
         if (needsRefresh) {
           void this.loadHrPersonalTasksForFolder(loadFolder, loadSeq, { softRefresh: true });
@@ -2958,10 +2979,12 @@ export class AppComponent implements OnInit, OnDestroy {
                 onSeedComplete: (seedItems) => {
                   if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
                   if (this.folderPrefetchPaused) return;
-                  // Cache seed early so a click during prefetch is already instant.
-                  if (!this.fileCrawlCache.get(key)) {
+                  // Cache seed early so a click during prefetch is already instant — memory
+                  // only, and never over an existing snapshot (it may be a complete one).
+                  if (this.fileCrawlCache.getStale(key) == null) {
                     seedSnapshot = this.sortCommentItemsByDateDesc(seedItems);
-                    this.fileCrawlCache.set(key, seedSnapshot);
+                    this.fileCrawlCache.setMemoryOnly(key, seedSnapshot);
+                    this.hrFolderPartialKeys.add(key);
                   }
                 },
               },
@@ -2972,7 +2995,13 @@ export class AppComponent implements OnInit, OnDestroy {
             // but do replace our own partial seed with the full result.
             const current = this.fileCrawlCache.get(key);
             if (current && current !== seedSnapshot) return;
-            this.fileCrawlCache.set(key, this.sortCommentItemsByDateDesc(mapped));
+            // Never shrink an older snapshot: a silently failed list must not drop its rows.
+            const prior = this.fileCrawlCache.getStale<any[]>(key);
+            const full = Array.isArray(prior) && prior !== seedSnapshot
+              ? this.mergeHrTasks(prior, mapped)
+              : mapped;
+            this.fileCrawlCache.set(key, this.sortCommentItemsByDateDesc(full));
+            this.hrFolderPartialKeys.delete(key);
             this.hrFolderCompleteAt.set(key, Date.now());
           } catch {
             // Prefetch failures are silent - click path will retry.
@@ -4463,7 +4492,12 @@ export class AppComponent implements OnInit, OnDestroy {
           if (mapped != null) next.push(mapped);
         }
         if (changed) {
-          this.fileCrawlCache.set(key, next);
+          // Unfinished HR snapshots stay memory-only (see hrFolderPartialKeys).
+          if (this.hrFolderPartialKeys.has(key)) {
+            this.fileCrawlCache.setMemoryOnly(key, next);
+          } else {
+            this.fileCrawlCache.set(key, next);
+          }
         }
       }
     }
@@ -5103,8 +5137,14 @@ export class AppComponent implements OnInit, OnDestroy {
         }
 
         //this only finds the tasks that are in the folder,this is the first pass
-        if (sorted.length > 0 || softRefresh || opts.complete) {
+        // Only a finished crawl goes to shared Redis. In-progress paints stay in memory,
+        // so a cancelled load can never leave a partial list behind for everyone.
+        if (opts.complete) {
           this.fileCrawlCache.set(folderCacheKey, sorted);
+          this.hrFolderPartialKeys.delete(folderCacheKey);
+        } else if (sorted.length > 0 || softRefresh) {
+          this.fileCrawlCache.setMemoryOnly(folderCacheKey, sorted);
+          if (!softRefresh) this.hrFolderPartialKeys.add(folderCacheKey);
         }
 
         if (!opts.background && !interactivePaintDone && sorted.length > 0) {
@@ -5238,6 +5278,7 @@ export class AppComponent implements OnInit, OnDestroy {
     },
 
   ): Promise<any[]> {
+    const crawlStartedAt = Date.now();
     const userEmail = (this.currentUser?.email ?? '').toLowerCase();
     const userUpn = (this.currentUser?.userPrincipalName ?? '').toLowerCase();
     const concurrency = AppConstants.hrFilesTaskListConcurrency;
@@ -5266,6 +5307,15 @@ export class AppComponent implements OnInit, OnDestroy {
     const mappedByList = new Map<string, any[]>();
     // listName -> list metadata for later related-eForm queries
     const listObjByName = new Map<string, any>();
+
+    // Phase timings for clicks / refreshes (not background prefetch) — shows where a slow load spends its time.
+    const crawlMode = softRefresh ? 'refresh' : options?.interactive ? 'open' : '';
+    const logCrawlPhase = (phase: string, detail = ''): void => {
+      if (!crawlMode) return;
+      const count = this.flattenHrMappedByList(mappedByList).length;
+      const seconds = ((Date.now() - crawlStartedAt) / 1000).toFixed(1);
+      console.info(`[HR Files] ${crawlMode} "${folderName}" ${phase}: ${count} tasks at ${seconds}s${detail}`);
+    };
 
     const publishListHits = (listName: string, mapped: any[]): void => {
       if (mapped.length === 0) return;
@@ -5454,6 +5504,7 @@ export class AppComponent implements OnInit, OnDestroy {
     // Interactive seed: newest LookupId/Title pages only — paints recent tasks first.
     const seedItems = this.flattenHrMappedByList(mappedByList);
     options?.onSeedComplete?.(seedItems);
+    logCrawlPhase('first pass', ` (${listsToQuery.length} lists)`);
 
     // Soft refresh used to return here after a light assignee pass, which left incomplete
     // Redis snapshots (e.g. 26 of ~52) stuck forever. Always continue into the deep crawl.
@@ -5595,6 +5646,8 @@ export class AppComponent implements OnInit, OnDestroy {
       }
     }
 
+    logCrawlPhase('deep crawl');
+
     // Second pass: workflow siblings that share the same eForm ID AND the same task name.
     const seedTasksForSiblings = this.preferCurrentUserSeedTasks(
       this.flattenHrMappedByList(mappedByList),
@@ -5656,6 +5709,10 @@ export class AppComponent implements OnInit, OnDestroy {
       }
     }
 
+    logCrawlPhase(
+      this.isStaleAllFilesFolderTaskLoad(loadSeq) ? 'cancelled' : 'finished',
+      ` (${eFormKeyToTaskNames.size} ids x ${mappedByList.size} lists for related steps)`,
+    );
     return this.flattenHrMappedByList(mappedByList);
   }
 

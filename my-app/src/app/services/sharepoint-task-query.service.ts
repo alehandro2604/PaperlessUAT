@@ -125,6 +125,8 @@ export class SharePointTaskQueryService {
   /** Lists where AssignedToLookupId filter already returned 400/404 - skip on future To Do loads. */
   private readonly assigneeLookupBlockedListIds = new Set<string>();
   private readonly sharePointListOrderBySupported = new Map<string, boolean>();
+  /** Lists where an `or`-combined eForm id filter failed this session — one key per request there. */
+  private readonly eFormOrFilterUnsupportedListIds = new Set<string>();
 
   /** Lists whose AssignedToLookupId filter already 400'd, read by To Do scope decisions. */
   get blockedAssigneeLookupListIds(): ReadonlySet<string> {
@@ -147,6 +149,7 @@ export class SharePointTaskQueryService {
     this.assigneeLookupBlockedListIds.clear();
     this.listPersonColumnsCache.clear();
     this.sharePointListOrderBySupported.clear();
+    this.eFormOrFilterUnsupportedListIds.clear();
     this.listFilterStatusHydrated = false;
   }
   getListFilterFieldStatus(listId: string, field: string): boolean | undefined {
@@ -309,13 +312,24 @@ export class SharePointTaskQueryService {
     const byId = new Map<string, any>();
     const fieldNames = this.orderFilterableFields(listId, ['eFormListId', 'ListId', 'field_11']);
     if (fieldNames.length === 0) return [];
-    const skippedThisCall = new Set<string>();
-    for (const key of eFormKeys) {
-      const safeKey = key.replace(/'/g, "''");
-      for (const field of fieldNames) {
-        if (this.getListFilterFieldStatus(listId, field) === false) continue;
-        if (skippedThisCall.has(field)) continue;
-        const filter = encodeURIComponent(`fields/${field} eq '${safeKey}'`);
+    const keys = [...eFormKeys];
+
+    for (const field of fieldNames) {
+      let index = 0;
+      while (index < keys.length) {
+        const fieldStatus = this.getListFilterFieldStatus(listId, field);
+        if (fieldStatus === false) break;
+        // An untested column is probed with one key, so a 400 can only mean "not
+        // filterable". Once it is known-good, keys are combined with `or` — one request
+        // per chunk instead of one per key.
+        const chunkSize =
+          fieldStatus === true && !this.eFormOrFilterUnsupportedListIds.has(listId)
+            ? AppConstants.hrFilesEFormKeyFilterChunkSize
+            : 1;
+        const chunk = keys.slice(index, index + chunkSize);
+        const filter = encodeURIComponent(
+          chunk.map(key => `fields/${field} eq '${key.replace(/'/g, "''")}'`).join(' or '),
+        );
         let nextPath: string | null =
           `/sites/${siteId}/lists/${listId}/items?$expand=fields&$top=100&$filter=${filter}`;
         let pages = 0;
@@ -335,15 +349,25 @@ export class SharePointTaskQueryService {
             nextPath = toGraphPath(page?.['@odata.nextLink']);
             pages += 1;
           }
+          index += chunk.length;
         } catch (err: any) {
           const status = err?.status ?? err?.error?.status;
-          if (this.isFilterProbeFailureStatus(status)) {
-            // 400/404 = column genuinely not filterable on this list; remember it.
-            this.markListFilterField(listId, field, false);
-          } else {
-            // Timeout / 429 / 5xx: skip for this call only, try again next load.
-            skippedThisCall.add(field);
+          if (chunk.length > 1) {
+            // Combined filter rejected or too slow on this list — redo these keys one at a time.
+            this.eFormOrFilterUnsupportedListIds.add(listId);
+            continue;
           }
+          if (this.isFilterProbeFailureStatus(status)) {
+            if (fieldStatus === true) {
+              // Column is proven filterable, so this one key is the problem — skip just it.
+              index += 1;
+              continue;
+            }
+            // 400/404 on the first probe = column genuinely not filterable; remember it.
+            this.markListFilterField(listId, field, false);
+          }
+          // Timeout / 429 / 5xx: give up on this column for this call only, try again next load.
+          break;
         }
       }
     }
