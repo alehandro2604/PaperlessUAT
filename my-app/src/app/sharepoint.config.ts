@@ -19,7 +19,7 @@ export const sharePointConfig = {
     : 'http://localhost:4200',
   backendUrl: 'http://localhost:3000',
 
-  // --- UAT (https://swiftpaperlessuat.enemalta.lan) ---
+  // --- UAT On live UR (https://swiftpaperlessuat.enemalta.lan) ---
   // Same-origin: IIS/ARR (or nginx) must proxy /api → http://127.0.0.1:3000
   // redirectUri: 'https://swiftpaperlessuat.enemalta.lan',
   // backendUrl: '',
