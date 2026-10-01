@@ -5102,6 +5102,7 @@ export class AppComponent implements OnInit, OnDestroy {
           return;
         }
 
+        //this only finds the tasks that are in the folder,this is the first pass
         if (sorted.length > 0 || softRefresh || opts.complete) {
           this.fileCrawlCache.set(folderCacheKey, sorted);
         }
@@ -5163,13 +5164,15 @@ export class AppComponent implements OnInit, OnDestroy {
       this.lastHrFilesCommentsFolder = folderName;
     } catch (err: any) {
       if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
-      if (softRefresh) return;
       console.error(`[HR Files] Failed loading tasks for "${folderName}"`, err);
+      if (softRefresh) return;
       this.isLoadingMoreComments = false;
-      this.commentItems = [];
-      this.invalidateCommentFilters();
-      this.commentsMessage = 'No tasks found.';
       this.isLoadingComments = false;
+      // Keep whatever is already painted; only show a message when the panel is empty.
+      if (this.commentItems.length === 0) {
+        this.invalidateCommentFilters();
+        this.commentsMessage = 'Could not load tasks. Press refresh to try again.';
+      }
       this.refreshView();
     } finally {
       this.folderTaskGraphInFlight = Math.max(0, this.folderTaskGraphInFlight - 1);
@@ -5485,7 +5488,10 @@ export class AppComponent implements OnInit, OnDestroy {
                   publishListHits(listName, mapRaw(pageItems));
                 },
               },
-            );
+            ).catch((err) => {
+              console.warn(`[HR Files] assignee lookup failed for ${listName}`, err);
+              return null;
+            });
             if (assigneeItems?.length) {
               publishListHits(listName, mapRaw(assigneeItems));
             }
@@ -5551,7 +5557,10 @@ export class AppComponent implements OnInit, OnDestroy {
                     publishListHits(listName, mapRaw(pageItems));
                   },
                 },
-              ),
+              ).catch((err) => {
+                console.warn(`[HR Files] assignee lookup failed for ${listName}`, err);
+                return null;
+              }),
               topUpSupplementPages <= 0
                 ? Promise.resolve([] as any[])
                 : this.taskQuery.fetchSharePointListPages(

@@ -13,8 +13,7 @@ export const AppConstants = {
   // localStorage prefix for per-drive folder-location cache
   folderCacheLsPrefix: 'sp_folder_',
   /** Persists which SharePoint list columns accept Graph $filter (avoids repeat 400 probes). */
-  listFilterFieldLsPrefix: 'sp_list_filter_v2_',
-
+  listFilterFieldLsPrefix: 'sp_list_filter_v3_',
   // How long (ms) a cached folder ID is considered fresh  (30 days)
   folderCacheTtlMs: 30 * 24 * 60 * 60 * 1000,// day,hour,minute,second,millisecond
 

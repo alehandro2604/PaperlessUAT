@@ -309,11 +309,12 @@ export class SharePointTaskQueryService {
     const byId = new Map<string, any>();
     const fieldNames = this.orderFilterableFields(listId, ['eFormListId', 'ListId', 'field_11']);
     if (fieldNames.length === 0) return [];
-
+    const skippedThisCall = new Set<string>();
     for (const key of eFormKeys) {
       const safeKey = key.replace(/'/g, "''");
       for (const field of fieldNames) {
         if (this.getListFilterFieldStatus(listId, field) === false) continue;
+        if (skippedThisCall.has(field)) continue;
         const filter = encodeURIComponent(`fields/${field} eq '${safeKey}'`);
         let nextPath: string | null =
           `/sites/${siteId}/lists/${listId}/items?$expand=fields&$top=100&$filter=${filter}`;
@@ -336,11 +337,13 @@ export class SharePointTaskQueryService {
           }
         } catch (err: any) {
           const status = err?.status ?? err?.error?.status;
-          // 400/404 = not filterable; timeout/other = don't keep retrying this field forever.
-          if (this.isFilterProbeFailureStatus(status) || status == null) {
+          if (this.isFilterProbeFailureStatus(status)) {
+            // 400/404 = column genuinely not filterable on this list; remember it.
             this.markListFilterField(listId, field, false);
+          } else {
+            // Timeout / 429 / 5xx: skip for this call only, try again next load.
+            skippedThisCall.add(field);
           }
-          // Field not filterable on this list - try next field/key.
         }
       }
     }
@@ -512,6 +515,7 @@ export class SharePointTaskQueryService {
     if (lookupFields.length === 0) return null;
 
     const byId = new Map<string, any>();
+    const skippedThisCall = new Set<string>();
     let anyFilterSucceeded = false;
     let firstFieldHit = false;
     const pageSize = options?.pageSize ?? AppConstants.hrFilesPersonLookupPageSize;
