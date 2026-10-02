@@ -92,6 +92,9 @@
   min-width: 0;
 }
 
+.comment-card-person--assigned {
+  justify-self: end;
+}
 .comment-card-label {
   font-size: 12px;
   color: var(--cc-muted);

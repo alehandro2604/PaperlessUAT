@@ -11,9 +11,31 @@
         <span class="app-system-name">Paperless System</span>
       </div>
     </div>
-    <button *ngIf="currentUser" class="sharepoint-connect-button" type="button" (click)="logout()">
-      Log Out
-    </button>
+    <div *ngIf="currentUser" class="user-log-wrapper">
+      <button
+        type="button"
+        class="user-log"
+        [class.is-open]="isUserMenuOpen"
+        aria-haspopup="menu"
+        [attr.aria-expanded]="isUserMenuOpen"
+        (click)="toggleUserMenu($event)"
+      >
+        <span class="user-avatar" aria-hidden="true">{{ getUserInitials(currentUser.username) }}</span>
+        <span class="user-log-name">{{ currentUser.username }}</span>
+        <i class="fi fi-br-angle-small-down user-log-chevron" aria-hidden="true"></i>
+      </button>
+
+      <div *ngIf="isUserMenuOpen" class="user-menu" role="menu" (click)="$event.stopPropagation()">
+        <div class="user-menu-header">
+          <span class="user-menu-label">Signed in as</span>
+          <span class="user-menu-name">{{ currentUser.username }}</span>
+        </div>
+        <button class="user-menu-item" type="button" role="menuitem" (click)="closeUserMenu(); logout()">
+          <i class="fi fi-rr-sign-out-alt" aria-hidden="true"></i>
+          Log Out
+        </button>
+      </div>
+    </div>
   </header>
 
   <section class="message-bar" aria-label="Message">
@@ -23,7 +45,10 @@
       </button>
       <span class="app-divider">|</span>
       <div *ngIf="currentUser" class="user-info-header">
-        <span class="user-name">{{ currentUser.username }}</span>
+        <span class="user-name" *ngIf="selectedFolderName && showAllFilesSection; else messageBarSubmitter">{{ selectedFolderName }}</span>
+        <ng-template #messageBarSubmitter>
+          <span class="user-name">{{ (!showAllFilesSection && selectedSubmitter) || currentUser.username }}</span>
+        </ng-template>
       </div>
       <div *ngIf="!currentUser" class="not-logged-in-message">
         <span>{{ isConnecting ? 'Signing in to Microsoft 365...' : statusMessage }}</span>
@@ -177,15 +202,7 @@
         </div>
         <div class="comment-title-group">
           <i class="fi fi-rr-comment-alt" aria-hidden="true"></i>
-          <h2>
-            Comments
-            <span *ngIf="selectedFolderName && showAllFilesSection" class="submitter-filter-badge">
-              — {{ selectedFolderName }}
-            </span>
-            <span *ngIf="selectedSubmitter && !showAllFilesSection" class="submitter-filter-badge">
-              — {{ selectedSubmitter }}
-            </span>
-          </h2>
+          <h2>Comments</h2>
         </div>
         <div class="header-actions">
           <div class="plus-btn" *ngIf="showToDoSection">
@@ -397,9 +414,8 @@
                     {{ eform.eFormDetails.customModifiedDate | date:'dd/MM/yyyy · HH:mm' }}
                   </span>
                 </div>
-
                 <div
-                  class="comment-card-person"
+                  class="comment-card-person comment-card-person--assigned"     
                   *ngIf="!isEformComplete(eform) && getAssignedToDisplay(eform) as assignedToDisplay">
                   <span class="comment-card-label">Assigned to</span>
                   <span class="comment-card-name" *ngIf="!showAssigneeDropdown(assignedToDisplay, eform)">

@@ -3,7 +3,7 @@
 // ============================================================
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { ChangeDetectorRef, Component, OnInit, OnDestroy, ViewChild } from '@angular/core';
+import { ChangeDetectorRef, Component, OnInit, OnDestroy, ViewChild, HostListener } from '@angular/core';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom, Observable, Subscription } from 'rxjs';
 import { sharePointConfig } from './sharepoint.config';
@@ -39,7 +39,6 @@ import { BackendApiService } from './services/backend-api.service';
 import { HrTaskMapperService } from './services/hr-task-mapper.service';
 import { HrTaskFolderMatchService } from './services/hr-task-folder-match.service';
 import { SharePointTaskQueryService } from './services/sharepoint-task-query.service';
-
 
 // ============================================================
 // ANGULAR COMPONENT DECORATOR
@@ -98,6 +97,29 @@ interface HrTaskDetailView {
 export class AppComponent implements OnInit, OnDestroy {
   @ViewChild(AllFilesComponent) private allFilesComponent?: AllFilesComponent;
   @ViewChild(TodoListComponent) private todoListComponent?: TodoListComponent;
+
+  /** Initials for the signed-in user's avatar in the top bar. */
+  protected getUserInitials(name: string | null | undefined): string {
+    const base = String(name ?? '').split('@')[0].replace(/[._-]+/g, ' ');
+    const initials = base.split(/\s+/).filter(Boolean).map(w => w[0]).join('');
+    return (initials || '?').slice(0, 3).toUpperCase();
+  }
+
+  protected isUserMenuOpen = false;
+
+  protected toggleUserMenu(event: Event): void {
+    event.stopPropagation();
+    this.isUserMenuOpen = !this.isUserMenuOpen;
+  }
+
+  /** Close the menu when the user clicks anywhere else on the page or presses Escape. */
+  @HostListener('document:click')
+  @HostListener('document:keydown.escape')
+  protected closeUserMenu(): void {
+    this.isUserMenuOpen = false;
+  }
+
+
 
   constructor(
     private readonly http: HttpClient,
@@ -188,6 +210,8 @@ export class AppComponent implements OnInit, OnDestroy {
       },
     );
   }
+
+
 
 
 
@@ -5307,6 +5331,12 @@ export class AppComponent implements OnInit, OnDestroy {
     const mappedByList = new Map<string, any[]>();
     // listName -> list metadata for later related-eForm queries
     const listObjByName = new Map<string, any>();
+    // Lists whose first-pass person lookup left rows unread — only these are re-read in the deep crawl.
+    const lookupIncompleteLists = new Set<string>();
+    // listName -> newest unfiltered pages already scanned in the first pass (not scanned twice).
+    const scannedListPages = new Map<string, number>();
+    // The deep crawl only runs with a LookupId; it then reads each list's newest pages itself.
+    const deepCrawlWillRun = !!personLookupId;
 
     // Phase timings for clicks / refreshes (not background prefetch) — shows where a slow load spends its time.
     const crawlMode = softRefresh ? 'refresh' : options?.interactive ? 'open' : '';
@@ -5367,6 +5397,7 @@ export class AppComponent implements OnInit, OnDestroy {
                 if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
                 publishListHits(listName, mapRaw(pageItems));
               },
+              onIncomplete: () => lookupIncompleteLists.add(listName),
             },
           )
         : Promise.resolve(null);
@@ -5407,8 +5438,9 @@ export class AppComponent implements OnInit, OnDestroy {
           )
         : Promise.resolve(null);
 
+      // Skipped when the deep crawl will run: it reads these same newest pages for every list.
       const supplementPromise =
-        deferHeavyFanOut || supplementPages <= 0
+        deferHeavyFanOut || supplementPages <= 0 || deepCrawlWillRun
           ? Promise.resolve([] as any[])
           : this.taskQuery.fetchSharePointListPages(
               this.cachedSiteId!,
@@ -5448,7 +5480,13 @@ export class AppComponent implements OnInit, OnDestroy {
         const scanPages = isSourceEForm
           ? AppConstants.hrFilesSourceEFormScanPages
           : maxPages;
-        if (scanPages <= 0) {
+        const deepSupplementPages = isSourceEForm
+          ? AppConstants.hrFilesSourceEFormLookupSupplementPages
+          : AppConstants.hrFilesLookupSupplementPages;
+        // The deep crawl reads the same newest pages for this list, so scanning them here
+        // too would download them twice. Only scan now when it reaches further than that.
+        const deepCrawlCoversScan = deepCrawlWillRun && scanPages <= deepSupplementPages;
+        if (scanPages <= 0 || deepCrawlCoversScan) {
           rawItems = [];
         } else {
           rawItems = await this.taskQuery.fetchSharePointListPages(
@@ -5459,6 +5497,7 @@ export class AppComponent implements OnInit, OnDestroy {
             scanPages,
             true,
           );
+          scannedListPages.set(listName, scanPages);
         }
       }
 
@@ -5495,7 +5534,9 @@ export class AppComponent implements OnInit, OnDestroy {
         if (onPartial && mappedByList.size > 0) {
           onPartial(this.flattenHrMappedByList(mappedByList));
         }
-        if (i + concurrency < listsToQuery.length) {
+        // Pacing gaps are for background prefetch only; the shared Graph limiter already
+        // caps what a click or refresh has in flight.
+        if (!crawlMode && i + concurrency < listsToQuery.length) {
           await this.sleep(AppComponent.HR_TASK_LIST_BATCH_GAP_MS);
         }
       }
@@ -5506,55 +5547,8 @@ export class AppComponent implements OnInit, OnDestroy {
     options?.onSeedComplete?.(seedItems);
     logCrawlPhase('first pass', ` (${listsToQuery.length} lists)`);
 
-    // Soft refresh used to return here after a light assignee pass, which left incomplete
-    // Redis snapshots (e.g. 26 of ~52) stuck forever. Always continue into the deep crawl.
-    if (softRefresh && personLookupId && !this.isStaleAllFilesFolderTaskLoad(loadSeq)) {
-      const listsForTopUp = [...listObjByName.entries()];
-      for (let i = 0; i < listsForTopUp.length; i += concurrency) {
-        if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) break;
-        const batch = listsForTopUp.slice(i, i + concurrency);
-        await Promise.all(
-          batch.map(async ([listName, listObj]) => {
-            if (!listObj?.id) return;
-            const mapRaw = (raw: any[]) =>
-              this.mapHrFolderRawItems(
-                raw,
-                listName,
-                listObj,
-                folderName,
-                personLookupId,
-                folderMatchHints,
-                userEmail,
-                userUpn,
-              );
-            const assigneeItems = await this.taskQuery.fetchSharePointListItemsForAssigneeLookup(
-              this.cachedSiteId!,
-              listObj.id,
-              token,
-              personLookupId,
-              {
-                maxPages: AppConstants.hrFilesSoftRefreshLookupPages,
-                onPage: (pageItems) => {
-                  if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) return;
-                  publishListHits(listName, mapRaw(pageItems));
-                },
-              },
-            ).catch((err) => {
-              console.warn(`[HR Files] assignee lookup failed for ${listName}`, err);
-              return null;
-            });
-            if (assigneeItems?.length) {
-              publishListHits(listName, mapRaw(assigneeItems));
-            }
-          }),
-        );
-        if (onPartial && mappedByList.size > 0) {
-          onPartial(this.flattenHrMappedByList(mappedByList));
-        }
-      }
-    }
-
-    // Deep LookupId + full assignee (cold and soft-refresh heal) so Load more sees the full set.
+    // Deep crawl (cold and soft refresh): full assignee rows and the newest unfiltered pages
+    // for every list, plus a LookupId re-read only where the first pass left rows unread.
     if (personLookupId && !this.isStaleAllFilesFolderTaskLoad(loadSeq)) {
       const listsForTopUp = [...listObjByName.entries()];
       const deepLookupPages = AppConstants.hrFilesPersonLookupMaxPages;
@@ -5580,8 +5574,13 @@ export class AppComponent implements OnInit, OnDestroy {
               ? AppConstants.hrFilesSourceEFormLookupSupplementPages
               : AppConstants.hrFilesLookupSupplementPages;
 
+            // Pages the first pass already scanned for this list are not downloaded again.
+            const supplementPagesNeeded =
+              topUpSupplementPages > (scannedListPages.get(listName) ?? 0) ? topUpSupplementPages : 0;
+
             const [deepLookupItems, assigneeItems, supplement] = await Promise.all([
-              deepLookupPages > AppConstants.hrFilesFirstPaintLookupPages
+              deepLookupPages > AppConstants.hrFilesFirstPaintLookupPages &&
+              lookupIncompleteLists.has(listName)
                 ? this.taskQuery.fetchSharePointListItemsForPersonLookup(
                     this.cachedSiteId!,
                     listObj.id,
@@ -5612,14 +5611,14 @@ export class AppComponent implements OnInit, OnDestroy {
                 console.warn(`[HR Files] assignee lookup failed for ${listName}`, err);
                 return null;
               }),
-              topUpSupplementPages <= 0
+              supplementPagesNeeded <= 0
                 ? Promise.resolve([] as any[])
                 : this.taskQuery.fetchSharePointListPages(
                     this.cachedSiteId!,
                     listObj.id,
                     token,
                     AppConstants.hrTasksFastLoadPageSize,
-                    topUpSupplementPages,
+                    supplementPagesNeeded,
                     true,
                   ),
             ]);
@@ -5640,13 +5639,13 @@ export class AppComponent implements OnInit, OnDestroy {
         if (onPartial && mappedByList.size > 0) {
           onPartial(this.flattenHrMappedByList(mappedByList));
         }
-        if (i + concurrency < listsForTopUp.length) {
+        if (!crawlMode && i + concurrency < listsForTopUp.length) {
           await this.sleep(AppComponent.HR_TASK_LIST_BATCH_GAP_MS);
         }
       }
     }
 
-    logCrawlPhase('deep crawl');
+    logCrawlPhase('deep crawl', ` (${lookupIncompleteLists.size} lists re-read)`);
 
     // Second pass: workflow siblings that share the same eForm ID AND the same task name.
     const seedTasksForSiblings = this.preferCurrentUserSeedTasks(
@@ -5703,7 +5702,7 @@ export class AppComponent implements OnInit, OnDestroy {
         if (onPartial) {
           onPartial(this.flattenHrMappedByList(mappedByList));
         }
-        if (i + concurrency < listsWithHits.length) {
+        if (!crawlMode && i + concurrency < listsWithHits.length) {
           await this.sleep(AppComponent.HR_TASK_LIST_BATCH_GAP_MS);
         }
       }

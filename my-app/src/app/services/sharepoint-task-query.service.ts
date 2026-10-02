@@ -505,6 +505,8 @@ export class SharePointTaskQueryService {
       maxPages?: number;
       pageSize?: number;
       onPage?: (items: any[], pageIndex: number) => void;
+      /** Called when rows were left unread: a column hit the page cap, or a request failed. */
+      onIncomplete?: () => void;
     },
   ): Promise<any[] | null> {
     const prefer = { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' };
@@ -539,7 +541,6 @@ export class SharePointTaskQueryService {
     if (lookupFields.length === 0) return null;
 
     const byId = new Map<string, any>();
-    const skippedThisCall = new Set<string>();
     let anyFilterSucceeded = false;
     let firstFieldHit = false;
     const pageSize = options?.pageSize ?? AppConstants.hrFilesPersonLookupPageSize;
@@ -582,6 +583,8 @@ export class SharePointTaskQueryService {
           }
           nextPath = toGraphPath(page?.['@odata.nextLink']);
         }
+        // Stopped at the page cap with more rows waiting.
+        if (nextPath) options?.onIncomplete?.();
         return 'ok';
       } catch (err: any) {
         const status = err?.status ?? err?.error?.status;
@@ -593,6 +596,9 @@ export class SharePointTaskQueryService {
         }
         if (this.isFilterProbeFailureStatus(status)) {
           this.markListFilterField(listId, field, false);
+        } else {
+          // Timeout / 429 / 5xx: the column works, this read just did not finish.
+          options?.onIncomplete?.();
         }
         return 'bad-field';
       }

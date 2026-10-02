@@ -122,7 +122,7 @@
             <span
               class="subgroup-due-date"
               *ngIf="hasDueDateColumn(sub.tasks[0]) && getTaskDueDateDisplay(sub.tasks[0]) as dueDate"
-            >{{ dueDate }}</span>
+            ><span class="subgroup-due-date-value">{{ dueDate }}</span></span>
             <div class="subgroup-actions" (click)="$event.stopPropagation()">
               <app-claim
                 *ngIf="sub.tasks?.length && isClaimableTask(sub.tasks[0])"
