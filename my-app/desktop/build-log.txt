@@ -1,0 +1,143 @@
+Packaging (a few minutes)... 
+
+> paperless-desktop@1.0.0 dist
+> electron-builder --win
+
+  • electron-builder  version=25.1.8 os=10.0.26100
+  • loaded configuration  file=package.json ("build" field)
+  • author is missed in the package.json  appPackageFile=C:\Users\alehcam\Downloads\Paperless\my-app\desktop\package.json
+  • executing @electron/rebuild  electronVersion=33.4.11 arch=x64 buildFromSource=false appDir=./
+  • installing native dependencies  arch=x64
+  • completed installing native dependencies
+  • packaging       platform=win32 arch=x64 electron=33.4.11 appOutDir=release\win-unpacked
+  • updating asar integrity executable resource  executablePath=release\win-unpacked\Paperless.exe
+  • default Electron icon is used  reason=application icon is not set
+  • downloading     url=https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z size=5.6 MB parts=1
+  • downloaded      url=https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z duration=1.127s
+  ⨯ cannot execute  cause=exit status 2
+                    out=
+    7-Zip (a) 21.07 (x64) : Copyright (c) 1999-2021 Igor Pavlov : 2021-12-26
+    
+    Scanning the drive for archives:
+    1 file, 5635384 bytes (5504 KiB)
+    
+    Extracting archive: C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\999793423.7z
+    --
+    Path = C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\999793423.7z
+    Type = 7z
+    Physical Size = 5635384
+    Headers Size = 1492
+    Method = LZMA2:24m LZMA:20 BCJ2
+    Solid = +
+    Blocks = 2
+    
+    
+    Sub items Errors: 2
+    
+    Archives with Errors: 1
+    
+    Sub items Errors: 2
+    
+                    errorOut=ERROR: Cannot create symbolic link : A required privilege is not held by the client. : C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\999793423\darwin\10.12\lib\libcrypto.dylib
+    ERROR: Cannot create symbolic link : A required privilege is not held by the client. : C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\999793423\darwin\10.12\lib\libssl.dylib
+    
+                    command='C:\Users\alehcam\Downloads\Paperless\my-app\desktop\node_modules\7zip-bin\win\x64\7za.exe' x -snld -bd 'C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\999793423.7z' '-oC:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\999793423'
+                    workingDir=C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign
+  • Above command failed, retrying 3 more times
+  • downloading     url=https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z size=5.6 MB parts=1
+  • downloaded      url=https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z duration=951ms
+  ⨯ cannot execute  cause=exit status 2
+                    out=
+    7-Zip (a) 21.07 (x64) : Copyright (c) 1999-2021 Igor Pavlov : 2021-12-26
+    
+    Scanning the drive for archives:
+    1 file, 5635384 bytes (5504 KiB)
+    
+    Extracting archive: C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\330990899.7z
+    --
+    Path = C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\330990899.7z
+    Type = 7z
+    Physical Size = 5635384
+    Headers Size = 1492
+    Method = LZMA2:24m LZMA:20 BCJ2
+    Solid = +
+    Blocks = 2
+    
+    
+    Sub items Errors: 2
+    
+    Archives with Errors: 1
+    
+    Sub items Errors: 2
+    
+                    errorOut=ERROR: Cannot create symbolic link : A required privilege is not held by the client. : C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\330990899\darwin\10.12\lib\libcrypto.dylib
+    ERROR: Cannot create symbolic link : A required privilege is not held by the client. : C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\330990899\darwin\10.12\lib\libssl.dylib
+    
+                    command='C:\Users\alehcam\Downloads\Paperless\my-app\desktop\node_modules\7zip-bin\win\x64\7za.exe' x -snld -bd 'C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\330990899.7z' '-oC:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\330990899'
+                    workingDir=C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign
+  • Above command failed, retrying 3 more times
+  • downloading     url=https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z size=5.6 MB parts=1
+  • downloaded      url=https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z duration=1.005s
+  ⨯ cannot execute  cause=exit status 2
+                    out=
+    7-Zip (a) 21.07 (x64) : Copyright (c) 1999-2021 Igor Pavlov : 2021-12-26
+    
+    Scanning the drive for archives:
+    1 file, 5635384 bytes (5504 KiB)
+    
+    Extracting archive: C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\992131375.7z
+    --
+    Path = C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\992131375.7z
+    Type = 7z
+    Physical Size = 5635384
+    Headers Size = 1492
+    Method = LZMA2:24m LZMA:20 BCJ2
+    Solid = +
+    Blocks = 2
+    
+    
+    Sub items Errors: 2
+    
+    Archives with Errors: 1
+    
+    Sub items Errors: 2
+    
+                    errorOut=ERROR: Cannot create symbolic link : A required privilege is not held by the client. : C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\992131375\darwin\10.12\lib\libcrypto.dylib
+    ERROR: Cannot create symbolic link : A required privilege is not held by the client. : C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\992131375\darwin\10.12\lib\libssl.dylib
+    
+                    command='C:\Users\alehcam\Downloads\Paperless\my-app\desktop\node_modules\7zip-bin\win\x64\7za.exe' x -snld -bd 'C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\992131375.7z' '-oC:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\992131375'
+                    workingDir=C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign
+  • Above command failed, retrying 3 more times
+  • downloading     url=https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z size=5.6 MB parts=1
+  • downloaded      url=https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z duration=1.081s
+  ⨯ cannot execute  cause=exit status 2
+                    out=
+    7-Zip (a) 21.07 (x64) : Copyright (c) 1999-2021 Igor Pavlov : 2021-12-26
+    
+    Scanning the drive for archives:
+    1 file, 5635384 bytes (5504 KiB)
+    
+    Extracting archive: C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\684610615.7z
+    --
+    Path = C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\684610615.7z
+    Type = 7z
+    Physical Size = 5635384
+    Headers Size = 1492
+    Method = LZMA2:24m LZMA:20 BCJ2
+    Solid = +
+    Blocks = 2
+    
+    
+    Sub items Errors: 2
+    
+    Archives with Errors: 1
+    
+    Sub items Errors: 2
+    
+                    errorOut=ERROR: Cannot create symbolic link : A required privilege is not held by the client. : C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\684610615\darwin\10.12\lib\libcrypto.dylib
+    ERROR: Cannot create symbolic link : A required privilege is not held by the client. : C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\684610615\darwin\10.12\lib\libssl.dylib
+    
+                    command='C:\Users\alehcam\Downloads\Paperless\my-app\desktop\node_modules\7zip-bin\win\x64\7za.exe' x -snld -bd 'C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\684610615.7z' '-oC:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign\684610615'
+                    workingDir=C:\Users\alehcam\AppData\Local\electron-builder\Cache\winCodeSign
+  • Above command failed, retrying 3 more times
+exit code 1 
