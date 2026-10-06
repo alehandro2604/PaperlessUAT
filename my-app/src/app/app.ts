@@ -14,7 +14,14 @@ import {
   isHrTitleMatchedTaskList,
 } from './hr-task-lists.config';
 import { getFileExtension, getFileCategory, getFileIcon, normalizeSharePointFileUrl } from './file-utils';
-import { graphGet, graphGetWithRetry, clearGraphThrottleCooldown, toGraphPath, normalizeName } from './microsoft-graph';
+import {
+  graphGet,
+  graphGetWithRetry,
+  clearGraphThrottleCooldown,
+  isGraphBackgroundBackedOff,
+  toGraphPath,
+  normalizeName,
+} from './microsoft-graph';
 import { InteractionRequiredAuthError } from '@azure/msal-browser';
 import { AuthService } from './services/auth.service';
 import { FormConfigurationService } from './services/form-configuration.service';
@@ -149,9 +156,12 @@ export class AppComponent implements OnInit, OnDestroy {
    * Background poll for To Do watermarks. Folder Comments uses a longer cadence
    * (FOLDER_COMMENTS_POLL_MS) so a person with many lists is not re-fanned every tick.
    */
-  private static readonly SHAREPOINT_CACHE_POLL_MS = 60_000;
-  /** Idle top-up of the open HR/All Files Comments folder. Keep ≥3 min to avoid 429s. */
-  private static readonly FOLDER_COMMENTS_POLL_MS = 3 * 60_000;
+  private static readonly SHAREPOINT_CACHE_POLL_MS = 5 * 60_000;
+  /**
+   * Idle top-up of the open HR/All Files Comments folder. Each run re-crawls every task
+   * list for that folder, so keep it rare — every 3 min helped push idle tabs into 429s.
+   */
+  private static readonly FOLDER_COMMENTS_POLL_MS = 10 * 60_000;
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -245,6 +255,8 @@ export class AppComponent implements OnInit, OnDestroy {
   private todoFirstPassComplete = false;
   /** True while Progress=Pending procurement pages are draining in the background. */
   protected todoProcurementDrainActive = false;
+  /** Background drain chunks spent on the current To Do load (capped per load). */
+  private todoBackgroundDrainChunks = 0;
   /** Prevent stale Comments/HR task loads when task groups are clicked rapidly. */
   private hrCommentsLoadSeq = 0;
   /** Count of in-flight HR / All Files folder Comments Graph crawls. */
@@ -1177,6 +1189,23 @@ export class AppComponent implements OnInit, OnDestroy {
   /** Interval that picks up external SharePoint task edits into Redis while signed in. */
   private sharePointCachePollTimer: ReturnType<typeof setInterval> | null = null;
   private lastFolderCommentsPollMs = 0;
+  /** Last mouse / keyboard / touch / scroll input — background Graph work stops when stale. */
+  private lastUserActivityMs = Date.now();
+  private readonly onUserActivity = (): void => {
+    this.lastUserActivityMs = Date.now();
+  };
+
+  /**
+   * Gate for background (not user-clicked) Graph traffic: polling, prefetch, warm-up.
+   * Off while the tab is hidden, after a few idle minutes, and shortly after any 429 —
+   * so a tab left open does not keep spending the tenant's SharePoint budget.
+   */
+  private backgroundGraphAllowed(): boolean {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+    if (Date.now() - this.lastUserActivityMs > AppConstants.backgroundIdleAfterMs) return false;
+    return !isGraphBackgroundBackedOff();
+  }
+
   private readonly onDocumentVisibilityForCachePoll = (): void => {
     if (document.visibilityState === 'visible') {
       this.startSharePointCachePoll();
@@ -1788,6 +1817,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
     const loadSeq = ++this.todoTaskLoadSeq;
     this.isLoadingTodoTasks = true;
+    this.todoBackgroundDrainChunks = 0;
     this.todoFirstPassComplete = false;
     this.todoScopeCacheValid = false;
     // Yield Graph capacity to To Do - idle folder children crawls compete for the same budget.
@@ -1907,7 +1937,15 @@ export class AppComponent implements OnInit, OnDestroy {
   private async drainProcurementTodoInBackground(loadSeq: number): Promise<void> {
     this.todoProcurementDrainActive = true;
     try {
-      while (!this.isStaleTodoTaskLoad(loadSeq) && this.hasMoreProcurementTodoCursors()) {
+      // Capped and gated: leftover cursors stay for "Load more tasks" instead of
+      // scanning whole Proc* lists in the background on every load.
+      while (
+        !this.isStaleTodoTaskLoad(loadSeq) &&
+        this.hasMoreProcurementTodoCursors() &&
+        this.todoBackgroundDrainChunks < AppConstants.todoProcBackgroundMaxChunks &&
+        this.backgroundGraphAllowed()
+      ) {
+        this.todoBackgroundDrainChunks += 1;
         await this.fetchMoreTodoFromCursors(AppConstants.todoProcBackgroundPagesPerChunk, {
           procurementOnly: true,
         });
@@ -2941,6 +2979,7 @@ export class AppComponent implements OnInit, OnDestroy {
   /** Silently warm `tasks:hr-folder:*` without touching the Comments UI. */
   private async prefetchHrFolderTasks(folderNames: string[]): Promise<void> {
     if (this.folderPrefetchPaused || folderNames.length === 0) return;
+    if (!this.backgroundGraphAllowed()) return;
     if (this.isLoadingHrFilesList) return;
     // Allow during To Do background drain — only skip while the first To Do pass
     // still owns the spinner (pauseFolderPrefetch covers that window).
@@ -2980,6 +3019,7 @@ export class AppComponent implements OnInit, OnDestroy {
     for (let i = 0; i < pending.length; i += concurrency) {
       if (this.folderPrefetchPaused) return;
       if (this.isLoadingComments || this.isLoadingMoreComments) return;
+      if (!this.backgroundGraphAllowed()) return;
 
       const batch = pending.slice(i, i + concurrency);
       await Promise.all(
@@ -3058,6 +3098,7 @@ export class AppComponent implements OnInit, OnDestroy {
   /** Silently warm the per-folder cache without touching Attachments UI. */
   private async prefetchDriveFolders(driveId: string, folderIds: string[]): Promise<void> {
     if (this.folderPrefetchPaused || this.isLoadingTodoTasks) return;
+    if (!this.backgroundGraphAllowed()) return;
     const pending = folderIds.filter(folderId => {
       const key = this.driveFolderCacheKey(driveId, folderId);
       if (this.fileCrawlCache.get(key)) return false;
@@ -3075,6 +3116,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
     for (let i = 0; i < pending.length; i += this.folderPrefetchConcurrency) {
       if (this.folderPrefetchPaused || this.isLoadingTodoTasks) return;
+      if (!this.backgroundGraphAllowed()) return;
       const batch = pending.slice(i, i + this.folderPrefetchConcurrency);
       await Promise.all(
         batch.map(async folderId => {
@@ -3350,6 +3392,10 @@ export class AppComponent implements OnInit, OnDestroy {
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.onDocumentVisibilityForCachePoll);
       document.addEventListener('visibilitychange', this.onDocumentVisibilityForCachePoll);
+      for (const type of ['pointerdown', 'keydown', 'wheel', 'touchstart'] as const) {
+        document.removeEventListener(type, this.onUserActivity, true);
+        document.addEventListener(type, this.onUserActivity, { capture: true, passive: true });
+      }
     }
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
       return;
@@ -3371,12 +3417,15 @@ export class AppComponent implements OnInit, OnDestroy {
     this.stopSharePointCachePollTimerOnly();
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.onDocumentVisibilityForCachePoll);
+      for (const type of ['pointerdown', 'keydown', 'wheel', 'touchstart'] as const) {
+        document.removeEventListener(type, this.onUserActivity, true);
+      }
     }
   }
 
   private async pollSharePointTaskCaches(): Promise<void> {
     if (!this.currentUser?.email) return;
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    if (!this.backgroundGraphAllowed()) return;
     if (this.superiorMode) return;
     // Do not compete with an active To Do / Comments Graph fan-out.
     if (
@@ -3719,7 +3768,9 @@ export class AppComponent implements OnInit, OnDestroy {
       void this.prefetchHrFolderTasks(names);
     }, AppConstants.hrFilesTaskPrefetchDelayMs);
 
-    void this.warmAllHrPeopleSlowly();
+    if (AppConstants.hrFilesWarmAllEnabled) {
+      void this.warmAllHrPeopleSlowly();
+    }
   }
 
   /**
@@ -3751,7 +3802,8 @@ export class AppComponent implements OnInit, OnDestroy {
           this.isLoadingComments ||
           this.isLoadingMoreComments ||
           this.isLoadingTodoTasks ||
-          this.isLoadingHrFilesList
+          this.isLoadingHrFilesList ||
+          !this.backgroundGraphAllowed()
         ) {
           await this.sleep(5000);
           if (!this.currentUser) return;

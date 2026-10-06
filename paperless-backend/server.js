@@ -1,6 +1,7 @@
 require('dotenv').config();
 
 const express = require('express');
+const compression = require('compression');
 const cors = require('cors');
 const redisClient = require('./redisClient');
 const { getGraphClient } = require('./graphAuth');
@@ -23,7 +24,11 @@ app.use(
       : undefined // default: reflect request origin (fine for local / same-network UAT)
   )
 );
-// Crawl snapshots cached by the Angular app can be several MB.
+// Cache snapshots are multi-MB JSON that gzips ~90%+; compress responses both ways
+// (the Angular client also gzips large PUT bodies, which express.json inflates).
+app.use(compression());
+// Crawl snapshots cached by the Angular app can be several MB. The limit applies
+// to the inflated body, so gzip shrinks the transfer but not what counts here.
 app.use(express.json({ limit: '25mb' }));
 
 const PORT = process.env.PORT || 3000;

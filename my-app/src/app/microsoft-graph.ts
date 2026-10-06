@@ -38,6 +38,19 @@ const MAX_CONCURRENT_GRAPH_REQUESTS = 2;
 
 /** While set, no request goes out until this time — shared cooldown after a 429. */
 let graphThrottledUntilMs = 0;
+/** Last time SharePoint answered 429 — background warm-up stays off for a while after. */
+let lastGraphThrottleAtMs = 0;
+/** How long background (non-click) Graph work stays paused after any 429. */
+const BACKGROUND_BACKOFF_AFTER_429_MS = 2 * 60_000;
+
+/**
+ * True shortly after a 429. Prefetch / warm-up / polling should skip their run while
+ * this holds: the retry cooldown only delays the failed request, and background work
+ * resuming right after it is what kept re-tripping the throttle.
+ */
+export function isGraphBackgroundBackedOff(): boolean {
+  return Date.now() - lastGraphThrottleAtMs < BACKGROUND_BACKOFF_AFTER_429_MS;
+}
 let activeGraphRequests = 0;
 const graphSlotWaiters: Array<() => void> = [];
 
@@ -114,6 +127,7 @@ export async function graphGetWithRetry(
     }
 
     const status = failure?.status ?? failure?.error?.status;
+    if (status === 429) lastGraphThrottleAtMs = Date.now();
     if (status !== 429 || attempt >= maxRetries) throw failure;
 
     const delayMs = resolveThrottleDelayMs(failure, attempt);

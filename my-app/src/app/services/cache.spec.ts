@@ -34,6 +34,32 @@ describe('CacheService', () => {
     expect(await pending).toBeUndefined();
   });
 
+  it('does not re-upload an unchanged entry until it is cleared', async () => {
+    const save = async () => {
+      const pending = service.set('fc:same', { rows: [1, 2, 3] });
+      await new Promise(r => setTimeout(r));
+      return pending;
+    };
+
+    const first = save();
+    await new Promise(r => setTimeout(r));
+    http.expectOne(`${base}/entry`).flush({ ok: true });
+    await first;
+
+    await save();
+    http.expectNone(`${base}/entry`);
+
+    const cleared = service.clear('fc:same');
+    await new Promise(r => setTimeout(r));
+    http.expectOne(r => r.method === 'DELETE').flush({ ok: true });
+    await cleared;
+
+    const again = save();
+    await new Promise(r => setTimeout(r));
+    http.expectOne(r => r.method === 'PUT').flush({ ok: true });
+    await again;
+  });
+
   it('skips oversized entries instead of throwing', async () => {
     const pending = service.set('fc:big', { rows: [] });
     await new Promise(r => setTimeout(r));

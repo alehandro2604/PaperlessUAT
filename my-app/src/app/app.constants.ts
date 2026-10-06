@@ -51,6 +51,13 @@ export const AppConstants = {
   todoProcInitialPages: 30,
   /** Background drain chunk size for remaining Progress=Pending procurement cursors. */
   todoProcBackgroundPagesPerChunk: 40,
+  /**
+   * Max background drain chunks per To Do load. Progress is not indexed on the Proc*
+   * lists, so every page is a 200-row server scan that is often near-empty — an
+   * uncapped drain sent ~250 Graph requests in under 2 min and hit 429. Older pending
+   * rows stay behind "Load more tasks" (or index Progress in SharePoint to fix at source).
+   */
+  todoProcBackgroundMaxChunks: 1,
   /** Unused on login (auto-drain removed); kept for rare manual drain callers. */
   todoDrainPagesPerList: 0,
   /** Manual "Load older" continues from stored cursors without re-scanning from page 1. */
@@ -117,14 +124,22 @@ export const AppConstants = {
    * Idle-prefetch HR Files person tasks (like All Files folder prefetch).
    * Keep moderate — each person fans out across many task lists.
    */
-  hrFilesTaskPrefetchMaxBatch: 12,
+  hrFilesTaskPrefetchMaxBatch: 6,
   hrFilesTaskPrefetchConcurrency: 2,
   hrFilesTaskPrefetchDelayMs: 500,
   hrFilesTaskPrefetchBatchGapMs: 400,
+  /**
+   * Trickle-warm every HR person for all-access users. Off: measured ~80 Graph
+   * requests/min and repeated 429s from one idle browser, and every all-access
+   * browser runs it. People still load on open from shared Redis or SharePoint.
+   */
+  hrFilesWarmAllEnabled: false,
   /** All-access users: wait this long after login before trickle-warming every HR person. */
   hrFilesWarmAllStartDelayMs: 15000,
   /** Gap between people in the trickle warm — keeps Graph well under 429 limits. */
   hrFilesWarmAllGapMs: 3000,
+  /** No mouse/keyboard/touch for this long → background Graph polling and prefetch stop. */
+  backgroundIdleAfterMs: 5 * 60_000,
 
   /**
    * All Files document-library folder Comments only (not HRPersonal).
