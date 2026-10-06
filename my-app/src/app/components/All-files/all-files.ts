@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy, ChangeDetectorRef, Output, EventEmitter, Input } from '@angular/core';
+import { Component, OnInit, OnDestroy, ChangeDetectorRef, Output, EventEmitter, Input, ViewChild, ElementRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 import { AuthService } from '../../services/auth.service';
@@ -162,6 +162,10 @@ const GRAPH_PAGE_GAP_MS = 350;
 const COMMENT_TASKS_GAP_MS = 100;
 /** Debounce search keystrokes before filtering / background paging. */
 const SEARCH_DEBOUNCE_MS = 250;
+/** Folder cards rendered per page in the All / Files grid. */
+const RENDER_PAGE_SIZE = 100;
+/** Start rendering the next page when this close (px) to the bottom of the list. */
+const RENDER_AHEAD_PX = 800;
 /** Debounce folder-prefetch emissions so progressive paint doesn't spam the parent. */
 const PREFETCH_EMIT_DEBOUNCE_MS = 1500;
 /** Memory-only Comments search index (never Redis — payloads hit HTTP 413). */
@@ -182,7 +186,21 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   /** Files from all libraries for search across all libraries. */
   private allLibrariesFiles: SpFile[] = [];
   /** Files currently displayed (filtered view). */
-  files: SpFile[] = [];//array to store fetched files
+  private _files: SpFile[] = [];
+  get files(): SpFile[] {
+    return this._files;
+  }
+  set files(value: SpFile[]) {
+    this._files = value;
+    this.visibleFiles = value.slice(0, this.renderLimit);
+  }
+  /**
+   * Cards actually in the DOM. "All" can hold 20k+ folders; rendering them at
+   * once froze the tab for seconds, so cards are added in pages on scroll.
+   */
+  visibleFiles: SpFile[] = [];
+  private renderLimit = RENDER_PAGE_SIZE;
+  @ViewChild('contentInner') private contentInner?: ElementRef<HTMLElement>;
   isLoading = false;//loading state
   /** Loading indicator for the "All" view which aggregates folders across libraries. */
   isLoadingAllLibraries = false;
@@ -1035,6 +1053,26 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     return this.selectedFileId === file.id;
   }
 
+  trackFile(_: number, file: SpFile): string {
+    return `${file.driveId ?? ''}:${file.id}`;
+  }
+
+  /** Renders the next page of folder cards once the list is scrolled near its end. */
+  onContentScroll(event: Event): void {
+    if (this.visibleFiles.length >= this._files.length) return;
+    const el = event.target as HTMLElement;
+    if (el.scrollTop + el.clientHeight < el.scrollHeight - RENDER_AHEAD_PX) return;
+    this.renderLimit += RENDER_PAGE_SIZE;
+    this.visibleFiles = this._files.slice(0, this.renderLimit);
+  }
+
+  /** New search / filter / library: go back to the first page and the top of the list. */
+  private resetRenderedPage(): void {
+    this.renderLimit = RENDER_PAGE_SIZE;
+    this.visibleFiles = this._files.slice(0, this.renderLimit);
+    this.contentInner?.nativeElement.scrollTo({ top: 0 });
+  }
+
   /** Keep result cards in the DOM across rebuilds instead of redrawing all of them. */
   trackCommentHit(_: number, hit: CommentSearchHit): string {
     return hit.taskId;
@@ -1591,6 +1629,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
 
   onFilterTypeChange(type: string): void {
     this.filterType = type as 'all' | 'files' | 'attachments' | 'comments';
+    this.resetRenderedPage();
     this.error = null; // a failure in one view must not hide the list in another
     this.graphSearchSeq++;
     this.graphSearchFolders = [];
@@ -1645,6 +1684,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     if (this.searchDebounceTimer) clearTimeout(this.searchDebounceTimer);
     this.searchDebounceTimer = setTimeout(() => {
       this.searchDebounceTimer = null;
+      this.resetRenderedPage();
       this.runSearch(this.searchTerm);
     }, SEARCH_DEBOUNCE_MS);
   }
@@ -3001,6 +3041,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
 
   onLibraryChange(libraryName: string): void {
     this.selectedLibrary = libraryName;
+    this.resetRenderedPage();
     this.graphSearchSeq++;
     this.graphSearchFolders = [];
     this.isGraphSearching = false;

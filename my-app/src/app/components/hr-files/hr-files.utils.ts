@@ -65,11 +65,12 @@ export function formatDisplayName(item: HrFileListItem): string {
   return item.name;
 }
 
+//this will do the initials for each hr-file by 3,so example AJC
 export function getDisplayInitial(item: HrFileListItem): string {
   // Initials come from the name only, so the PIN digits are never included
   const base = item.fullName?.trim() || item.name.split('@')[0].replace(/^\d+\s*/, '').replace(/[._-]+/g, ' ');
   const initials = base.split(/\s+/).filter(Boolean).map(w => w[0]).join('');
-  return (initials || '?').slice(0, 2).toUpperCase();
+  return (initials || '?').slice(0, 3).toUpperCase();
 }
 
 function getHrFileSearchTokens(item: HrFileListItem): {
@@ -78,7 +79,9 @@ function getHrFileSearchTokens(item: HrFileListItem): {
   leadingId: string;
   email: string;
   emailLocal: string;
-} {
+} 
+
+{
   const raw = (item.name ?? '').trim();
   const display = formatDisplayName(item);
   const leadingId = raw.match(/^(\d+)\b/)?.[1] ?? '';

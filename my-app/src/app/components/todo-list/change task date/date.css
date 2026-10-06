@@ -50,6 +50,11 @@
   color: var(--brand-blue, #0078d4);
 }
 
+/* Clock tile when its task card is expanded */
+.subgroup-item.is-expanded .change-task-date-btn {
+  background: #ffffff;
+}
+
 @media (max-width: 1024px) {
   .change-task-date-btn {
     width: 44px;

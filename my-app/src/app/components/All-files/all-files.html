@@ -40,7 +40,7 @@
     </div>
   </div>
   <div class="content">
-    <div class="content-inner">
+    <div class="content-inner" #contentInner (scroll)="onContentScroll($event)">
       <div *ngIf="filterType === 'comments' && isLoadingCommentTasks" class="loading">Loading comments…</div>
       <div *ngIf="filterType === 'comments' && (isSearchingMoreCommentTasks || isCrawlingCommentTasks)" class="loading">
         Searching comments in all folders…
@@ -121,7 +121,7 @@
       </div>
 
       <div *ngIf="filterType !== 'comments' && filterType !== 'attachments' && !isLoading && !isLoadingAllLibraries && !error && files.length > 0" class="files-grid">
-        <ng-container *ngFor="let file of files">
+        <ng-container *ngFor="let file of visibleFiles; trackBy: trackFile">
           <!-- Level 1: folder card — click selects it and accordion-expands its subfolders -->
           <div class="file-card" [class.folder]="file.isfolder"
             [class.active]="isFileSelected(file)"

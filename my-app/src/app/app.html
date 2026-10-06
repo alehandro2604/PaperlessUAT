@@ -406,7 +406,7 @@
                 </div>
 
                 <div
-                  class="comment-card-person"
+                  class="comment-card-person comment-card-person--completed"
                   *ngIf="isEformComplete(eform) && getLastModifiedByName(eform) as completedByName">
                   <span class="comment-card-label">Completed by</span>
                   <span class="comment-card-name">{{ completedByName }} ✓</span>
@@ -428,6 +428,7 @@
                     [ngModel]="getAssignees(assignedToDisplay)[0]"
                     ariaLabel="Assigned to"
                     triggerClass="assigned-select"
+                    menuAlign="right"
                     [fullWidth]="true"
                   />
                   <span class="comment-card-date" *ngIf="eform.eFormDetails?.customModifiedDate">

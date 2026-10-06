@@ -176,6 +176,8 @@
 .message-right {
   display: flex;
   align-items: center;
+  background-color:#eaf2fa;
+  border-radius: 10px;
 }
 
 /* ====== MODAL ====== */

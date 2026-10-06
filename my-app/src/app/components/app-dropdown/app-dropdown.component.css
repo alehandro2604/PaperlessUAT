@@ -249,6 +249,13 @@
   max-width: 220px;
 }
 
+/* Grow to fit full names instead of cutting them off */
+:host(.assigned-select-dropdown) .app-dropdown-menu {
+  width: max-content;
+  min-width: max(100%, 220px);
+  max-width: min(320px, calc(100vw - 48px));
+}
+
 :host(.assigned-select-dropdown--mobile) {
   max-width: none;
   width: 100%;

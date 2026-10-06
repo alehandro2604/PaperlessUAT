@@ -2986,6 +2986,10 @@ export class AppComponent implements OnInit, OnDestroy {
         batch.map(async folderName => {
           const key = this.hrFolderTaskCacheKey(folderName);
           if (this.fileCrawlCache.get(key) || this.hrTaskPrefetchInFlight.has(key)) return;
+          // HR snapshots are not bulk-loaded at sign-in — skip the Graph crawl when
+          // another user's recent crawl is already in shared Redis.
+          const shared = await this.fileCrawlCache.hydrateFromPersistent<any[]>(key);
+          if (shared?.fresh || this.hrTaskPrefetchInFlight.has(key)) return;
 
           // Snapshot active load seq - abort if the user starts a real folder task load.
           const loadSeq = this.allFilesFolderTaskLoadSeq;
@@ -5311,7 +5315,9 @@ export class AppComponent implements OnInit, OnDestroy {
     // Email + LookupId never change for a folder — shared Redis skips two Graph
     // round-trips on every cold open after anyone has resolved this person once.
     const idsKey = this.hrPersonIdsCacheKey(folderName);
-    const cachedIds = this.fileCrawlCache.getStale<{ email: string; lookupId: string | null }>(idsKey);
+    const cachedIds =
+      this.fileCrawlCache.getStale<{ email: string; lookupId: string | null }>(idsKey) ??
+      (await this.fileCrawlCache.hydrateFromPersistent<{ email: string; lookupId: string | null }>(idsKey))?.data;
     const folderEmail = cachedIds?.email || await this.taskQuery.resolveHrFolderPersonEmail(folderName);
     let personLookupId: string | null = cachedIds?.email ? cachedIds.lookupId ?? null : null;
     if (personLookupId) {
