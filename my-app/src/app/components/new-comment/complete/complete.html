@@ -18,7 +18,7 @@
   >
     <div class="complete-modal-header">
       <h3 id="complete-title" class="complete-modal-title">Complete task</h3>
-      <button type="button" class="complete-modal-close" aria-label="Close" (click)="closeModal()">
+      <button type="button" class="complete-modal-close" aria-label="Close" [disabled]="isSubmitting" (click)="closeModal()">
         &times;
       </button>
     </div>
@@ -29,13 +29,17 @@
         class="complete-modal-textarea"
         rows="6"
         placeholder="Write your completion text..."
+        [disabled]="isSubmitting"
         [(ngModel)]="completeText"
       ></textarea>
+      <p *ngIf="errorMessage" class="complete-modal-error" role="alert">{{ errorMessage }}</p>
     </div>
 
     <div class="complete-modal-footer">
-      <button type="button" class="complete-modal-btn secondary" (click)="closeModal()">Cancel</button>
-      <button type="button" class="complete-modal-btn primary" (click)="onSaveClick()">Save</button>
+      <button type="button" class="complete-modal-btn secondary" [disabled]="isSubmitting" (click)="closeModal()">Cancel</button>
+      <button type="button" class="complete-modal-btn primary" [disabled]="isSubmitting" (click)="onSaveClick()">
+        {{ isSubmitting ? 'Saving…' : 'Save' }}
+      </button>
     </div>
   </div>
 </ng-template>

@@ -6,6 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
+    "start:uat": "node server.js --env .env.uat",
+    "dev:uat": "nodemon server.js --env .env.uat",
     "ram-report": "node scripts/redis-ram-report.js"
   },
   "dependencies": {

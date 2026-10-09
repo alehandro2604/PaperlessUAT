@@ -8,7 +8,7 @@
     <div class="top-bar-left">
       <button class="round-icon app-launcher" aria-label="Open app launcher"></button>
       <div class="app-title-group">
-        <span class="app-system-name">Paperless System</span>
+        <span class="app-system-name">{{ appSystemName }}</span>
       </div>
     </div>
     <div *ngIf="currentUser" class="user-log-wrapper">
@@ -96,6 +96,10 @@
       </div>
 
       <div class="card-body">
+        <app-loading-screen
+          [loading]="!(currentUser && currentUser.email)"
+          [compact]="true"
+          message="Signing you in…"></app-loading-screen>
         <div *ngIf="currentUser && currentUser.email">
           <!-- ToDo Section -->
           <div *ngIf="showToDoSection" class="todo-section">
@@ -105,7 +109,8 @@
             (submitterSelected)="onSubmitterSelected($event)"
             (superiorModeChange)="onSuperiorModeChange($event)"
             (taskCompleted)="onCompleteTask($event)"
-            (taskDueDateChanged)="onTaskDueDateChanged($event)">
+            (taskDueDateChanged)="onTaskDueDateChanged($event)"
+            (taskClaimed)="onTaskClaimed($event)">
           </app-todo-list>
 
           <div class="load-more-container" *ngIf="hasMoreTodoTasks && !isLoadingTodoTasks && !todoProcurementDrainActive">
@@ -547,7 +552,8 @@
           <p class="error-message" *ngIf="errorMessage">{{ errorMessage }}</p>
           <p *ngIf="!isLoadingUserFiles && attachmentItems.length === 0">
             <ng-container *ngIf="showAllFilesSection">Click a folder in All Files to view attachments.</ng-container>
-            <ng-container *ngIf="!showAllFilesSection">Click the refresh icon to load your files.</ng-container>
+            <ng-container *ngIf="showToDoSection">Click a task in To Do to view its attachments.</ng-container>
+            <ng-container *ngIf="!showAllFilesSection && !showToDoSection">Click the refresh icon to load your files.</ng-container>
           </p>
           <div *ngIf="!isLoadingUserFiles && attachmentItems.length > 0" class="attachment-table-wrapper">
             <div class="attachment-table-header">
@@ -625,7 +631,7 @@
 
           <div class="user-file-content">
             <p *ngIf="isLoadingUserFiles">{{ userFileProgressMessage || 'Loading files from SharePoint...' }}</p>
-            <p *ngIf="!isLoadingUserFiles && userFiles.length === 0 && !isUsingHrTaskList">No files or folders found.</p>
+            <p *ngIf="!isLoadingUserFiles && userFiles.length === 0 && !isUsingHrTaskList && !userFileWarning">No files or folders found.</p>
             <p *ngIf="!isLoadingUserFiles && userFileWarning">{{ userFileWarning }}</p>
 
             <div *ngIf="!isUsingHrTaskList && !isLoadingUserFiles && userFiles.length > 0" class="attachment-table-wrapper">

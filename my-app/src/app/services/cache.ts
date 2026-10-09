@@ -78,9 +78,12 @@ export class CacheService {
       this.lastStored.set(key, print);
     } catch (err: unknown) {
       const status = (err as { status?: number })?.status;
-      // Oversized All Files Comments snapshots etc. — keep memory cache, skip Redis.
+      // Oversized snapshot — keep the memory cache, but drop the Redis copy: it is now
+      // older than what we failed to save (e.g. still lists a task just completed),
+      // and a fresh load beats painting stale rows on the next visit.
       if (status === 413) {
-        console.warn(`[cache] skipped persist for "${key}" (payload too large)`);
+        console.warn(`[cache] skipped persist for "${key}" (payload too large); clearing stale copy`);
+        await this.clear(key).catch(() => undefined);
         return;
       }
       throw err;

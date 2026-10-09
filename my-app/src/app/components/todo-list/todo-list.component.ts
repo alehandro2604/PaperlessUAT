@@ -1,13 +1,14 @@
 import { Component, OnInit, OnDestroy, Output, EventEmitter, Input } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { LoadingScreenComponent } from '../loading screen/loading-screen';
 import { Subscription } from 'rxjs';
 import { TodoService } from '../../services/todo.service';
 import { UserService } from '../../services/user.service';
 import { ToDoTask } from '../../types/todo-task.interface';
 import { DomainUser, SubordinaryTaskService } from '../../services/subordinaryTask.service';
-import { NewCommentCompleteComponent } from '../new-comment/complete/complete';
+import { CompleteTaskEvent, NewCommentCompleteComponent } from '../new-comment/complete/complete';
 import { ChangeTaskDateComponent } from './change task date/date';
-import { ClaimComponent } from '../Claimable Task/claim';
+import { ClaimComponent, TaskClaimedEvent } from '../Claimable Task/claim';
 
 export interface SubmitterSelection {
   name: string;
@@ -46,7 +47,7 @@ export interface LocalToDoTask {
 @Component({
   selector: 'app-todo-list',
   standalone: true,
-  imports: [CommonModule, NewCommentCompleteComponent, ChangeTaskDateComponent, ClaimComponent],
+  imports: [CommonModule, LoadingScreenComponent, NewCommentCompleteComponent, ChangeTaskDateComponent, ClaimComponent],
   templateUrl: './todo-list.component.html',
   styleUrls: ['./todo-list.component.css']
 })
@@ -173,8 +174,9 @@ export class TodoListComponent implements OnInit, OnDestroy {
   expandedSubmitters: Set<string> = new Set();
   @Output() submitterSelected = new EventEmitter<SubmitterSelection | null>();
   @Output() superiorModeChange = new EventEmitter<boolean>();
-  @Output() taskCompleted = new EventEmitter<{ task: ToDoTask; completionText: string }>();
+  @Output() taskCompleted = new EventEmitter<{ task: ToDoTask } & CompleteTaskEvent>();
   @Output() taskDueDateChanged = new EventEmitter<{ task: ToDoTask; dueDate: string }>();
+  @Output() taskClaimed = new EventEmitter<TaskClaimedEvent>();
 
   /** Level-1 accordion state (only one submitter group expanded at a time). */
   expandedSubmitterGroups: Set<string> = new Set();
@@ -836,10 +838,11 @@ export class TodoListComponent implements OnInit, OnDestroy {
         : false);
   }
 
-  onCompleteTask(task: ToDoTask, event: { completionText: string }): void {
+  onCompleteTask(task: ToDoTask, event: CompleteTaskEvent): void {
     this.taskCompleted.emit({
       task,
       completionText: String(event?.completionText ?? '').trim(),
+      done: event.done,
     });
   }
 
@@ -921,15 +924,49 @@ export class TodoListComponent implements OnInit, OnDestroy {
     return (sub?.tasks ?? []).some(task => this.hasDueDateColumn(task));
   }
 
-  /** TEMP testing: show Claim when SharePoint Claimable is No/false. Flip back to Yes/true later. */
+  /** First Request for Action task in the card (not only tasks[0]), or null. */
+  getRequestForActionTask(sub: { tasks?: ToDoTask[] } | null | undefined): ToDoTask | null {
+    return (sub?.tasks ?? []).find(task => this.isRequestForActionTask(task)) ?? null;
+  }
+
+  /** First task in the card that the current user can claim, or null. */
+  getClaimableTask(sub: { tasks?: ToDoTask[] } | null | undefined): ToDoTask | null {
+    return (sub?.tasks ?? []).find(task => this.isClaimableTask(task)) ?? null;
+  }
+
+  /**
+   * Claim shows when SharePoint Claimable is Yes/true and the task is shared with someone else.
+   * Claiming only changes the assignee (Claimable stays Yes), so once the current user is the
+   * sole assignee there is nothing left to claim.
+   */
   isClaimableTask(task: ToDoTask | null | undefined): boolean {
     if (!task || !this.isTaskAssignedToCurrentUserTask(task)) return false;
+    if (this.isSoleAssigneeCurrentUser(task)) return false;
 
     const value = this.getClaimableValue(task);
     if (value == null) return false;
-    if (typeof value === 'boolean') return value === false;
+    if (typeof value === 'boolean') return value === true;
     const s = String(value).trim().toLowerCase();
-    return s === 'no' || s === 'false' || s === '0';
+    return s === 'yes' || s === 'true' || s === '1';
+  }
+
+  private isSoleAssigneeCurrentUser(task: ToDoTask): boolean {
+    const assignees = this.getTaskAssigneeValues(task);
+    if (!assignees.length) return false;
+    const email = this.userService.getCurrentUserEmail();
+    const name = this.userService.getCurrentUserName();
+    return assignees.every(value => this.isAssignedToCurrentUser(value, name, email));
+  }
+
+  /** Keep the local task in sync after a successful claim (current user is now the only assignee). */
+  onTaskClaimed(event: TaskClaimedEvent): void {
+    const t = event?.task as ToDoTask & { eFormDetails?: Record<string, unknown> };
+    if (!t) return;
+    const label = event.name || event.email;
+    t.assignedTo = label;
+    t.eFormDetails = { ...(t.eFormDetails ?? {}), assignedTo: label };
+    this.invalidateGroupedTasksCache();
+    this.taskClaimed.emit(event);
   }
 
   private getClaimableValue(task: ToDoTask | null | undefined): unknown {

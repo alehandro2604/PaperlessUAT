@@ -48,10 +48,10 @@
     </div>
 
     <!-- Loading state — only when nothing to show yet -->
-    <div *ngIf="isTodoLoading && submitterNames.length === 0" class="loading">
-      <ng-container *ngIf="showSubordinateTasks && subordinateTasksLoading">Loading subordinate tasks...</ng-container>
-      <ng-container *ngIf="!(showSubordinateTasks && subordinateTasksLoading)">Loading tasks...</ng-container>
-    </div>
+    <app-loading-screen
+      [loading]="isTodoLoading && submitterNames.length === 0"
+      [compact]="true"
+      [message]="showSubordinateTasks && subordinateTasksLoading ? 'Loading subordinate tasks…' : 'Loading tasks…'"></app-loading-screen>
 
     <!-- Empty state — only after load fully finished -->
     <div *ngIf="!isTodoLoading && submitterNames.length === 0" class="no-tasks">
@@ -125,14 +125,15 @@
             ><span class="subgroup-due-date-value">{{ dueDate }}</span></span>
             <div class="subgroup-actions" (click)="$event.stopPropagation()">
               <app-claim
-                *ngIf="sub.tasks?.length && isClaimableTask(sub.tasks[0])"
-                [task]="sub.tasks[0]"
+                *ngIf="getClaimableTask(sub) as claimTask"
+                [task]="claimTask"
+                (claimed)="onTaskClaimed($event)"
               ></app-claim>
               <app-new-comment-complete
-                *ngIf="sub.tasks?.length"
-                [task]="sub.tasks[0]"
-                [isRequestForActionTask]="isRequestForActionTask(sub.tasks[0])"
-                (completeTask)="onCompleteTask(sub.tasks[0], $event)"
+                *ngIf="getRequestForActionTask(sub) as rfaTask"
+                [task]="rfaTask"
+                [isRequestForActionTask]="true"
+                (completeTask)="onCompleteTask(rfaTask, $event)"
               ></app-new-comment-complete>
             </div>
             <i class="fi fi-br-angle-right user-arrow" aria-hidden="true"></i>

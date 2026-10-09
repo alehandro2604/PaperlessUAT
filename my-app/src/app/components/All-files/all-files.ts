@@ -1,5 +1,6 @@
 import { Component, OnInit, OnDestroy, ChangeDetectorRef, Output, EventEmitter, Input, ViewChild, ElementRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { LoadingScreenComponent } from '../loading screen/loading-screen';
 import { HttpClient } from '@angular/common/http';
 import { AuthService } from '../../services/auth.service';
 import { DocumentService } from '../../services/document.service';
@@ -175,7 +176,7 @@ const DRIVES_CACHE_KEY = 'files:drives:v1';
 @Component({
   selector: 'app-all-files',
   standalone: true,
-  imports: [CommonModule, FormsModule, AppDropdownComponent],
+  imports: [CommonModule, FormsModule, AppDropdownComponent, LoadingScreenComponent],
   templateUrl: './all-files.html',
   styleUrls: ['./all-files.css']
 })
@@ -205,7 +206,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   /** Loading indicator for the "All" view which aggregates folders across libraries. */
   isLoadingAllLibraries = false;
   /** True for the whole all-libraries crawl (including progressive paint) — blocks prefetch. */
-  private allLibrariesCrawlActive = false;
+  allLibrariesCrawlActive = false;
   error: string | null = null;//error message
   documentLibraries: any[] = [];
   selectedLibrary: string = '';
@@ -399,6 +400,8 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       // Files-tab nextLink from a partial All snapshot.
       if (!this.fullyLoadedAllLibraries.has(libraryName)) continue;
       const existing = this.readLibraryFilesCache(libraryName);
+      // Already saved complete (shared Redis entry) — rewriting it would re-upload the same listing.
+      if (existing?.complete) continue;
       if (existing && !existing.complete && (existing.items?.length ?? 0) > libItems.length) {
         continue;
       }
@@ -472,8 +475,8 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         this.documentLibraries = libraries;
         if (libraries.length > 0 && !this.selectedLibrary) {
           this.selectedLibrary = libraries[0].name;
-          // Default view is "All" — load libraries sequentially (HR-style), not in parallel.
-          void this.loadAllLibrariesFiles();
+          // Default view is "All", which stays empty until the user searches,
+          // so nothing is crawled at startup. See runSearch().
         }
       }),
     );
@@ -544,6 +547,8 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         if (!drive) continue;
 
         // Prefer a complete per-library cache so switching libraries / remounts stay instant.
+        // Pull this library's shared Redis entry into memory first (no-op if already loaded).
+        await this.fileCrawlCache.hydrateFromPersistent(this.libraryFilesCacheKey(library.name));
         const libCached = this.readLibraryFilesCache(library.name);
         if (libCached?.complete && libCached.items.length > 0) {
           this.fullyLoadedAllLibraries.add(library.name);
@@ -605,8 +610,10 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       );
 
       // ALL_ROOT means "finished crawl" — never cache a list missing a failed library.
+      // Memory only: it merges every library, so it is not shareable. Each library's own
+      // listing is saved once (shared, access-checked) by writeLibraryFilesCache instead.
       if (!anyLibraryFailed && this.allLibrariesFiles.length > 0) {
-        this.fileCrawlCache.set(AllFilesComponent.ALL_ROOT_CACHE_KEY, this.allLibrariesFiles);
+        this.fileCrawlCache.setMemoryOnly(AllFilesComponent.ALL_ROOT_CACHE_KEY, this.allLibrariesFiles);
       }
       this.seedLibraryCachesFromAllRoot(this.allLibrariesFiles);
       if (anyLibraryFailed && this.allLibrariesFiles.length === 0) {
@@ -1393,6 +1400,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     this.isLoadingMoreFiles = false;
 
     // 1) Prefer per-library cache so switching libraries preserves Load more / nextLink.
+    await this.fileCrawlCache.hydrateFromPersistent(this.libraryFilesCacheKey(this.selectedLibrary));
     const cached = this.readLibraryFilesCache(this.selectedLibrary);
     if (cached?.items?.length) {
       this.applyLibraryFilesToView(
@@ -1646,17 +1654,9 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       return;
     }
     if (this.filterType === 'all') {
-      if (this.allLibrariesFiles.length === 0) {
-        void this.loadAllLibrariesFiles().then(() => {
-          if (this.searchTerm.trim()) {
-            void this.searchFoldersViaGraph(this.searchTerm.trim(), 'all');
-          }
-        });
-      } else {
-        this.applyFilters();
-        if (this.searchTerm.trim()) {
-          void this.searchFoldersViaGraph(this.searchTerm.trim(), 'all');
-        }
+      this.applyFilters();
+      if (this.searchTerm.trim()) {
+        void this.searchAllLibraries(this.searchTerm.trim());
       }
       return;
     }
@@ -1728,11 +1728,24 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     if (this.filterType === 'all') {
       this.applyFilters();
       if (term) {
-        void this.searchFoldersViaGraph(term, 'all');
+        void this.searchAllLibraries(term);
       }
       return;
     }
     this.applyFilters();
+  }
+
+  /**
+   * "All" loads nothing until the user searches. Graph search answers by folder
+   * name straight away; the root-folder list (cached after the first time) is
+   * loaded in the background so matches on Assigned To / library also appear.
+   */
+  private async searchAllLibraries(term: string): Promise<void> {
+    void this.searchFoldersViaGraph(term, 'all');
+    await this.loadAllLibrariesFiles();
+    if (this.filterType === 'all' && this.searchTerm.trim()) {
+      this.applyFilters();
+    }
   }
 
   /** Clear Comments search UI; folder task caches are owned by the parent. */
@@ -1776,6 +1789,12 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
 
     if (this.filterType === 'files') {
       await this.loadFiles();
+      return;
+    }
+
+    // "All" with no search shows nothing, so there is nothing to reload.
+    if (this.filterType === 'all' && !this.searchTerm.trim()) {
+      this.applyFilters();
       return;
     }
 
@@ -1861,6 +1880,11 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
 
   /** All: show folders across every library (AllFiles order), filtered by folder reference. */
   private applyAllFilter(term: string): void {
+    // Nothing is listed until the user searches (keeps startup fast).
+    if (!term) {
+      this.files = [];
+      return;
+    }
     let folders = this.allLibrariesFiles.filter(
       (file) => file.isfolder && this.hasFolderDisplayName(file)
     );

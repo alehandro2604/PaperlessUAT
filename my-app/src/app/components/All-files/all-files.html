@@ -48,11 +48,10 @@
       <div *ngIf="isSearchingMoreAttachments" class="loading">
         Loading attachments for matching folders…
       </div>
-      <div
-        *ngIf="(filterType === 'all' || filterType === 'files') && (isLoading || isLoadingAllLibraries) && files.length === 0"
-        class="loading">
-        Loading folders…
-      </div>
+      <app-loading-screen
+        [loading]="(filterType === 'all' || filterType === 'files') && (isLoading || isLoadingAllLibraries) && files.length === 0"
+        [compact]="true"
+        message="Loading folders…"></app-loading-screen>
       <div
         *ngIf="(filterType === 'all' || filterType === 'files') && error && !isLoading && !isLoadingAllLibraries"
         class="empty">
@@ -172,6 +171,11 @@
         No matching folders found.
       </div>
       <div
+        *ngIf="filterType === 'all' && !searchTerm.trim()"
+        class="empty">
+        Type a keyword to search folders in all libraries.
+      </div>
+      <div
         *ngIf="filterType === 'attachments' && !isSearchingMoreAttachments && !searchTerm.trim()"
         class="empty">
         Type a keyword to search inside attachments (file names and document text) in all folders.
@@ -191,6 +195,11 @@
         class="empty">
         No comments contain that keyword.
       </div>
+      <!-- Later libraries (e.g. Procurement) keep arriving after the first paint -->
+      <app-loading-screen
+        [loading]="(filterType === 'all' || filterType === 'files') && allLibrariesCrawlActive && files.length > 0"
+        [compact]="true"
+        message="Loading more libraries…"></app-loading-screen>
     </div>
     <div
       class="load-more-container"

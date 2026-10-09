@@ -64,9 +64,11 @@ export class DelegateComponent implements OnInit, OnDestroy {
   ) { }
 
   ngOnInit(): void {
-    this.canDelegateSubscription = this.delegateService.canDelegate$.subscribe(
-      canDelegate => (this.canDelegate = canDelegate),
-    );
+    // Delegates load after sign-in; zoneless app needs an explicit render when that resolves.
+    this.canDelegateSubscription = this.delegateService.canDelegate$.subscribe(canDelegate => {
+      this.canDelegate = canDelegate;
+      this.cdr.markForCheck();
+    });
 
     if (!this.delegateService.isLoaded) {
       void this.delegateService.loadDelegates();
@@ -103,19 +105,32 @@ export class DelegateComponent implements OnInit, OnDestroy {
   }
 
   canShowDelegateButton(): boolean {
-    const status = (this.task?.eFormDetails?.status || this.task?.status || '').trim().toLowerCase();
     const assignedTo =
       this.task?.assignedTo ||
       this.task?.eFormDetails?.assignedTo;
 
-    // Only show if status is pending and NOT approved/completed
-    const isPending = status === 'pending';
-    const isCompleted = status.includes('approved') || status.includes('complete') || status.includes('rejected');
-
     // Check if task is assigned to current user
     const isAssignedToCurrentUser = this.userService.matchesAssigneeField(assignedTo);
 
-    return this.canDelegate && isPending && !isCompleted && isAssignedToCurrentUser;
+    return this.canDelegate && this.isTaskOpen() && isAssignedToCurrentUser;
+  }
+
+  /**
+   * Same open/closed rules as the Comments cards: Progress is the live gate, and
+   * HR lists store LastState values like "Pending Approval by HOD", not a bare "Pending".
+   */
+  private isTaskOpen(): boolean {
+    const details = this.task?.eFormDetails ?? {};
+    const progress = String(details['progress'] ?? details['eFormProgress'] ?? '').trim().toLowerCase();
+    if (progress === 'complete' || progress === 'completed') return false;
+    if (progress === 'pending') return true;
+
+    // Empty status = General Comment / New Attachment / RFA card, which has nothing to delegate.
+    const status = String(details.status || this.task?.status || '').trim().toLowerCase();
+    if (!status) return false;
+    if (/reject|denied|cancel/.test(status)) return false;
+    if (/\b(pending|awaiting|waiting|needs?)\b.*\bapprov/.test(status)) return true;
+    return !(status.includes('approv') || status.includes('complet'));
   }
 
   onSearchInput(): void {

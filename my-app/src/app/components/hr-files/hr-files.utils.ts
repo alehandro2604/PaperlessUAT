@@ -79,9 +79,7 @@ function getHrFileSearchTokens(item: HrFileListItem): {
   leadingId: string;
   email: string;
   emailLocal: string;
-} 
-
-{
+} {
   const raw = (item.name ?? '').trim();
   const display = formatDisplayName(item);
   const leadingId = raw.match(/^(\d+)\b/)?.[1] ?? '';

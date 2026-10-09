@@ -92,8 +92,8 @@ export const AppConstants = {
   hrFilesSourceEFormLookupSupplementPages: 2,
   /** Extra pages for Sick Certificate / source eForm lists when LookupId misses. */
   hrFilesSourceEFormScanPages: 6,
-  /** eForm ids combined with `or` in one related-steps query (falls back to 1 if a list rejects it). */
-  hrFilesEFormKeyFilterChunkSize: 12,
+  /** eForm ids combined with `or` in one related-steps query (halves per list if a list rejects it, down to 1). */
+  hrFilesEFormKeyFilterChunkSize: 30,
   /** Graph $top for person LookupId queries (larger pages = fewer round-trips). */
   hrFilesPersonLookupPageSize: 200,
   /**
@@ -139,7 +139,9 @@ export const AppConstants = {
   /** Gap between people in the trickle warm — keeps Graph well under 429 limits. */
   hrFilesWarmAllGapMs: 3000,
   /** No mouse/keyboard/touch for this long → background Graph polling and prefetch stop. */
-  backgroundIdleAfterMs: 5 * 60_000,
+  
+  //2 minutes instead of how the 5 was
+  backgroundIdleAfterMs: 2 * 60_000,
 
   /**
    * All Files document-library folder Comments only (not HRPersonal).

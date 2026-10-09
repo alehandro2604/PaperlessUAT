@@ -90,6 +90,24 @@ app-claim {
   color: var(--text-dark, #1b2a3a);
 }
 
+.claim-modal-body p + p {
+  margin-top: 10px;
+}
+
+.claim-modal-body .claim-modal-success {
+  color: #107c10;
+  font-weight: 600;
+}
+
+.claim-modal-body .claim-modal-error {
+  color: #c50f1f;
+}
+
+.claim-modal-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .claim-modal-footer {
   display: flex;
   justify-content: flex-end;

@@ -34,7 +34,7 @@ export function graphGet(
 // 429 pause *every* caller instead of each one discovering it separately.
 
 /** Hard ceiling on concurrent Graph requests, app-wide. */
-const MAX_CONCURRENT_GRAPH_REQUESTS = 2;
+const MAX_CONCURRENT_GRAPH_REQUESTS = 4;
 
 /** While set, no request goes out until this time — shared cooldown after a 429. */
 let graphThrottledUntilMs = 0;

@@ -1,4 +1,4 @@
-<button type="button" class="claim-btn" (click)="openModal($event)">Claim</button>
+<button *ngIf="!isClaimed" type="button" class="claim-btn" (click)="openModal($event)">Claim</button>
 
 <ng-template #claimDialog>
   <div
@@ -9,19 +9,53 @@
     (click)="$event.stopPropagation()"
   >
     <div class="claim-modal-header">
-      <h3 id="claim-title" class="claim-modal-title">Claim Task</h3>
-      <button type="button" class="claim-modal-x" aria-label="Close" (click)="closeModal($event)">
+      <h3 id="claim-title" class="claim-modal-title">{{ isClaimed ? 'Task Claimed' : 'Claim Task' }}</h3>
+      <button
+        type="button"
+        class="claim-modal-x"
+        aria-label="Close"
+        [disabled]="isClaiming"
+        (click)="closeModal($event)"
+      >
         &times;
       </button>
     </div>
 
     <div class="claim-modal-body">
-      <p>Are you sure you want to claim this task?</p>
+      <ng-container *ngIf="!isClaimed">
+        <p>
+          This task is assigned to multiple people. Once you claim the task, it will be exclusively
+          assigned to you.
+        </p>
+        <p>Are you sure you want to claim this task?</p>
+      </ng-container>
+      <p *ngIf="isClaimed" class="claim-modal-success" role="status">
+        The task has been claimed and is now assigned only to you.
+      </p>
+      <p *ngIf="errorMessage" class="claim-modal-error" role="alert">{{ errorMessage }}</p>
     </div>
 
     <div class="claim-modal-footer">
-      <button type="button" class="claim-modal-btn secondary" (click)="closeModal($event)">Close</button>
-      <button type="button" class="claim-modal-btn primary" (click)="claimTask($event)">Claim Task</button>
+      <ng-container *ngIf="!isClaimed">
+        <button
+          type="button"
+          class="claim-modal-btn secondary"
+          [disabled]="isClaiming"
+          (click)="closeModal($event)"
+        >Close</button>
+        <button
+          type="button"
+          class="claim-modal-btn primary"
+          [disabled]="isClaiming"
+          (click)="claimTask($event)"
+        >{{ isClaiming ? 'Claiming…' : 'Claim Task' }}</button>
+      </ng-container>
+      <button
+        *ngIf="isClaimed"
+        type="button"
+        class="claim-modal-btn primary"
+        (click)="closeModal($event)"
+      >OK</button>
     </div>
   </div>
 </ng-template>

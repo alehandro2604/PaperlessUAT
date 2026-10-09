@@ -1,4 +1,6 @@
-require('dotenv').config();
+// `node server.js --env .env.uat` runs against the UAT site (see npm run dev:uat).
+const envFlag = process.argv.indexOf('--env');
+require('dotenv').config({ path: envFlag > -1 ? process.argv[envFlag + 1] : '.env' });
 
 const express = require('express');
 const compression = require('compression');
@@ -29,7 +31,9 @@ app.use(
 app.use(compression());
 // Crawl snapshots cached by the Angular app can be several MB. The limit applies
 // to the inflated body, so gzip shrinks the transfer but not what counts here.
-app.use(express.json({ limit: '25mb' }));
+// The To Do snapshot (thousands of tasks with comment HTML) passed 25mb; a rejected
+// save left the old copy in Redis, so completed tasks came back after a reload.
+app.use(express.json({ limit: '100mb' }));
 
 const PORT = process.env.PORT || 3000;
 const CACHE_TTL_SECONDS = Number(process.env.CACHE_TTL_SECONDS || 300);

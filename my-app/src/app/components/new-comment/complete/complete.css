@@ -166,3 +166,13 @@
     outline: none;
     box-shadow: 0 0 0 3px rgba(0, 110, 255, 0.22);
 }
+.complete-modal-error {
+    margin: 8px 0 0;
+    color: #c50f1f;
+}
+
+.complete-modal-btn:disabled,
+.complete-modal-close:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}

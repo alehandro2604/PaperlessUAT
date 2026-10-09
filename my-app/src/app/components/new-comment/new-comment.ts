@@ -1,4 +1,4 @@
-import { Component, EventEmitter, Input, OnChanges, OnDestroy, Output, SimpleChanges } from '@angular/core';
+import { ChangeDetectorRef, Component, EventEmitter, Input, OnChanges, OnDestroy, Output, SimpleChanges } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { AppDropdownComponent, AppDropdownOption } from '../app-dropdown/app-dropdown.component';
@@ -100,6 +100,7 @@ export class NewCommentComponent implements OnChanges, OnDestroy {
   constructor(
     private todoService: TodoService,
     private delegateService: DelegateService,
+    private cdr: ChangeDetectorRef,
   ) {}
 
   ngOnChanges(changes: SimpleChanges): void {
@@ -227,6 +228,8 @@ export class NewCommentComponent implements OnChanges, OnDestroy {
       console.error('Failed to save comment', err);
     } finally {
       this.saving = false;
+      // App runs zoneless: without this a failed save stays stuck on "saving" with no error shown.
+      this.cdr.markForCheck();
     }
   }
 
@@ -274,6 +277,8 @@ export class NewCommentComponent implements OnChanges, OnDestroy {
       this.actionSearchResults = [];
     } finally {
       this.actionSearching = false;
+      // App runs zoneless, so this async result needs an explicit render.
+      this.cdr.markForCheck();
     }
   }
 

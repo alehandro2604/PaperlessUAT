@@ -34,6 +34,15 @@ function describeKey(key, ctx) {
   let m = key.match(/^fc:files:folder:([^:]+):([^:]+)$/);
   if (m) return { resource: `item:${m[1]}:${m[2]}`, path: `/drives/${m[1]}/items/${m[2]}?$select=id` };
 
+  // Library root listing: allowed only if the library is one of this user's drives, and
+  // Graph confirms they can open its root (a library missing from their list is denied).
+  m = key.match(/^fc:files:lib:[^:]+:(.+)$/);
+  if (m) {
+    const drive = (ctx.drives ?? []).find((d) => norm(d.name) === norm(m[1]));
+    if (!drive) return null;
+    return { resource: `drive:${drive.id}`, path: `/drives/${drive.id}/root?$select=id` };
+  }
+
   m = key.match(/^fc:tasks:lib:v\d+:([^:]+):/);
   if (m) return { resource: `list:${m[1]}`, path: `/sites/${ctx.siteId}/lists/${encodeURIComponent(m[1])}?$select=id` };
 
@@ -55,7 +64,7 @@ async function filterAllowedKeys(req, keys) {
     client = await getGraphClient(req.userToken);          // OBO: acts as the user
     const siteId = await getSiteId(client);
     const drives = await getUserDrives(req, client, siteId);
-    ctx = { siteId, hrDriveId: drives.find((d) => norm(d.name) === norm(HR_LIBRARY))?.id };
+    ctx = { siteId, drives, hrDriveId: drives.find((d) => norm(d.name) === norm(HR_LIBRARY))?.id };
   } catch (err) {
     console.warn('[perm] cannot verify, denying shared cache:', err.message);
     return allowed;                                        // fail closed
@@ -107,4 +116,4 @@ async function filterAllowedKeys(req, keys) {
 
 const canAccessKey = async (req, key) => (await filterAllowedKeys(req, [key])).has(key);
 
-module.exports = { filterAllowedKeys, canAccessKey };
+module.exports = { filterAllowedKeys, canAccessKey, getSiteId };

@@ -17,16 +17,26 @@ const OWNER_KEY = 'fc-meta:owner';
 
 /**
  * Shared Redis families (must match paperless-backend/cacheRoutes.js) pulled into
- * memory in the background after sign-in, for All Files listings and Comments search.
+ * memory in the background after sign-in, for Comments search.
  * Loaded separately from personal `fc:` hydrate so logout never scans/wipes them.
+ *
+ * `fc:files:` is deliberately NOT listed: the personal `fc:` scan in bindToUser() already
+ * returned those entries, so listing it again downloaded the same ~3 MB twice. Shared
+ * file listings (`fc:files:folder:…`, `fc:files:lib:…`) load one key at a time via
+ * hydrateFromPersistent() when a screen needs them.
  *
  * `fc:tasks:hr-folder:` is shared too but deliberately not bulk-loaded: it is ~200 MB
  * across every HR person, and blocking sign-in on it took 10+ s and ~500 MB of heap.
  * HR snapshots are pulled one person at a time via hydrateFromPersistent().
  * all-files-comments is never persisted — the full search index is too large (413).
  */
+
+// Shared prefixes bulk-loaded in the background after sign-in.
+// `fc:files:` is deliberately NOT listed: the personal `fc:` scan in bindToUser()
+// already returns those entries, so listing it again downloaded the same ~3 MB twice.
+// Shared folder listings (`fc:files:folder:…`) are loaded one key at a time
+// by hydrateFromPersistent() instead.
 const SHARED_HYDRATE_PREFIXES = [
-  'fc:files:',
   'fc:tasks:lib:v7:',
 ] as const;
 

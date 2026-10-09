@@ -126,7 +126,8 @@ export class SharePointTaskQueryService {
   private readonly assigneeLookupBlockedListIds = new Set<string>();
   private readonly sharePointListOrderBySupported = new Map<string, boolean>();
   /** Lists where an `or`-combined eForm id filter failed this session — one key per request there. */
-  private readonly eFormOrFilterUnsupportedListIds = new Set<string>();
+  /** Per-list cap on eForm ids combined with `or`; halves when a list rejects a chunk. */
+  private readonly eFormChunkSizeByListId = new Map<string, number>();
 
   /** Lists whose AssignedToLookupId filter already 400'd, read by To Do scope decisions. */
   get blockedAssigneeLookupListIds(): ReadonlySet<string> {
@@ -149,7 +150,7 @@ export class SharePointTaskQueryService {
     this.assigneeLookupBlockedListIds.clear();
     this.listPersonColumnsCache.clear();
     this.sharePointListOrderBySupported.clear();
-    this.eFormOrFilterUnsupportedListIds.clear();
+    this.eFormChunkSizeByListId.clear();
     this.listFilterStatusHydrated = false;
   }
   getListFilterFieldStatus(listId: string, field: string): boolean | undefined {
@@ -323,8 +324,8 @@ export class SharePointTaskQueryService {
         // filterable". Once it is known-good, keys are combined with `or` — one request
         // per chunk instead of one per key.
         const chunkSize =
-          fieldStatus === true && !this.eFormOrFilterUnsupportedListIds.has(listId)
-            ? AppConstants.hrFilesEFormKeyFilterChunkSize
+          fieldStatus === true
+            ? this.eFormChunkSizeByListId.get(listId) ?? AppConstants.hrFilesEFormKeyFilterChunkSize
             : 1;
         const chunk = keys.slice(index, index + chunkSize);
         const filter = encodeURIComponent(
@@ -353,8 +354,9 @@ export class SharePointTaskQueryService {
         } catch (err: any) {
           const status = err?.status ?? err?.error?.status;
           if (chunk.length > 1) {
-            // Combined filter rejected or too slow on this list — redo these keys one at a time.
-            this.eFormOrFilterUnsupportedListIds.add(listId);
+            // Combined filter rejected or too slow on this list — retry with half as many ids
+            // (down to 1) instead of dropping straight to one request per id.
+            this.eFormChunkSizeByListId.set(listId, Math.max(1, Math.floor(chunk.length / 2)));
             continue;
           }
           if (this.isFilterProbeFailureStatus(status)) {
@@ -659,7 +661,10 @@ export class SharePointTaskQueryService {
     }
 
     const prefer = { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' };
-    const maxPages = options?.maxPages ?? AppConstants.hrTasksTodoLookupMaxPages;
+    // `<= 0` means every matching page (same as fetchGraphItemPagesWithCursor); a literal
+    // `pages < 0` check would fetch nothing and drop every non-procurement To Do task.
+    const configuredMax = options?.maxPages ?? AppConstants.hrTasksTodoLookupMaxPages;
+    const maxPages = configuredMax > 0 ? configuredMax : Number.POSITIVE_INFINITY;
     const pageSize = AppConstants.hrFilesPersonLookupPageSize;
     // Newest-first when Graph allows it (progressive Comments paint). Probe once per list.
     const orderOk = this.getListOrderBySupported(listId) !== false;

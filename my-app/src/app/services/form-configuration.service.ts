@@ -165,13 +165,16 @@ export class FormConfigurationService {
     return !!form?.isSAPWorkflow && (form.SAPOrder ?? 0) > 0;
   }
 
-  /** Request for Action is only offered for SAP workflow rows (SAPOrder list). */
+  /**
+   * Request for Action is offered on every task. To limit it to SAP workflow
+   * rows again, return this.isSapOrderWorkflow(eFormListId, eFormTitle, taskListName).
+   */
   allowsRequestForAction(
-    eFormListId?: string,
-    eFormTitle?: string,
-    taskListName?: string,
+    _eFormListId?: string,
+    _eFormTitle?: string,
+    _taskListName?: string,
   ): boolean {
-    return this.isSapOrderWorkflow(eFormListId, eFormTitle, taskListName);
+    return true;
   }
 
   private findMatchingForm(

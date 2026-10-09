@@ -320,7 +320,15 @@ export class DelegateService {
   }
 
   /** PATCH the SharePoint list item assignee field. Throws when the write cannot be verified. */
-  async updateAssignedTo(task: DelegationTask, selectedUser: DomainUser): Promise<void> {
+  /**
+   * Writes the task assignee. With `requireSoleAssignee` (Claim), success also
+   * needs every other assignee gone, not just the new one present.
+   */
+  async updateAssignedTo(
+    task: DelegationTask,
+    selectedUser: DomainUser,
+    options: { requireSoleAssignee?: boolean } = {},
+  ): Promise<void> {
     const itemId = task?.id;
     const listName = task?.listName || task?.eFormDetails?.listName || '';
     const newAssigneeName = selectedUser.Title?.trim() ?? '';
@@ -414,6 +422,7 @@ export class DelegateService {
             newAssigneeName,
             spUserId,
             task.eFormDetails?.assignedTo,
+            options.requireSoleAssignee,
           )
         ) {
           return;
@@ -442,6 +451,7 @@ export class DelegateService {
           newAssigneeName,
           spUserId,
           task.eFormDetails?.assignedTo,
+          options.requireSoleAssignee,
         )
       ) {
         return;
@@ -501,6 +511,7 @@ export class DelegateService {
     name: string,
     spUserId: number,
     previousAssignee?: string,
+    requireSoleAssignee = false,
   ): Promise<boolean> {
     const readBack: any = await firstValueFrom(
       graphGet(
@@ -509,6 +520,10 @@ export class DelegateService {
         token,
       ),
     );
+
+    if (requireSoleAssignee) {
+      return this.readBackIsSoleAssignee(readBack ?? {}, assigneeKeys, email, name, spUserId);
+    }
 
     return this.readBackMatchesAssignee(
       readBack ?? {},
@@ -778,17 +793,9 @@ export class DelegateService {
     const assignedEntries = fields[assigneeKeys.field];
     if (Array.isArray(assignedEntries)) {
       for (const entry of assignedEntries) {
-        if (!entry || typeof entry !== 'object') continue;
-        const person = entry as Record<string, unknown>;
-        const personEmail = String(person['Email'] ?? person['email'] ?? '').toLowerCase();
-        const personName = String(
-          person['LookupValue'] ?? person['displayName'] ?? person['DisplayName'] ?? person['Title'] ?? '',
-        ).trim();
-        const lookupId = Number(person['LookupId'] ?? person['Id'] ?? person['id']);
-
-        if (personEmail && personEmail === email.toLowerCase()) return true;
-        if (personName && this.userService.matchesAssigneeField(personName, name, email)) return true;
-        if (spUserId && lookupId === spUserId) return true;
+        if (entry && typeof entry === 'object' && this.personEntryMatches(entry, email, name, spUserId)) {
+          return true;
+        }
       }
     }
 
@@ -799,6 +806,55 @@ export class DelegateService {
     }
 
     return false;
+  }
+
+  /**
+   * Claim check: the read-back must hold the new assignee and nobody else. The
+   * claimer was already one of the assignees, so "is among them" proves nothing.
+   */
+  private readBackIsSoleAssignee(
+    fields: Record<string, unknown>,
+    assigneeKeys: AssigneeFieldKeys,
+    email: string,
+    name: string,
+    spUserId: number | null,
+  ): boolean {
+    const entries = fields[assigneeKeys.field];
+    if (Array.isArray(entries) && entries.length > 0) {
+      return entries.every(entry =>
+        entry && typeof entry === 'object'
+          ? this.personEntryMatches(entry, email, name, spUserId)
+          : this.userService.matchesAssigneeField(String(entry ?? ''), name, email),
+      );
+    }
+
+    const lookupId = fields[assigneeKeys.lookupId];
+    if (Array.isArray(lookupId) && lookupId.length > 0) {
+      return !!spUserId && lookupId.every(id => Number(id) === spUserId);
+    }
+    if (lookupId != null && lookupId !== '') {
+      return !!spUserId && Number(lookupId) === spUserId;
+    }
+
+    // A single-person column can only ever hold one person.
+    if (!assigneeKeys.allowMultiple) {
+      return this.readBackMatchesAssignee(fields, assigneeKeys, email, name, spUserId);
+    }
+    return false;
+  }
+
+  /** True when one person entry from a read-back is the given user (email, name or lookup id). */
+  private personEntryMatches(entry: object, email: string, name: string, spUserId: number | null): boolean {
+    const person = entry as Record<string, unknown>;
+    const personEmail = String(person['Email'] ?? person['email'] ?? '').toLowerCase();
+    const personName = String(
+      person['LookupValue'] ?? person['displayName'] ?? person['DisplayName'] ?? person['Title'] ?? '',
+    ).trim();
+    const lookupId = Number(person['LookupId'] ?? person['Id'] ?? person['id']);
+
+    if (personEmail && personEmail === email.toLowerCase()) return true;
+    if (personName && this.userService.matchesAssigneeField(personName, name, email)) return true;
+    return !!spUserId && lookupId === spUserId;
   }
 
   /** Extracts a human-readable message from Graph or SharePoint REST errors. */

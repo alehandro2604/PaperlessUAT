@@ -34,6 +34,19 @@ npm start
 
 Check the backend at http://localhost:3000/api/health. It should return `{ "server": "ok", "redis": "PONG" }`.
 
+### Live and UAT side by side
+
+The same code runs against either SharePoint site. Nothing needs editing to switch; pick the target when you start it. Both can run at once, sharing one Redis.
+
+| | Live (`sites/PaperlessLive`) | UAT (`sites/PaperlessUAT`) |
+|---|---|---|
+| Backend | `npm run dev` → :3000, reads `.env` | `npm run dev:uat` → :3001, reads `.env.uat` |
+| Frontend | `npm run start:live` → :4200 | `npm run start:uat` → :4201 (header says "UAT") |
+| Build | `npm run build:live` | `npm run build:uat` |
+| Redis | database 0 | database 1 |
+
+The site settings for each target are in `my-app/src/app/sharepoint.config.ts`. `http://localhost:4201` must be a Single-page application redirect URI in Entra.
+
 ---
 
 ## 2. How it works (big picture)
@@ -77,20 +90,114 @@ Angular could talk to Graph alone. The backend exists for three reasons:
 
 ## 4. Redis
 
-Redis is an in-memory key/value store. Here it stores cached SharePoint results so the app doesn't re-download them.
+Redis is an in-memory key/value store. Here it keeps copies of SharePoint results so the app doesn't download them again on every load, and so one user's load can speed up the next user's.
+
+### How it works
+
+```mermaid
+flowchart LR
+    A[Angular app] -- "1. paint from cache (fast)" --> B[Node backend<br/>/api/cache]
+    B --> R[(Redis)]
+    A -- "2. fetch fresh data" --> G[SharePoint<br/>Microsoft Graph]
+    A -- "3. save what changed" --> B
+```
+
+1. **Paint from cache.** On load, the app asks the backend for what Redis already has and shows it straight away.
+2. **Fetch fresh data.** The app then loads from SharePoint in the background.
+3. **Save what changed.** The new results go back to Redis for the next load.
+
+- **The browser never talks to Redis directly.** Every request goes through the backend, which checks the user's Microsoft sign-in first.
+- **There are two caches.** The app also keeps a copy in the browser's memory (`file-crawl.service.ts`) while it's open. Redis is the one that survives a reload and is shared between users.
+- **Live and UAT are kept apart:** Live uses database **0** (`redis://localhost:6379`), UAT uses database **1** (`redis://localhost:6379/1`, in `.env.uat`).
+
+### What's stored
 
 | Key in Redis | What it holds | Who can see it |
 |---|---|---|
-| `cache:<userId>:…` | Personal data (e.g. *My Tasks*) | Only that user |
+| `cache:<userId>:todo:task:<list>:<id>` | **One To Do task** (see below) | Only that user |
+| `cache:<userId>:todo:index` | The list of task keys in that user's To Do | Only that user |
+| `cache:<userId>:todo:updated` | When that user's To Do was last saved | Only that user |
+| `cache:<userId>:fc:files:lib:…` | All Files library listings | Only that user |
+| `cache:<userId>:fc:domain-users:…` | Staff list used for people search | Only that user |
 | `shared:fc:files:folder:…` | Folder listings (All Files) | Anyone who can open that folder |
 | `shared:fc:tasks:lib:v7:…` | Comments for a library folder | Anyone who can open that list |
 | `shared:fc:tasks:hr-folder:…` | Comments for an HR person | Anyone who can open that person's folder |
 | `perm:<userId>:…` | "Can this user open X?" (yes 15 min / no 5 min) | Internal |
 | `tasks:<list>:<email>` | Old per-person task lookup | Internal |
+| `cache:<userId>:fc:tasks:hr-user:v5` | **Old** single To Do snapshot, no longer written; expires on its own | Only that user |
 
-- Entries expire after **7 days** (`CACHE_ENTRY_TTL_SECONDS`).
-- **Local:** portable Windows build in `redis-windows/` (Docker is blocked on this machine).
-- **Production:** use Azure Cache for Redis. Only `REDIS_URL` changes.
+- **Personal keys** (`cache:<userId>:…`): only that user can read or write them. `<userId>` is the user's Microsoft account id.
+- **Shared keys** (`shared:…`): checked against the user's SharePoint permissions on every read and write (`permissionCheck.js`).
+- **Expiry:** entries expire after **7 days** (`CACHE_ENTRY_TTL_SECONDS`).
+- **Logging out** clears all of that user's personal keys, including the To Do tasks.
+
+### To Do: one entry per task
+
+To Do used to be cached as **one big entry per user** (`fc:tasks:hr-user:v5`). It grew to about **27 MB** (10,000+ tasks) and caused two problems:
+
+- **It went out of date.** Every change re-uploaded the whole list. Once it passed the backend's upload limit, saves were rejected (HTTP 413), so Redis kept an old copy. That's why a completed task came back after a reload.
+- **It was slow and heavy.** 27 MB went up the wire after every refresh.
+
+Now **each task is stored separately** (about 2–3 KB each), plus a short index of which tasks are in that user's To Do:
+
+| | Before | Now |
+|---|---|---|
+| Stored as | One 27 MB entry per user | One small entry per task + an index |
+| Completing a task | Re-uploads all 27 MB | Removes one entry |
+| A reload with nothing changed | Re-uploads all 27 MB | Uploads nothing |
+| First load for a user | One 27 MB upload | Chunks of 200 tasks (about 50 requests for 10,000 tasks) |
+
+**How it works in the code**
+
+- **Frontend, `services/todo-task-store.service.ts`:**
+  - Holds the To Do tasks in memory.
+  - Remembers a fingerprint of each task as last saved.
+  - When To Do changes, it uploads **only** the tasks that changed and removes the ones that left, about 1.5 s after the last change.
+- **`app.ts`:** uses the store everywhere it used the old entry:
+
+  | Old call | New call |
+  |---|---|
+  | `fileCrawlCache.getStale(HR_USER_TASKS_CACHE_KEY)` | `todoStore.getAll()` |
+  | `fileCrawlCache.get(HR_USER_TASKS_CACHE_KEY)` | `todoStore.getFresh()` |
+  | `fileCrawlCache.set(HR_USER_TASKS_CACHE_KEY, …)` | `todoStore.replaceAll(…)` |
+  | `fileCrawlCache.invalidate(HR_USER_TASKS_CACHE_KEY)` | `todoStore.invalidate()` |
+
+  `loadTodoTasksForCurrentUser` calls `todoStore.load()` first, so To Do paints from Redis straight away.
+- **Backend, `cacheRoutes.js`:**
+
+  | Endpoint | Does |
+  |---|---|
+  | `GET /api/cache/todo` | Returns this user's To Do tasks and when they were saved |
+  | `PUT /api/cache/tasks` | Saves changed tasks and removes old ones: `{ upsert: [{ key, data }], remove: [key] }`, at most 500 per call |
+  | `DELETE /api/cache/todo` | Clears this user's To Do cache |
+  | `GET /api/cache/delta-test?list=<name>` | **Temporary, read-only:** checks whether a SharePoint list can report "only what changed". Remove it once step 3 below is built. |
+
+- **Why the To Do entries are personal, not shared:** the browser uploads these tasks, so if they were shared, one user could overwrite a task that others see. Shared task entries will only be written by the backend, from its own SharePoint reads (step 3).
+
+**Still to do**
+
+1. **Step 3, backend change sync:** the backend asks each SharePoint list for **only the items that changed** (a Graph *delta query*), at most once a minute per list, shared by all users. This would replace each browser crawling the lists itself, which is what causes 429 "Too Many Requests" errors. It would also catch tasks completed outside the app. `delta-test` checks whether your lists support it.
+2. **Step 4:** make the Refresh button use that sync.
+3. **Step 5 (optional), webhooks:** SharePoint notifies the backend when a list changes. This only works if the server can be reached from the internet.
+
+Until step 3 is done, a task completed **outside** this app (in Live, or by someone else) can still show in To Do until the next Refresh.
+
+### Looking at the data
+
+- **Redis Insight** (free desktop app): connect to `localhost`, port `6379`, then pick **db0** (Live) or **db1** (UAT).
+  - **Browse:** see keys, their size and expiry.
+  - **Analyze:** see what uses the most memory.
+- **`redis-cli`:** in `redis-windows/`, e.g. `redis-cli -n 1 scard cache:<userId>:todo:index` gives how many To Do tasks a user has cached.
+- **Deleting a key is safe** (the app reloads it from SharePoint), but **don't edit the JSON by hand**.
+
+### Limits and security
+
+- **Memory cap:** the local Redis has a **1 GB** cap (`maxmemory 1gb`). When full, it removes the least-used keys (`allkeys-lru`).
+- **Upload limit:** the backend accepts request bodies up to **100 MB** (`server.js`). It was 25 MB, which the old To Do snapshot exceeded.
+- **If a save is still rejected as too big,** the app deletes the old Redis copy instead of keeping it (`cache.ts`), so it never shows stale data.
+- **Locked to this PC:** the local Redis only accepts connections from this PC (`bind 127.0.0.1`, `protected-mode yes`) and has **no password**. That's fine locally. On a server, turn on a password and TLS.
+- **Sensitive data:** the cache holds copies of SharePoint data, including HR tasks, in plain JSON. Anyone who can reach Redis can read it.
+- **Local version:** the Windows build is Redis **5.0.14**, an unofficial port with no security updates. Use **Azure Cache for Redis** in production; only `REDIS_URL` changes.
 - **RAM check:** run `npm run ram-report` in `paperless-backend`, or call `GET /api/metrics/ram`.
 
 ---
@@ -242,6 +349,7 @@ flowchart TD
 | `auth.service.ts` | Microsoft sign-in and tokens | `initialize`, `acquireGraphToken`, `acquireSharePointToken`, `loginRedirect`, `logoutRedirect` |
 | `cache.ts` | Talks to backend `/api/cache` | `get`, `set`, `clear`, `entriesByPrefix`, `deleteByPrefix` |
 | `file-crawl.service.ts` | Fast in-memory cache, synced with Redis | `bindToUser`, `get`, `getStale`, `set`, `invalidate`, `clearAll` |
+| `todo-task-store.service.ts` | To Do cache: one Redis entry per task, uploads only what changed (see section 4) | `load`, `getAll`, `getFresh`, `replaceAll`, `invalidate` |
 | `sharepoint-task-query.service.ts` | Builds and runs task queries for each list | `resolveSharePointUserLookupId`, `resolveHrFolderPersonEmail` |
 | `hr-task-mapper.service.ts` | Turns a raw SharePoint row into a task card | `mapSharePointItemToHrTask`, `resolveTaskSubmitter` |
 | `hr-task-folder-match.service.ts` | Does this task belong to this person's folder? | `doesSharePointTaskMatchFolder` |
@@ -273,8 +381,8 @@ flowchart TD
 | `server.js` | Starts Express, sets CORS, registers all routes. |
 | `authMiddleware.js` | `requireUser`: rejects requests without a valid Microsoft token. |
 | `graphAuth.js` | `getGraphClient`: swaps the user's token for a Graph token (on-behalf-of). |
-| `cacheRoutes.js` | The `/api/cache` endpoints. Decides personal vs shared keys. |
-| `permissionCheck.js` | `filterAllowedKeys`, `canAccessKey`: asks Graph if the user can open a folder/list. |
+| `cacheRoutes.js` | The `/api/cache` endpoints. Decides personal vs shared keys. Also the per-task To Do cache: `/todo`, `/tasks`, and the temporary `/delta-test` (see section 4). |
+| `permissionCheck.js` | `filterAllowedKeys`, `canAccessKey`: asks Graph if the user can open a folder/list. `getSiteId`: the site id, shared with `cacheRoutes.js`. |
 | `redisClient.js` | Single shared Redis connection. |
 | `ramMetrics.js` | `collectRamMetrics`: Redis memory report. |
 | `scripts/redis-ram-report.js` | Same report from the command line. |

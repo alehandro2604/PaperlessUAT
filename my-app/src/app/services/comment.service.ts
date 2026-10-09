@@ -184,7 +184,12 @@ export class CommentService {
     const writable = new Set(columns.filter(col => !col.readOnly).map(col => col.name));
 
     let saved = await this.readItemFields(siteId, listId, itemId, token);
-    const statusColumn = this.resolveStatusColumnForItem(columns, saved);
+    // Proc* lists keep a task open on Progress (Pending/Complete), and To Do reads that
+    // first. Other status columns there (e.g. TaskOutcome "Approved") can already look
+    // complete, which used to skip the write and leave the task in To Do.
+    const statusColumn =
+      this.resolveProgressColumnForItem(columns, saved) ??
+      this.resolveStatusColumnForItem(columns, saved);
     const statusColumnMeta = statusColumn
       ? columns.find(col => col.name === statusColumn)
       : undefined;
@@ -1064,6 +1069,19 @@ export class CommentService {
       }
     }
     return undefined;
+  }
+
+  /** The item's Progress column when it has a value and the list lets us write it. */
+  private resolveProgressColumnForItem(
+    columns: ListColumn[],
+    fields: Record<string, unknown>,
+  ): string | undefined {
+    const column = columns.find(col => col.name.toLowerCase() === 'progress' && !col.readOnly);
+    if (!column) return undefined;
+    const value = fields[column.name];
+    return value !== undefined && value !== null && String(value).trim() !== ''
+      ? column.name
+      : undefined;
   }
 
   private resolveStatusColumnForItem(

@@ -41,6 +41,7 @@ import { CommentService } from './services/comment.service';
 import { TaskService } from './services/task.service';
 import { SubordinaryTaskService } from './services/subordinaryTask.service';
 import { FileCrawlCacheService } from './services/file-crawl.service';
+import { TodoTaskStoreService } from './services/todo-task-store.service';
 import { SiteMetadataService } from './services/site-metadata.service';
 import { BackendApiService } from './services/backend-api.service';
 import { HrTaskMapperService } from './services/hr-task-mapper.service';
@@ -105,6 +106,9 @@ export class AppComponent implements OnInit, OnDestroy {
   @ViewChild(AllFilesComponent) private allFilesComponent?: AllFilesComponent;
   @ViewChild(TodoListComponent) private todoListComponent?: TodoListComponent;
 
+  /** Top-bar name; says "UAT" when running against the UAT SharePoint site. */
+  protected readonly appSystemName = sharePointConfig.label;
+
   /** Initials for the signed-in user's avatar in the top bar. */
   protected getUserInitials(name: string | null | undefined): string {
     const base = String(name ?? '').split('@')[0].replace(/[._-]+/g, ' ');
@@ -140,6 +144,7 @@ export class AppComponent implements OnInit, OnDestroy {
     private readonly taskService: TaskService,
     private readonly subordinaryTaskService: SubordinaryTaskService,
     private readonly fileCrawlCache: FileCrawlCacheService,
+    private readonly todoStore: TodoTaskStoreService,
     private readonly siteMetadataService: SiteMetadataService,
     private readonly backendApi: BackendApiService,
     private readonly hrTaskMapper: HrTaskMapperService,
@@ -147,7 +152,6 @@ export class AppComponent implements OnInit, OnDestroy {
     private readonly taskQuery: SharePointTaskQueryService,
   ) { }
 
-  private static readonly HR_USER_TASKS_CACHE_KEY = 'tasks:hr-user:v5';
   /** Persisted HR Files people-folder list so the first open paints from cache. */
   private static readonly HR_ROOT_FOLDERS_CACHE_KEY = 'files:hr-root:v1';
   /** Pause between batches of HR task-list fetches so SharePoint throttling (429) stays rare. */
@@ -156,12 +160,12 @@ export class AppComponent implements OnInit, OnDestroy {
    * Background poll for To Do watermarks. Folder Comments uses a longer cadence
    * (FOLDER_COMMENTS_POLL_MS) so a person with many lists is not re-fanned every tick.
    */
-  private static readonly SHAREPOINT_CACHE_POLL_MS = 5 * 60_000;
+  private static readonly SHAREPOINT_CACHE_POLL_MS = 10 * 60_000;
   /**
    * Idle top-up of the open HR/All Files Comments folder. Each run re-crawls every task
    * list for that folder, so keep it rare — every 3 min helped push idle tabs into 429s.
    */
-  private static readonly FOLDER_COMMENTS_POLL_MS = 10 * 60_000;
+  private static readonly FOLDER_COMMENTS_POLL_MS = 20 * 60_000;
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -234,7 +238,7 @@ export class AppComponent implements OnInit, OnDestroy {
   // UI STATE
   // ============================================================
   protected isConnecting = false;
-  protected statusMessage = 'Checking Microsoft 365 sign-in...';
+  protected statusMessage = 'Signing-in...';
   protected commentsMessage = 'Loading comments...';
   protected errorMessage = '';
   protected showUserFile = false;
@@ -326,6 +330,12 @@ export class AppComponent implements OnInit, OnDestroy {
 
   /** Prevent stale folder results when users click folders quickly. */
   private driveFolderLoadSeq = 0;
+  /** Guards To Do attachment lookups so a slow lookup cannot paint over a newer card click. */
+  private todoAttachmentLoadSeq = 0;
+  /** Document library name (normalized) -> drive id. */
+  private libraryDriveIdCache = new Map<string, string | null>();
+  /** `${driveId}|${folderName}` -> eForm root folder. */
+  private todoTaskFolderCache = new Map<string, { id: string; name: string; webUrl: string }>();
   /** In-flight silent prefetches keyed by `files:folder:{driveId}:{folderId}`. */
   private readonly folderPrefetchInFlight = new Set<string>();
   private folderPrefetchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -502,6 +512,22 @@ export class AppComponent implements OnInit, OnDestroy {
       return `${name} ✓`;
     }
     return name;
+  }
+
+  /**
+   * A card the Comments panel shows as done: the eForm is complete ("Completed by"),
+   * or a Request for Action whose assignees all carry the ✓. Other pending eForms are
+   * kept even if one approver already acted, since their workflow is still open.
+   */
+  private isCompletedCommentCard(eform: { status?: string; completedBy?: string; eFormDetails?: any }): boolean {
+    if (this.isEformComplete(eform)) return true;
+
+    const category = String(eform.eFormDetails?.category ?? '').trim().toLowerCase();
+    const commentCategory = String(eform.eFormDetails?.commentCategory ?? '').trim().toLowerCase();
+    if (category !== 'request for action' && commentCategory !== 'action') return false;
+
+    const assignees = this.getAssignees(this.getAssignedToDisplay(eform as any) ?? '');
+    return assignees.length > 0 && assignees.every(person => this.hasAssigneeCompleted(person, eform));
   }
 
   protected hasAssigneeCompleted(person: string, eform?: { status?: string; completedBy?: string; eFormDetails?: any }): boolean {
@@ -1015,6 +1041,12 @@ export class AppComponent implements OnInit, OnDestroy {
       });
     }
 
+    // To Do is for open work: completed cards stay out of its Comments panel.
+    // All Files keeps them, as the place to look up past work.
+    if (this.showToDoSection) {
+      filtered = filtered.filter(item => !this.isCompletedCommentCard(item));
+    }
+
     if (this.searchQuery.trim()) {
       const query = this.searchQuery.toLowerCase().trim();
       filtered = filtered.filter(item => {
@@ -1486,7 +1518,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.todoFirstPassComplete = false;
     this.todoProcurementDrainActive = false;
     this.todoScopeCacheValid = false;
-    this.fileCrawlCache.invalidate(AppComponent.HR_USER_TASKS_CACHE_KEY);
+    this.todoStore.invalidate();
     this.userFileError = '';
     this.userFileWarning = '';
     this.userFileProgressMessage = '';
@@ -1730,9 +1762,9 @@ export class AppComponent implements OnInit, OnDestroy {
     }
 
     if (fetched.length > 0) {
-      const existing = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
+      const existing = this.todoStore.getAll() ?? [];
       const merged = this.mergeHrTasks(existing, fetched);
-      this.fileCrawlCache.set(AppComponent.HR_USER_TASKS_CACHE_KEY, merged);
+      this.todoStore.replaceAll(merged);
       this.todoService.setTasksFromSharePoint(this.getHrTasksForTodoList(merged), { clearLoading: false });
       this.userHrTasksLoaded = true;
       this.refreshView();
@@ -1741,7 +1773,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   /** Restore To Do from cache (memory or persisted snapshot) - instant when switching back or reopening the tab. */
   private restoreTodoTasksFromCache(): boolean {
-    const cached = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY);
+    const cached = this.todoStore.getAll();
     if (!Array.isArray(cached) || cached.length === 0) return false;
 
     this.todoService.setTasksFromSharePoint(this.getHrTasksForTodoList(cached));
@@ -1805,9 +1837,12 @@ export class AppComponent implements OnInit, OnDestroy {
   protected async loadTodoTasksForCurrentUser(options: { forceRefresh?: boolean } = {}): Promise<void> {
     if (!this.currentUser) return;
 
+    // Per-task To Do cache from Redis; the reads below use it for the instant first paint.
+    await this.todoStore.load();
+
     const forceRefresh = options.forceRefresh === true;
     // Stale (even day-old, persisted) tasks paint instantly; the fetch below refreshes them.
-    const cached = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY);
+    const cached = this.todoStore.getAll();
     const hasCachedTasks = Array.isArray(cached) && cached.length > 0;
 
     if (hasCachedTasks && !forceRefresh) {
@@ -1884,9 +1919,9 @@ export class AppComponent implements OnInit, OnDestroy {
           }
         );
         if (!this.isStaleTodoTaskLoad(loadSeq) && fallbackItems.length > 0) {
-          const cachedItems = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
+          const cachedItems = this.todoStore.getAll() ?? [];
           const merged = this.mergeHrTasks(cachedItems, fallbackItems);
-          this.fileCrawlCache.set(AppComponent.HR_USER_TASKS_CACHE_KEY, merged);
+          this.todoStore.replaceAll(merged);
           this.todoService.setTasksFromSharePoint(this.getHrTasksForTodoList(merged), { clearLoading: false });
           this.refreshView();
         }
@@ -1895,9 +1930,9 @@ export class AppComponent implements OnInit, OnDestroy {
       if (!this.isStaleTodoTaskLoad(loadSeq)) {
         const folderAssigned = this.collectAssignedProcTasksFromFolderCaches();
         if (folderAssigned.length > 0) {
-          const cachedItems = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
+          const cachedItems = this.todoStore.getAll() ?? [];
           const merged = this.mergeHrTasks(cachedItems, folderAssigned);
-          this.fileCrawlCache.set(AppComponent.HR_USER_TASKS_CACHE_KEY, merged);
+          this.todoStore.replaceAll(merged);
           this.todoService.setTasksFromSharePoint(this.getHrTasksForTodoList(merged), { clearLoading: false });
           this.refreshView();
         }
@@ -2157,7 +2192,7 @@ export class AppComponent implements OnInit, OnDestroy {
       // Comments panel filters locally. Only hit Graph when we have nothing cached
       // (every accordion click used to call loadHrTasks and re-fan-out all lists).
       const hasLocalComments = this.commentItems.length > 0;
-      const cachedTasks = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY);
+      const cachedTasks = this.todoStore.getAll();
       if (!hasLocalComments && Array.isArray(cachedTasks) && cachedTasks.length > 0) {
         this.commentItems = this.sortCommentItemsByDateDesc(cachedTasks);
         this.visibleItemCount = this.commentsInitialPageSize;
@@ -2168,10 +2203,165 @@ export class AppComponent implements OnInit, OnDestroy {
       } else if (!hasLocalComments && !this.userHrTasksLoaded && !this.isLoadingComments) {
         this.loadHrTasks();
       }
+      if (this.showToDoSection) {
+        void this.loadTodoTaskAttachments(task, selection.eFormTitle ?? '');
+      }
     } else {
       this.closeFormViewer();
     }
     this.refreshView();
+  }
+
+  /**
+   * To Do: show the eForm folder for the clicked task in Attachments, same as
+   * clicking that folder in All Files. The folder is a root folder of the document
+   * library linked to the task list (eForms config), named after the task Title
+   * ("Pr-Test-21" = title + eFormListId).
+   */
+  private async loadTodoTaskAttachments(task: any, eFormTitle: string): Promise<void> {
+    const seq = ++this.todoAttachmentLoadSeq;
+    const isStale = () => seq !== this.todoAttachmentLoadSeq || !this.showToDoSection;
+
+    const listName = String(task?.eFormDetails?.listName ?? task?.listName ?? '').trim();
+    const rawFields = (task?.eFormDetails?.rawFields ?? {}) as Record<string, unknown>;
+    const folderName = String(rawFields['Title'] ?? eFormTitle ?? '').trim();
+    const eFormListId = String(task?.eFormDetails?.eFormListId ?? '').trim();
+    const libraryName = this.getLibraryForTaskList(listName);
+
+    this.userFileError = '';
+    this.userFileWarning = '';
+    this.highlightedAttachmentId = null;
+    this.pendingAttachmentFocusId = null;
+
+    if (!libraryName || !folderName) {
+      this.showTodoAttachmentsMessage('No attachments folder is linked to this task.');
+      return;
+    }
+
+    this.userFiles = [];
+    this._folderMapDirty = true;
+    this.folderStack = [];
+    this.currentFolderId = null;
+    this.currentFolderName = folderName;
+    this.showUserFile = true;
+    this.isLoadingUserFiles = true;
+    this.userFileProgressMessage = 'Loading attachments...';
+    this.refreshView();
+
+    try {
+      const token = await this.getSharePointToken();
+      if (isStale()) return;
+      const driveId = await this.resolveLibraryDriveId(libraryName, token);
+      if (isStale()) return;
+      if (!driveId) {
+        this.showTodoAttachmentsMessage(`Could not find the "${libraryName}" document library.`);
+        return;
+      }
+
+      const folder = await this.findTodoTaskFolder(driveId, folderName, eFormListId, token);
+      if (isStale()) return;
+      if (!folder) {
+        this.showTodoAttachmentsMessage(`No attachments folder "${folderName}" found in ${libraryName}.`);
+        return;
+      }
+
+      this.currentLibraryDriveId = driveId;
+      this.attachmentBrowsingRoot = { ...folder };
+      this.folderStack = [];
+      await this.loadDriveFolderContents(driveId, folder.id, folder.webUrl, folder.name);
+    } catch (err: any) {
+      if (isStale()) return;
+      console.warn('[To Do] Failed to load task attachments', err);
+      this.showTodoAttachmentsMessage(err?.message || 'Failed to load attachments.');
+    }
+  }
+
+  private showTodoAttachmentsMessage(message: string): void {
+    this.userFiles = [];
+    this._folderMapDirty = true;
+    this.currentFolderId = null;
+    this.attachmentBrowsingRoot = null;
+    this.folderStack = [];
+    this.showUserFile = true;
+    this.isLoadingUserFiles = false;
+    this.userFileProgressMessage = '';
+    this.userFileWarning = message;
+    this.refreshView();
+  }
+
+  /** Reverse of getTaskListForLibrary: task list name -> document library name. */
+  private getLibraryForTaskList(listName: string): string | undefined {
+    const target = normalizeName(listName);
+    if (!target) return undefined;
+    return Object.keys(this.documentLibraryTaskMap).find(
+      (library) => normalizeName(this.documentLibraryTaskMap[library]) === target,
+    );
+  }
+
+  private async resolveLibraryDriveId(libraryName: string, token: string): Promise<string | null> {
+    const key = normalizeName(libraryName);
+    if (this.libraryDriveIdCache.has(key)) return this.libraryDriveIdCache.get(key) ?? null;
+
+    const site = await this.siteMetadataService.resolve(token);
+    const drives: any = await graphGetWithRetry(
+      this.http,
+      `/sites/${site.siteId}/drives?$select=id,name,webUrl`,
+      token,
+    );
+    for (const drive of drives?.value ?? []) {
+      if (!drive?.id) continue;
+      this.libraryDriveIdCache.set(normalizeName(drive.name), drive.id);
+      // Drive name can differ from the library URL segment (e.g. spaces removed).
+      const urlName = decodeURIComponent(String(drive.webUrl ?? '').split('/').pop() ?? '');
+      if (urlName && !this.libraryDriveIdCache.has(normalizeName(urlName))) {
+        this.libraryDriveIdCache.set(normalizeName(urlName), drive.id);
+      }
+    }
+    if (!this.libraryDriveIdCache.has(key)) this.libraryDriveIdCache.set(key, null);
+    return this.libraryDriveIdCache.get(key) ?? null;
+  }
+
+  /** Exact root-folder lookup by Title; falls back to a root folder ending in "-<eFormListId>". */
+  private async findTodoTaskFolder(
+    driveId: string,
+    folderName: string,
+    eFormListId: string,
+    token: string,
+  ): Promise<{ id: string; name: string; webUrl: string } | null> {
+    const cacheKey = `${driveId}|${folderName.toLowerCase()}`;
+    const cached = this.todoTaskFolderCache.get(cacheKey);
+    if (cached) return cached;
+
+    let found: { id: string; name: string; webUrl: string } | null = null;
+    try {
+      const encoded = folderName.split('/').map(encodeURIComponent).join('/');
+      const item: any = await graphGetWithRetry(
+        this.http,
+        `/drives/${driveId}/root:/${encoded}?$select=id,name,webUrl,folder`,
+        token,
+        AppConstants.graphFileListingTimeoutMs,
+      );
+      if (item?.id && item?.folder) found = { id: item.id, name: item.name, webUrl: item.webUrl ?? '' };
+    } catch { /* not found by exact name — scan root folders below */ }
+
+    if (!found && eFormListId) {
+      let nextPath: string | null =
+        `/drives/${driveId}/root/children?$select=id,name,webUrl,folder&$top=999`;
+      while (nextPath && !found) {
+        const page: any = await graphGetWithRetry(
+          this.http, nextPath, token, AppConstants.graphFileListingTimeoutMs,
+        );
+        const match = (page?.value ?? []).find(
+          (f: any) => !!f?.folder && extractTrailingFolderId(String(f.name ?? '')) === eFormListId,
+        );
+        if (match) found = { id: match.id, name: match.name, webUrl: match.webUrl ?? '' };
+        nextPath = toGraphPath(page?.['@odata.nextLink']);
+      }
+    }
+
+    // Only remember hits, so a folder created after the first click is still found later.
+    if (found) this.todoTaskFolderCache.set(cacheKey, found);
+    return found;
   }
 
   /** Resolve the SharePoint tasks list name for a document library. */
@@ -3285,7 +3475,7 @@ export class AppComponent implements OnInit, OnDestroy {
   private refreshToDoSection(): void {
     // Subordinate view has its own load path and no per-list watermarks.
     if (this.superiorMode) {
-      this.fileCrawlCache.invalidate(AppComponent.HR_USER_TASKS_CACHE_KEY);
+      this.todoStore.invalidate();
       void this.reloadTodoTasksWithSubordinates();
       this.refreshView();
       return;
@@ -3367,10 +3557,10 @@ export class AppComponent implements OnInit, OnDestroy {
 
       // Merge on top of the cache so previously loaded pages (including anything pulled
       // via "Load older tasks") survive the refresh.
-      const existing = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
+      const existing = this.todoStore.getAll() ?? [];
       const merged = fresh.length > 0 ? this.mergeHrTasks(existing, fresh) : existing;
       if (fresh.length > 0) {
-        this.fileCrawlCache.set(AppComponent.HR_USER_TASKS_CACHE_KEY, merged);
+        this.todoStore.replaceAll(merged);
       }
       this.todoService.setTasksFromSharePoint(this.getHrTasksForTodoList(merged));
       this.userHrTasksLoaded = true;
@@ -4511,13 +4701,13 @@ export class AppComponent implements OnInit, OnDestroy {
     const id = String(taskId ?? '').trim();
     if (!id) return;
 
-    const cached = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY);
+    const cached = this.todoStore.getAll();
     if (!Array.isArray(cached) || cached.length === 0) return;
 
     const next = cached.filter((item: any) => String(item?.id ?? '').trim() !== id);
     if (next.length === cached.length) return;
 
-    this.fileCrawlCache.set(AppComponent.HR_USER_TASKS_CACHE_KEY, next);
+    this.todoStore.replaceAll(next);
   }
 
   /** Merge field updates into the To Do Redis snapshot for one task id. */
@@ -4525,7 +4715,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const id = String(taskId ?? '').trim();
     if (!id) return;
 
-    const cached = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY);
+    const cached = this.todoStore.getAll();
     if (!Array.isArray(cached) || cached.length === 0) return;
 
     let changed = false;
@@ -4536,7 +4726,7 @@ export class AppComponent implements OnInit, OnDestroy {
     });
     if (!changed) return;
 
-    this.fileCrawlCache.set(AppComponent.HR_USER_TASKS_CACHE_KEY, next);
+    this.todoStore.replaceAll(next);
   }
 
   /** Remove a task from every in-memory folder-task snapshot (HR + All Files). */
@@ -4696,7 +4886,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private countAssignedHrTasks(): number {
-    const cached = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
+    const cached = this.todoStore.getAll() ?? [];
     return cached.filter((item: any) => item?.isAssignedToCurrentUser === true).length;
   }
 
@@ -4748,7 +4938,7 @@ export class AppComponent implements OnInit, OnDestroy {
       }
     }
 
-    const cached = this.fileCrawlCache.get(AppComponent.HR_USER_TASKS_CACHE_KEY);
+    const cached = this.todoStore.getFresh();
     if (cached?.length) {
       this.commentItems = this.sortCommentItemsByDateDesc(cached);
       this.visibleItemCount = this.commentsInitialPageSize;
@@ -4869,7 +5059,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const publishPartialTodo = (partialItems: any[]): void => {
       if (!updateTodo || !progressiveTodo || isStaleTodoLoad()) return;
       if (partialItems.length === 0) return;
-      const existing = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
+      const existing = this.todoStore.getAll() ?? [];
       const merged = existing.length > 0
         ? this.mergeHrTasks(existing, partialItems)
         : [...partialItems];
@@ -4877,7 +5067,7 @@ export class AppComponent implements OnInit, OnDestroy {
         (a: { submittedDate: any }, b: { submittedDate: any }) =>
           new Date(b.submittedDate || 0).getTime() - new Date(a.submittedDate || 0).getTime()
       );
-      this.fileCrawlCache.set(AppComponent.HR_USER_TASKS_CACHE_KEY, sorted);
+      this.todoStore.replaceAll(sorted);
       this.todoService.setTasksFromSharePoint(this.getHrTasksForTodoList(sorted), { clearLoading: false });
       this.userHrTasksLoaded = true;
       this.refreshView();
@@ -4890,7 +5080,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
     // Serve recent user tasks from cache unless this is a forced network refresh.
     if (isCacheableRecentUserLoad && !options.skipCache) {
-      const cached = this.fileCrawlCache.get(AppComponent.HR_USER_TASKS_CACHE_KEY);
+      const cached = this.todoStore.getFresh();
       const cacheOk = !todoScope || this.todoScopeCacheValid;
       if (cached?.length && cacheOk) {
         if (updateCommentItems && !isStaleCommentsLoad()) {
@@ -5047,21 +5237,19 @@ export class AppComponent implements OnInit, OnDestroy {
         if (todoScope) {
           if (allItems.length > 0) {
             // Always merge - never replace an earlier pass with a later subset.
-            const existing = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
-            this.fileCrawlCache.set(
-              AppComponent.HR_USER_TASKS_CACHE_KEY,
+            const existing = this.todoStore.getAll() ?? [];
+            this.todoStore.replaceAll(
               existing.length > 0 ? this.mergeHrTasks(existing, allItems) : allItems,
             );
           }
           // Do NOT set todoScopeCacheValid here - progressive To Do still has Proc*
           // drain / blocked-list fallback after this pass. Callers mark complete.
         } else if (allItems.length > 0) {
-          const existing = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
+          const existing = this.todoStore.getAll() ?? [];
           const procItems = existing.filter((item: any) =>
             isTodoProcurementTaskList(String(item.listName ?? ''))
           );
-          this.fileCrawlCache.set(
-            AppComponent.HR_USER_TASKS_CACHE_KEY,
+          this.todoStore.replaceAll(
             this.mergeHrTasks(allItems, procItems),
           );
         }
@@ -5088,7 +5276,7 @@ export class AppComponent implements OnInit, OnDestroy {
       if (updateTodo) {
         if (!isStaleTodoLoad()) {
           if (allItems.length > 0) {
-            const existing = this.fileCrawlCache.getStale(AppComponent.HR_USER_TASKS_CACHE_KEY) ?? [];
+            const existing = this.todoStore.getAll() ?? [];
             const merged = existing.length > 0 ? this.mergeHrTasks(existing, allItems) : allItems;
             this.todoService.setTasksFromSharePoint(this.getHrTasksForTodoList(merged), {
               clearLoading: !progressiveTodo,
@@ -5565,6 +5753,39 @@ export class AppComponent implements OnInit, OnDestroy {
       }
     };
 
+    // Runs `run` for each item. Clicks and refreshes use a worker pool, so a slow list
+    // never leaves other workers idle waiting for its batch. Background prefetch keeps
+    // small paced batches to stay gentle on Graph.
+    const forEachList = async <T>(items: T[], run: (item: T) => Promise<void>): Promise<void> => {
+      const publish = (): void => {
+        if (onPartial && mappedByList.size > 0) onPartial(this.flattenHrMappedByList(mappedByList));
+      };
+      if (crawlMode) {
+        let next = 0;
+        const workers = Array.from(
+          { length: Math.min(AppConstants.hrFilesInteractiveListConcurrency, items.length) },
+          async () => {
+            while (!this.isStaleAllFilesFolderTaskLoad(loadSeq)) {
+              const index = next++;
+              if (index >= items.length) break;
+              await run(items[index]);
+              publish();
+            }
+          },
+        );
+        await Promise.all(workers);
+        return;
+      }
+      for (let i = 0; i < items.length; i += concurrency) {
+        if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) break;
+        await Promise.all(items.slice(i, i + concurrency).map(run));
+        publish();
+        if (i + concurrency < items.length) {
+          await this.sleep(AppComponent.HR_TASK_LIST_BATCH_GAP_MS);
+        }
+      }
+    };
+
     if (options?.interactive) {
       // Click path: worker pool with no inter-batch sleep so a slow list never
       // stalls the rest and first paint is not delayed by idle gaps.
@@ -5610,11 +5831,8 @@ export class AppComponent implements OnInit, OnDestroy {
     if (personLookupId && !this.isStaleAllFilesFolderTaskLoad(loadSeq)) {
       const listsForTopUp = [...listObjByName.entries()];
       const deepLookupPages = AppConstants.hrFilesPersonLookupMaxPages;
-      for (let i = 0; i < listsForTopUp.length; i += concurrency) {
-        if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) break;
-        const batch = listsForTopUp.slice(i, i + concurrency);
-        await Promise.all(
-          batch.map(async ([listName, listObj]) => {
+      await forEachList(listsForTopUp, async ([listName, listObj]) => {
+        {
             if (!listObj?.id) return;
             const mapRaw = (raw: any[]) =>
               this.mapHrFolderRawItems(
@@ -5691,16 +5909,8 @@ export class AppComponent implements OnInit, OnDestroy {
             if (supplement.length) {
               publishListHits(listName, mapRaw(supplement));
             }
-          }),
-        );
-
-        if (onPartial && mappedByList.size > 0) {
-          onPartial(this.flattenHrMappedByList(mappedByList));
         }
-        if (!crawlMode && i + concurrency < listsForTopUp.length) {
-          await this.sleep(AppComponent.HR_TASK_LIST_BATCH_GAP_MS);
-        }
-      }
+      });
     }
 
     logCrawlPhase('deep crawl', ` (${lookupIncompleteLists.size} lists re-read)`);
@@ -5713,10 +5923,8 @@ export class AppComponent implements OnInit, OnDestroy {
     if (eFormKeyToTaskNames.size > 0 && !this.isStaleAllFilesFolderTaskLoad(loadSeq)) {
       const listsWithHits = [...mappedByList.keys()];
       const backfillPages = AppConstants.hrFilesTaskListBackfillPageLimit;
-      for (let i = 0; i < listsWithHits.length; i += concurrency) {
-        if (this.isStaleAllFilesFolderTaskLoad(loadSeq)) break;
-        const batch = listsWithHits.slice(i, i + concurrency);
-        await Promise.all(batch.map(async listName => {
+      await forEachList(listsWithHits, async listName => {
+        {
           const listObj = listObjByName.get(listName);
           if (!listObj?.id) return;
 
@@ -5755,15 +5963,8 @@ export class AppComponent implements OnInit, OnDestroy {
           if (relatedMapped.length === 0) return;
           const existing = mappedByList.get(listName) ?? [];
           mappedByList.set(listName, this.mergeHrTasks(existing, relatedMapped));
-        }));
-
-        if (onPartial) {
-          onPartial(this.flattenHrMappedByList(mappedByList));
         }
-        if (!crawlMode && i + concurrency < listsWithHits.length) {
-          await this.sleep(AppComponent.HR_TASK_LIST_BATCH_GAP_MS);
-        }
-      }
+      });
     }
 
     logCrawlPhase(
@@ -6257,14 +6458,30 @@ export class AppComponent implements OnInit, OnDestroy {
     watermarkIso: string,
   ): Promise<any[]> {
     const prefer = this.todoPreferHeader(listName);
-    let nextPath: string | null = this.buildTodoListStartPath(siteId, listId, listName);
+    // Procurement lists normally load Pending rows only. A top-up must also see rows
+    // that turned Complete since the last look, or their old Pending copy stays in the
+    // To Do snapshot forever; so ask for every recently changed row (newest first).
+    const allChangedPath = isTodoProcurementTaskList(listName)
+      ? `/sites/${siteId}/lists/${listId}/items?$expand=fields`
+        + `&$top=${AppConstants.hrTasksFastLoadPageSize}`
+        + `&$orderby=${encodeURIComponent('lastModifiedDateTime desc')}`
+      : null;
+    let nextPath: string | null = allChangedPath ?? this.buildTodoListStartPath(siteId, listId, listName);
     const fresh: any[] = [];
     let pages = 0;
 
     while (nextPath && pages < AppConstants.todoRefreshMaxPagesPerList) {
-      const page: any = await graphGetWithRetry(
-        this.http, nextPath, token, AppConstants.graphFileListingTimeoutMs, prefer ?? {},
-      );
+      let page: any;
+      try {
+        page = await graphGetWithRetry(
+          this.http, nextPath, token, AppConstants.graphFileListingTimeoutMs, prefer ?? {},
+        );
+      } catch (err) {
+        // List refused the unfiltered query (e.g. view threshold): fall back to Pending only.
+        if (pages > 0 || nextPath !== allChangedPath) throw err;
+        nextPath = this.buildTodoListStartPath(siteId, listId, listName);
+        continue;
+      }
 
       let reachedKnownRows = false;
       for (const item of page?.value ?? []) {
@@ -7174,11 +7391,18 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   /** Marks a Request for Action as completed in SharePoint and removes it from To Do. */
-  protected async onCompleteTask(event: { task: any; completionText: string }): Promise<void> {
+  protected async onCompleteTask(event: {
+    task: any;
+    completionText: string;
+    done?: (error?: string | null) => void;
+  }): Promise<void> {
     const task = event?.task;
     const completionText = String(event?.completionText ?? '').trim();
     const taskId = String(task?.id ?? task?.Id ?? '').trim();
-    if (!taskId) return;
+    if (!taskId) {
+      event?.done?.('Cannot complete: the task has no id.');
+      return;
+    }
 
     try {
       const completedByName = this.getLoggedInUserDisplayName();
@@ -7225,9 +7449,16 @@ export class AppComponent implements OnInit, OnDestroy {
       this.allFilesComponent?.refreshCommentSearchCache();
       this.invalidateCommentFilters();
       this.refreshView();
+      event.done?.();
     } catch (err) {
       console.error('Failed to complete Request for Action:', err);
-      this.errorMessage = err instanceof Error ? err.message : 'Failed to complete task';
+      const message = err instanceof Error ? err.message : 'Failed to complete task';
+      // The popup shows the error itself; only fall back to the page banner without one.
+      if (event.done) {
+        event.done(message);
+      } else {
+        this.errorMessage = message;
+      }
       this.refreshView();
     }
   }
@@ -7260,6 +7491,15 @@ export class AppComponent implements OnInit, OnDestroy {
     const dueDate = String(event?.dueDate ?? '').trim();
     if (!event?.task || !dueDate) return;
     this.syncTaskCachesAfterMutation(event.task, 'dueDate', { dueDate });
+  }
+
+  /** A claim is a delegation to yourself, so reuse the delegate cache sync. */
+  protected onTaskClaimed(event: { task: any; name: string; email: string }): void {
+    if (!event?.task) return;
+    this.syncTaskCachesAfterMutation(event.task, 'delegate', {
+      assignedToName: event.name,
+      assignedToEmail: event.email,
+    });
   }
 
   // to resolve the comment card base for the new-comment modal in the todo section
