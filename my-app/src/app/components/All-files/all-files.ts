@@ -161,6 +161,8 @@ const COMMENT_TASKS_FIELDS_SELECT = [
 const GRAPH_PAGE_GAP_MS = 350;
 /** Tighter gap while searching/warming Comments (still polite to Graph). */
 const COMMENT_TASKS_GAP_MS = 100;
+//How many libnraries it searches at once.The global graph limiter (4) is the real cap
+const LIBRARY_SEARCH_CONCURRENCY = 4;
 /** Debounce search keystrokes before filtering / background paging. */
 const SEARCH_DEBOUNCE_MS = 250;
 /** Folder cards rendered per page in the All / Files grid. */
@@ -1961,20 +1963,44 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         : this.documentLibraries;
 
       const found: SpFile[] = [];
-      for (const library of libraries) {
-        if (seq !== this.graphSearchSeq) return;
-        const drive = drivesByName.get(library.name);
-        if (!drive) continue;
 
-        const folders = await this.searchDriveFolders(drive.id, library.name, query, token);
-        if (seq !== this.graphSearchSeq) return;
-        found.push(...folders);
-        // Progressive paint after each library.
-        this.graphSearchFolders = this.mergeUniqueFolders([], found);
-        this.applyFilters();
-        this.refreshView();
-        if (mode === 'all') await this.sleep(GRAPH_PAGE_GAP_MS);
-      }
+// Parallel library search:
+// Instead of searching libraries one after another, we start up to
+// LIBRARY_SEARCH_CONCURRENCY (4) "workers". Each worker takes the next library
+// from the shared queue, searches it via Graph, and paints the results straight
+// away, so matches appear progressively. When a worker finishes a library it
+// grabs another, until the queue is empty.
+// - If the user types a new search (seq changes), all workers stop.
+// - If one library fails, it is logged and the others keep going.
+// - The global limiter in microsoft-graph.ts still caps real concurrent Graph
+//   requests and handles 429 retries, so this stays throttle-safe.
+
+      // Libraries to search; skip any without a matching drive.
+      const queue = libraries.filter((l: { name: string }) => drivesByName.has(l.name));
+
+      // Each worker pulls the next library until the queue is empty. The global Graph
+      // limiter (microsoft-graph.ts) still caps real concurrent requests.
+      const worker = async (): Promise<void> => {
+        while (queue.length > 0) {
+          if (seq !== this.graphSearchSeq) return; // newer search started -> stop
+          const library = queue.shift()!;
+          const drive = drivesByName.get(library.name)!;
+          try {
+            const folders = await this.searchDriveFolders(drive.id, library.name, query, token);
+            if (seq !== this.graphSearchSeq) return;
+            found.push(...folders);
+            // Progressive paint after each library finishes.
+            this.graphSearchFolders = this.mergeUniqueFolders([], found);
+            this.applyFilters();
+            this.refreshView();
+          } catch (err) {
+            // One failing library must not abort the whole search.
+            console.error(`Graph folder search failed for ${library.name}:`, err);
+          }
+        }
+      };
+
+      await Promise.all(Array.from({ length: LIBRARY_SEARCH_CONCURRENCY }, worker));
 
       if (seq !== this.graphSearchSeq) return;
       this.graphSearchFolders = this.mergeUniqueFolders([], found);
