@@ -105,19 +105,6 @@ export class SubordinaryTaskService {
             }
         }
 
-        const users = await this.loadDomainUsers();
-        for (const raw of rawIdentifiers) {
-            const normalized = this.normalize(raw);
-            if (!normalized) continue;
-
-            // Get the local part of the email address ,local meaning the part before the @ symbol
-            const localPart = normalized.includes('@') ? normalized.split('@')[0] : normalized;
-            const self = users.find(user => {// Find the user in the list of usersLoadPromise: Promise<DomainUser[]> | null = null;
-                const admail = this.normalize(user.ADmail);
-                const admailLocal = admail.includes('@') ? admail.split('@')[0] : admail;
-                return admail === normalized || admailLocal === localPart || this.normalize(user.FullName) === normalized;
-            });// Find the user in the list of users
-        }
         return [...keys].map(key => key.trim()).filter(Boolean);
     }// Build all manager lookup keys from login email/UPN/name (includes email local part, e.g. alehandro).
 

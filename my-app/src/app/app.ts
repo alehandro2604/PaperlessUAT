@@ -1025,8 +1025,12 @@ export class AppComponent implements OnInit, OnDestroy {
 
     // To Do is for open work: completed cards stay out of its Comments panel.
     // All Files keeps them, as the place to look up past work.
+    // A card whose task is still open in the To Do list always stays (e.g. after Claim,
+    // the claimer is the sole assignee and could otherwise look "all ✓" while Pending).
     if (this.showToDoSection) {
-      filtered = filtered.filter(item => !this.isCompletedCommentCard(item));
+      filtered = filtered.filter(item =>
+        !!this.todoService.getTaskById(String(item.id ?? '')) || !this.isCompletedCommentCard(item),
+      );
     }
 
     if (this.searchQuery.trim()) {
@@ -7452,7 +7456,13 @@ export class AppComponent implements OnInit, OnDestroy {
 
     try {
       const completedByName = this.getLoggedInUserDisplayName();
-      await this.commentService.completeRequestForAction(task, completionText, completedByName);
+      const savedFields = await this.commentService.completeRequestForAction(task, completionText, completedByName);
+      // Show the value SharePoint now holds (e.g. "Complete"), so the card's pill flips from Pending.
+      const savedProgress = String(savedFields?.['Progress'] ?? '').trim();
+      const completedStatus =
+        ['Progress', 'LastState', 'Status', 'ApprovalStatus', 'WorkflowStatus', 'TaskOutcome']
+          .map(key => String(savedFields?.[key] ?? '').trim())
+          .find(value => /complet/i.test(value)) || 'Completed';
 
       this.todoService.removeTask(taskId);
       // Keep Redis in sync - otherwise the completed task reappears on the next
@@ -7480,11 +7490,13 @@ export class AppComponent implements OnInit, OnDestroy {
 
         return {
           ...item,
-          status: '',
+          status: completedStatus,
           completedBy: completedByName,
           eFormDetails: {
             ...(item.eFormDetails ?? {}),
-            status: '',
+            ...(savedProgress ? { progress: savedProgress, eFormProgress: savedProgress } : {}),
+            rawFields: { ...(item.eFormDetails?.['rawFields'] ?? {}), ...(savedFields ?? {}) },
+            status: completedStatus,
             completedBy: completedByName,
             comment: mergedComment,
             commentHtml: mergedComment.replace(/\n/g, '<br>'),

@@ -64,7 +64,6 @@ export class TodoListComponent implements OnInit, OnDestroy {
   private tasksSubscription: Subscription | null = null;
   private loadingSubscription: Subscription | null = null;
   isLoading = false;
-  expandedUsers: Set<string> = new Set();
   currentUser: any;
   submitter: string = '';
   showSubordinateTasks = false;
@@ -266,7 +265,7 @@ export class TodoListComponent implements OnInit, OnDestroy {
       return false;
     }
 
-    if (this.isRequestForActionTask(task)) {
+    if (this.isRequestForActionTask(task) || this.isTodoCategoryTask(task)) {
       return true;
     }
 
@@ -450,7 +449,7 @@ export class TodoListComponent implements OnInit, OnDestroy {
       status.includes('pending') ||
       status.includes('progress') ||
       status.includes('reject') ||
-      (this.isRequestForActionTask(task) && !fromSharePoint)
+      ((this.isRequestForActionTask(task) || this.isTodoCategoryTask(task)) && !fromSharePoint)
     );
   }
 
@@ -938,6 +937,31 @@ export class TodoListComponent implements OnInit, OnDestroy {
       }
     }
     return null;
+  }
+
+  /**
+   * SharePoint "Category" choices that belong in To Do even when their status is blank or
+   * not a workflow word (completed / rejected ones are already filtered out before this).
+   */
+  private static readonly TODO_CATEGORIES = [
+    'request for action',
+    'general comment',
+    'new attachment',
+    'reminder',
+    'available',
+    'monitor workflow',
+  ];
+
+  /** Matches the Category column, including variants like "New Attachment/s". */
+  private isTodoCategoryTask(task: any): boolean {
+    const details: any = task?.eFormDetails ?? {};
+    const rawFields = (details?.rawFields ?? {}) as Record<string, unknown>;
+    const category = String(details?.category ?? rawFields['Category'] ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/\/s\b/g, 's');
+    if (!category) return false;
+    return TodoListComponent.TODO_CATEGORIES.some(entry => category.startsWith(entry));
   }
 
   /** True only for "Request for Action" comment/action entries. */

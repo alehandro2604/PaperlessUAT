@@ -250,15 +250,6 @@ export class TodoService {
     this.tasks.next(this.tasks.value.filter(task => String(task.id ?? '').trim() !== id));
   }
 
-  rejectTask(taskId: string): void {
-    const updated = this.tasks.value.map(t =>
-      t.id === taskId
-        ? { ...t, status: 'rejected' as const, updatedDate: new Date() }
-        : t
-    );
-    this.tasks.next(updated);
-  }
-
   /**
    * Writes due date to the SharePoint list item via Graph, then syncs local state.
    * `dueDate` must be `YYYY-MM-DD`.

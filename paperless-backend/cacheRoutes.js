@@ -10,8 +10,7 @@
 // sees or changes snapshots of folders/lists they can open themselves.
 const express = require('express');
 const redisClient = require('./redisClient');
-const { filterAllowedKeys, canAccessKey, getSiteId } = require('./permissionCheck');
-const { getGraphClient } = require('./graphAuth');
+const { filterAllowedKeys, canAccessKey } = require('./permissionCheck');
 const router = express.Router();
 
 // Matches the old client-side PERSIST_MAX_AGE (7 days); Redis evicts for us.
@@ -286,53 +285,6 @@ router.delete('/todo', wrap(async (req, res) => {
     todoIndexKey(req), todoUpdatedKey(req), todoMetaKey(req),
   ]);
   res.json({ ok: true, deleted: keys.length });
-}));
-
-// Step 0 (read-only): does this list support Graph delta queries?
-//   1st call: asks for a change token (token=latest) without listing the whole list.
-//   Change an item in SharePoint, call again: should return only that item.
-//   ?reset=1 starts over. Remove this route once step 3 is built.
-router.get('/delta-test', wrap(async (req, res) => {
-  const list = String(req.query.list || '').trim();
-  if (!list) return res.status(400).json({ error: 'Pass ?list=<list name>' });
-
-  const stateKey = `cache:${req.userOid}:todo:delta-test:${list}`;
-  if (req.query.reset) await redisClient.del(stateKey);
-
-  const client = await getGraphClient(req.userToken);   // acts as the signed-in user
-  const siteId = await getSiteId(client);
-  const saved = await redisClient.get(stateKey);
-  let url = saved || `/sites/${siteId}/lists/${encodeURIComponent(list)}/items/delta?token=latest`;
-
-  const changed = [];
-  let deltaLink = null;
-  let pages = 0;
-  const started = Date.now();
-  try {
-    while (url && pages < 5) {
-      const page = await client.api(url).get();
-      for (const item of page.value ?? []) {
-        changed.push({ id: item.id, modified: item.lastModifiedDateTime, deleted: !!item.deleted });
-      }
-      deltaLink = page['@odata.deltaLink'] ?? deltaLink;
-      url = page['@odata.nextLink'] ?? null;
-      pages += 1;
-    }
-  } catch (err) {
-    return res.json({ list, supported: false, status: err.statusCode ?? err.code, message: err.message });
-  }
-
-  if (deltaLink) await redisClient.setEx(stateKey, 24 * 60 * 60, deltaLink);
-  res.json({
-    list,
-    supported: !!deltaLink,
-    firstRun: !saved,
-    pages,
-    ms: Date.now() - started,
-    changedCount: changed.length,
-    morePages: !!url,
-    sample: changed.slice(0, 10),
-  });
 }));
 
 module.exports = router;

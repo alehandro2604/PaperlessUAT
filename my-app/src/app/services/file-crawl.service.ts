@@ -228,19 +228,6 @@ export class FileCrawlCacheService {
   }
 
   /**
-   * Clears every key that starts with the given prefix
-   * (e.g. `files:folder:` after a manual All Files refresh).
-   */
-  invalidatePrefix(prefix: string): void {
-    for (const key of [...this.cache.keys()]) {
-      if (key.startsWith(prefix)) {
-        this.cache.delete(key);
-      }
-    }
-    this.enqueuePersist(() => this.persistent.deleteByPrefix(PERSIST_PREFIX + prefix));
-  }
-
-  /**
    * Clears everything, memory and disk — used on logout so a shared
    * machine does not keep the previous user's data around.
    */
