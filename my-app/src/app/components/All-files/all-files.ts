@@ -3,7 +3,6 @@ import { CommonModule } from '@angular/common';
 import { LoadingScreenComponent } from '../loading screen/loading-screen';
 import { HttpClient } from '@angular/common/http';
 import { AuthService } from '../../services/auth.service';
-import { DocumentService } from '../../services/document.service';
 import { sharePointConfig } from '../../sharepoint.config';
 import { graphGetWithRetry, toGraphPath, normalizeName } from '../../microsoft-graph';
 import { extractTrailingFolderId } from '../../utils/hr-task-matching';
@@ -134,7 +133,6 @@ interface CommentTasksCacheEntry {
  */
 const DRIVE_CHILDREN_QUERY =
   '?$select=id,name,webUrl,size,folder,file,createdBy,lastModifiedBy,lastModifiedDateTime&$top=10000';
-const PAGE_SIZE = 10000;
 /** Comment-search pages — smaller than drive crawls so the first matches paint quickly. */
 const COMMENT_TASKS_PAGE_SIZE = 200;
 /** Idle warm stops here so we don't preload tens of thousands of tasks into memory. */
@@ -304,8 +302,6 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   private commentTasksPendingLibraries: string[] = [];
   private commentTasksCurrentNextLink: string | null = null;
   private commentTasksCurrentLibrary: string | null = null;
-  /** Prevents duplicate idle warm of the Comments search index. */
-  private commentTasksWarmStarted = false;
   private commentTasksWarmAborted = false;
   /** True while the user is interacting — warm crawl yields to keep clicks responsive. */
   private commentTasksWarmPaused = false;
@@ -330,7 +326,6 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   constructor(
     private http: HttpClient,
     private authService: AuthService,
-    private documentService: DocumentService,
     private cdr: ChangeDetectorRef,
     private formConfig: FormConfigurationService,
     private fileCrawlCache: FileCrawlCacheService,
@@ -455,16 +450,25 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     return nextLink;
   }
 
+  /**
+   * Refresh-button reset. Library listings are shared in Redis, so they are only
+   * expired (re-fetched, then overwritten in place), never deleted. Refreshing the
+   * Files tab touches just the selected library; the All view re-crawls every library.
+   */
   private invalidateAllFilesCrawlCache(): void {
     this.fileCrawlCache.invalidate(AllFilesComponent.ALL_ROOT_CACHE_KEY);
     this.fileCrawlCache.invalidate(COMMENT_TASKS_CACHE_KEY);
+
+    if (this.filterType === 'files' && this.selectedLibrary) {
+      this.fullyLoadedAllLibraries.delete(this.selectedLibrary);
+      this.fileCrawlCache.expire(this.libraryFilesCacheKey(this.selectedLibrary));
+      return;
+    }
+
     this.fileCrawlCache.invalidate(DRIVES_CACHE_KEY);
     this.fullyLoadedAllLibraries.clear();
-    if (this.selectedLibrary) {
-      this.fileCrawlCache.invalidate(this.libraryFilesCacheKey(this.selectedLibrary));
-    }
     for (const library of this.documentLibraries) {
-      this.fileCrawlCache.invalidate(this.libraryFilesCacheKey(library.name));
+      this.fileCrawlCache.expire(this.libraryFilesCacheKey(library.name));
     }
   }
 
@@ -683,24 +687,6 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     void this.continueCommentTasksWarmInBackground();
   }
 
-  /**
-   * Idle-warm the Comments search index (Redis → memory → Graph) so the first
-   * Comments search feels as instant as All / Files.
-   */
-  private async warmCommentTasksIndex(): Promise<void> {
-    if (this.commentTasksWarmStarted || this.commentTasksWarmAborted) return;
-    this.commentTasksWarmStarted = true;
-    try {
-      await this.loadAllLibraryTasksForCommentsSearch({ quiet: true });
-      if (!this.commentTasksWarmAborted && !this.commentTasksWarmPaused) {
-        void this.continueCommentTasksWarmInBackground();
-      }
-    } catch (err) {
-      console.warn('Comments search warm failed:', err);
-      this.commentTasksWarmStarted = false;
-    }
-  }
-
   /** Keep paging Comments tasks in the background until the shared cache is complete. */
   private async continueCommentTasksWarmInBackground(): Promise<void> {
     if (!this.hasMoreCommentTasks || this.commentTasksWarmAborted) return;
@@ -882,22 +868,6 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         (l.displayName ?? '').toLowerCase() === taskListName.toLowerCase()
       );
       if (listObj?.id) this.commentTaskListIds[libraryName] = listObj.id;
-    }
-  }
-
-  async loadMoreCommentTasks(): Promise<void> {
-    if (this.isLoadingMoreCommentTasks || !this.hasMoreCommentTasks) return;
-    this.isLoadingMoreCommentTasks = true;
-    this.refreshView();
-    try {
-      const token = await this.authService.acquireSharePointToken();
-      if (!token) return;
-      await this.fetchNextCommentTasksPage(token);
-    } catch (err) {
-      console.error('Failed to load more comment tasks:', err);
-    } finally {
-      this.isLoadingMoreCommentTasks = false;
-      this.refreshView();
     }
   }
 
@@ -1743,7 +1713,10 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
    * loaded in the background so matches on Assigned To / library also appear.
    */
   private async searchAllLibraries(term: string): Promise<void> {
-    void this.searchFoldersViaGraph(term, 'all');
+    // Let the search have Graph to itself first; the full root crawl (which adds
+    // Assigned To / library matches) starts only once the first results are in.
+    await this.searchFoldersViaGraph(term, 'all');
+    if (this.filterType !== 'all' || this.searchTerm.trim() !== term) return;
     await this.loadAllLibrariesFiles();
     if (this.filterType === 'all' && this.searchTerm.trim()) {
       this.applyFilters();
@@ -1786,7 +1759,6 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     this.commentTasksCurrentNextLink = null;
     this.commentTasksCurrentLibrary = null;
     this.hasMoreCommentTasks = false;
-    this.commentTasksWarmStarted = false;
     this.invalidateAllFilesCrawlCache();
 
     if (this.filterType === 'files') {
@@ -2076,11 +2048,12 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         }
       }
 
+      // Search is user-facing: no pacing gap; graphGetWithRetry handles 429s.
       nextPath = this.toNextPath(response['@odata.nextLink']);
-      if (nextPath) await this.sleep(GRAPH_PAGE_GAP_MS);
     }
 
-    // Resolve root folders from local cache first, then Graph path lookup.
+    // Resolve root folders from local cache first, then Graph path lookup (in parallel).
+    const toFetch: string[] = [];
     for (const name of rootFolderNamesNeeded) {
       if (!name.trim()) continue;
       const existing =
@@ -2088,9 +2061,16 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         [...folderMap.values()].find((f) => f.name === name);
       if (existing && this.hasFolderDisplayName(existing)) {
         folderMap.set(existing.id, existing);
-        continue;
+      } else {
+        toFetch.push(name);
       }
-      const fetched = await this.fetchRootFolderByName(driveId, libraryName, name, token);
+    }
+    const fetchedFolders = await Promise.all(
+      toFetch.map((name) =>
+        this.fetchRootFolderByName(driveId, libraryName, name, token).catch(() => null),
+      ),
+    );
+    for (const fetched of fetchedFolders) {
       if (fetched && this.hasFolderDisplayName(fetched)) {
         folderMap.set(fetched.id, fetched);
       }
@@ -2850,17 +2830,6 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     });
   }
 
-  private fileMatchesTerm(file: SpFile, term: string): boolean {
-    const name = file.name?.toLowerCase() ?? '';
-    const modifiedBy = file.modifiedby?.toLowerCase() ?? '';
-    return name.includes(term) || modifiedBy.includes(term) || this.fileCreatorMatchesTerm(file, term);
-  }
-
-  private fileCreatorMatchesTerm(file: SpFile, term: string): boolean {
-    return (file.assignedTo?.toLowerCase() ?? '').includes(term)
-      || (file.createdBy?.toLowerCase() ?? '').includes(term);
-  }
-
   private sortByLibraryOrder(folders: SpFile[]): SpFile[] {
     const orderMap = new Map(this.documentLibraries.map((lib: { name: string }, index: number) => [lib.name, index]));
     return [...folders].sort((a, b) => {
@@ -2994,95 +2963,6 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     return value.toLowerCase().replace(/[^a-z0-9]/g, '');
   }
 
-  private getFolderMatchTokens(folderName: string): string[] {
-    const raw = String(folderName ?? '').trim().toLowerCase();
-    if (!raw) return [];
-
-    const withoutLeadingNumber = raw.replace(/^\d+\s+/, '').trim();
-    const employeeId = raw.match(/^\d+/)?.[0] ?? '';
-    const emailMatch = raw.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i)?.[0] ?? '';
-    const emailLocal = emailMatch ? emailMatch.split('@')[0] : '';
-    const displayFromEmail = emailLocal.replace(/[._-]+/g, ' ');
-
-    return [...new Set([
-      withoutLeadingNumber,
-      emailMatch,
-      emailLocal,
-      displayFromEmail,
-      employeeId,
-      raw,
-    ]
-      .map((token) => this.normalizeMatchText(token))
-      .filter((token) => token.length >= 2))];
-  }
-
-  private extractFolderCandidatesFromTask(fields: Record<string, unknown>): string[] {
-    const rawValues = [
-      fields['Folder'],
-      fields['FolderName'],
-      fields['DocumentFolder'],
-      fields['RelatedFolder'],
-      fields['Title'],
-      fields['Name'],
-      fields['FileLeafRef'],
-      fields['FileDirRef'],
-      fields['Path'],
-      fields['Requestor'],
-      fields['SubmittedBy'],
-      fields['EmployeeName'],
-      fields['Employee'],
-      fields['eFormListId'],
-      fields['ListId'],
-      fields['field_11'],
-    ];
-
-    const names: string[] = [];
-    for (const val of rawValues) {
-      if (val == null || val === '') continue;
-      const text = this.stringifyTaskFieldValue(val);
-      names.push(text);
-      for (const segment of text.split(/[/\\]/)) {
-        const trimmed = segment.trim();
-        if (trimmed) names.push(trimmed);
-      }
-    }
-    return names;
-  }
-
-  private resolveFolderForTask(libraryName: string, fields: Record<string, unknown>): SpFile | null {
-    const libraryFolders = this.allLibrariesFiles.filter(
-      (f) => f.isfolder && f.libraryName === libraryName
-    );
-    if (libraryFolders.length === 0) return null;
-
-    const candidates = this.extractFolderCandidatesFromTask(fields);
-    for (const folder of libraryFolders) {
-      const folderTokens = this.getFolderMatchTokens(folder.name);
-      if (folderTokens.length === 0) continue;
-
-      for (const candidate of candidates) {
-        const normalizedCandidate = this.normalizeMatchText(candidate);
-        if (!normalizedCandidate) continue;
-        if (folderTokens.some((token) =>
-          normalizedCandidate.includes(token) || token.includes(normalizedCandidate)
-        )) {
-          return folder;
-        }
-      }
-    }
-
-    const title = String(fields['Title'] ?? fields['Name'] ?? '').trim().toLowerCase();
-    if (title) {
-      const match = libraryFolders.find((folder) => {
-        const folderName = folder.name.toLowerCase();
-        return folderName.includes(title) || title.includes(folderName);
-      });
-      if (match) return match;
-    }
-
-    return null;
-  }
-
   /** Display only: "Procurement eForm" -> "Procurement". The real library name is left untouched. */
   private removeEformFromLibraryName(libraryName: string): string {
     const label = libraryName.replace(/\be-?forms?\b/gi, '').replace(/\s{2,}/g, ' ').trim();
@@ -3102,10 +2982,4 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     });
   }
 
-  formatFileSize(bytes: number): string {
-    if (!bytes) return '';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    const size = Math.floor(Math.log(bytes) / Math.log(1024));
-    return `${(bytes / Math.pow(1024, size)).toFixed(1)} ${units[size]}`;
-  }
 }

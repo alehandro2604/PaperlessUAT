@@ -101,7 +101,6 @@ interface CommentFieldMap {
 })
 // Comment service class
 export class CommentService {
-  private readonly commentTasksSubject = new BehaviorSubject<CommentTask[]>([]);// subject to store the comment tasks
   private readonly loadingSubject = new BehaviorSubject<boolean>(false);// subject to store the loading state
   private readonly errorSubject = new BehaviorSubject<string | null>(null);// subject to store the error state
 

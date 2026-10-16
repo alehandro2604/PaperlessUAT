@@ -10,11 +10,23 @@ import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { AuthService } from './auth.service';
+import { CacheSessionService } from './cache-session.service';
 import { sharePointConfig } from '../sharepoint.config';
+
+/** What a reload needs to top up To Do instead of re-paging every list. */
+export interface TodoMeta {
+  /** Newest lastModifiedDateTime seen per list. */
+  watermarks: Record<string, string>;
+  /** The last full crawl finished, so the saved tasks are the whole set. */
+  complete: boolean;
+  /** When that full crawl finished (ms). Old crawls are redone: top-ups cannot see lists that were empty. */
+  crawledAt?: number;
+}
 
 interface TodoResponse {
   updatedAt: number;
   tasks: { key: string; data: any }[];
+  meta?: TodoMeta | null;
 }
 
 /** Same freshness window as FileCrawlCacheService.CACHE_TTL. */
@@ -39,6 +51,9 @@ export class TodoTaskStoreService {
   private updatedAt = 0;
   private loaded = false;
   private loading: Promise<void> | null = null;
+  private meta: TodoMeta | null = null;
+  private metaFingerprint = '';
+  private pendingMeta: TodoMeta | null = null;
 
   /** Fingerprint of each task as Redis has it, so only changed tasks are uploaded. */
   private readonly saved = new Map<string, string>();
@@ -48,7 +63,11 @@ export class TodoTaskStoreService {
   /** Saves run one after another so a delete can never overtake an earlier upload. */
   private saving: Promise<void> = Promise.resolve();
 
-  constructor(private readonly http: HttpClient, private readonly auth: AuthService) {}
+  constructor(
+    private readonly http: HttpClient,
+    private readonly auth: AuthService,
+    private readonly session: CacheSessionService,
+  ) {}
 
   static keyOf(item: any): string {
     return `${item?.listName ?? 'unknown'}:${item?.id}`;
@@ -59,6 +78,20 @@ export class TodoTaskStoreService {
     if (this.loaded) return Promise.resolve();
     this.loading ??= this.fetchAll().finally(() => { this.loading = null; });
     return this.loading;
+  }
+
+  /** Saved watermarks + completeness flag, or null when no full crawl was ever saved. */
+  getMeta(): TodoMeta | null {
+    return this.meta;
+  }
+
+  /** Remember per-list watermarks; uploaded with the next save, and only if they changed. */
+  setMeta(meta: TodoMeta): void {
+    const print = fingerprint(JSON.stringify(meta));
+    if (print === this.metaFingerprint) return;
+    this.meta = meta;
+    this.pendingMeta = meta;
+    this.scheduleSave();
   }
 
   /** Every cached task regardless of age (was getStale). */
@@ -102,6 +135,9 @@ export class TodoTaskStoreService {
   invalidate(): void {
     this.items = [];
     this.updatedAt = 0;
+    this.meta = null;
+    this.metaFingerprint = '';
+    this.pendingMeta = null;
     this.saved.clear();
     this.pendingUpserts.clear();
     this.pendingRemoves.clear();
@@ -132,6 +168,10 @@ export class TodoTaskStoreService {
       } else {
         this.items = res.tasks.map((t) => t.data);
         this.updatedAt = res.updatedAt;
+        if (res.meta) {
+          this.meta = res.meta;
+          this.metaFingerprint = fingerprint(JSON.stringify(res.meta));
+        }
       }
     } catch (err) {
       console.warn('[todo-store] load failed; To Do will load from SharePoint', err);
@@ -152,7 +192,9 @@ export class TodoTaskStoreService {
     const removes = [...this.pendingRemoves];
     this.pendingUpserts.clear();
     this.pendingRemoves.clear();
-    if (upserts.length === 0 && removes.length === 0) return;
+    const meta = this.pendingMeta;
+    this.pendingMeta = null;
+    if (upserts.length === 0 && removes.length === 0 && !meta) return;
 
     try {
       const headers = await this.headers();
@@ -162,11 +204,15 @@ export class TodoTaskStoreService {
         await firstValueFrom(this.http.put(`${this.base}/tasks`, {
           upsert: chunk.map(([key, { data }]) => ({ key, data })),
           remove: i === 0 ? removes : [],
+          // Sent with the last chunk, so "complete" never lands before its tasks do.
+          ...(meta && i + UPSERTS_PER_REQUEST >= upserts.length ? { meta } : {}),
         }, { headers }));
         for (const [key, { print }] of chunk) this.saved.set(key, print);
       }
       for (const key of removes) this.saved.delete(key);
+      if (meta) this.metaFingerprint = fingerprint(JSON.stringify(meta));
     } catch (err) {
+      if (meta && !this.pendingMeta) this.pendingMeta = meta;
       // Put them back so the next change retries them; newer pending edits win.
       for (const [key, value] of upserts) {
         if (!this.pendingUpserts.has(key)) this.pendingUpserts.set(key, value);
@@ -179,6 +225,8 @@ export class TodoTaskStoreService {
   /** Token for the backend API (not Graph), as CacheService uses. */
   private async headers(): Promise<{ Authorization: string }> {
     const token = await this.auth.acquireTokenSilent([sharePointConfig.backendApiScope]);
+    this.session.noteToken(token);
+    void this.session.ensure();
     return { Authorization: `Bearer ${token}` };
   }
 }

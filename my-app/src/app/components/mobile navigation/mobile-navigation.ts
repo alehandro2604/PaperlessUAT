@@ -2,24 +2,6 @@ import { Component, EventEmitter, Input, Output, ViewEncapsulation } from '@angu
 
 export type MobileCardView = 'task' | 'todo' | 'allFiles' | 'comments' | 'attachments' | 'files';
 
-export function getNextMobileView(current: MobileCardView): MobileCardView {
-  if (current === 'task') return 'comments';
-  if (current === 'todo') return 'allFiles';
-  if (current === 'allFiles') return 'comments';
-  if (current === 'comments') return 'attachments';
-  if (current === 'attachments') return 'files';
-  return 'task';
-}
-
-export function getMobileViewButtonLabel(view: MobileCardView): string {
-  if (view === 'task') return 'Tasks';
-  if (view === 'comments') return 'Comments';
-  if (view === 'allFiles') return 'All Files';
-  if (view === 'todo') return 'To Do';
-  if (view === 'files') return 'Files';
-  return 'Attachments';
-}
-
 export const MOBILE_NAV_INDEX = {
   task: 0,
   todo: 1,
@@ -103,58 +85,6 @@ export function resolveMobileNavClick(
   }
 
   return { type: 'none' };
-}
-
-export function handleMobileNavTap(
-  index: number,
-  activeIndex: number,
-  mobileCardView: MobileCardView,
-  currentUser?: { email?: string },
-  openMyFiles?: () => void,
-  openPowerAppsModal?: () => void
-): {
-  newActiveIndex: number;
-  newMobileCardView?: MobileCardView;
-  shouldLoadFiles: boolean;
-  shouldOpenModal: boolean;
-} {
-  if (index === activeIndex) {
-    return {
-      newActiveIndex: activeIndex,
-      shouldLoadFiles: false,
-      shouldOpenModal: false,
-    };
-  }
-
-  let newMobileCardView: MobileCardView | undefined;
-  let shouldLoadFiles = false;
-  const shouldOpenModal = false;
-
-  switch (index) {
-    case MOBILE_NAV_INDEX.task:
-      newMobileCardView = 'task';
-      break;
-    case MOBILE_NAV_INDEX.todo:
-      newMobileCardView = 'todo';
-      break;
-    case MOBILE_NAV_INDEX.allFiles:
-      newMobileCardView = 'allFiles';
-      break;
-    case MOBILE_NAV_INDEX.comments:
-      newMobileCardView = 'comments';
-      break;
-    case MOBILE_NAV_INDEX.attachments:
-      newMobileCardView = 'attachments';
-      shouldLoadFiles = !!currentUser?.email;
-      break;
-  }
-
-  return {
-    newActiveIndex: index,
-    newMobileCardView,
-    shouldLoadFiles,
-    shouldOpenModal,
-  };
 }
 
 @Component({

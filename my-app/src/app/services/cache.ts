@@ -10,6 +10,7 @@ import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { AuthService } from './auth.service';
+import { CacheSessionService } from './cache-session.service';
 import { sharePointConfig } from '../sharepoint.config';
 
 interface CacheEntry<T> {
@@ -45,27 +46,61 @@ export class CacheService {
    * identical snapshot; skipping those avoids re-uploading multi-MB payloads.
    */
   private readonly lastStored = new Map<string, string>();
+  /**
+   * Keys the backend answered 403 for. The backend remembers a denial for 5 minutes,
+   * so asking again sooner only repeats the refusal (one request per page of tasks).
+   */
+  private readonly deniedUntil = new Map<string, number>();
+  private static readonly DENIED_RETRY_MS = 5 * 60_000;
 
-  constructor(private http: HttpClient, private auth: AuthService) {}
+  private isDenied(key: string): boolean {
+    const until = this.deniedUntil.get(key);
+    if (until === undefined) return false;
+    if (Date.now() < until) return true;
+    this.deniedUntil.delete(key);
+    return false;
+  }
+
+  private noteDenied(err: unknown, key: string): boolean {
+    if ((err as { status?: number })?.status !== 403) return false;
+    this.deniedUntil.set(key, Date.now() + CacheService.DENIED_RETRY_MS);
+    return true;
+  }
+
+  constructor(
+    private http: HttpClient,
+    private auth: AuthService,
+    private session: CacheSessionService,
+  ) {}
 
   /** Token for the backend API (not Graph) — required by the OBO/cache endpoints. */
   private async authHeaders(): Promise<{ Authorization: string }> {
     const token = await this.auth.acquireTokenSilent([sharePointConfig.backendApiScope]);
+    this.session.noteToken(token);
+    void this.session.ensure();
     return { Authorization: `Bearer ${token}` };
   }
 
   async get<T>(key: string): Promise<CacheEntry<T> | undefined> {
+    if (this.isDenied(key)) return undefined;
     const headers = await this.authHeaders();
-    const entry = await firstValueFrom(
-      this.http.get<CacheEntry<T> | null>(`${this.base}/entry`, { headers, params: { key } })
-    );
-    return entry ?? undefined;
+    try {
+      const entry = await firstValueFrom(
+        this.http.get<CacheEntry<T> | null>(`${this.base}/entry`, { headers, params: { key } })
+      );
+      return entry ?? undefined;
+    } catch (err) {
+      // Treated as a cache miss by callers; just don't ask again for a while.
+      if (this.noteDenied(err, key)) return undefined;
+      throw err;
+    }
   }
 
   async set<T>(key: string, data: T): Promise<void> {
     const json = JSON.stringify({ key, data });
     const print = fingerprint(json);
     if (this.lastStored.get(key) === print) return;
+    if (this.isDenied(key)) return;
     try {
       const headers: Record<string, string> = {
         ...(await this.authHeaders()),
@@ -78,6 +113,10 @@ export class CacheService {
       this.lastStored.set(key, print);
     } catch (err: unknown) {
       const status = (err as { status?: number })?.status;
+      if (this.noteDenied(err, key)) {
+        console.warn(`[cache] "${key}" refused by the backend (403); memory-only for 5 min`);
+        return;
+      }
       // Oversized snapshot — keep the memory cache, but drop the Redis copy: it is now
       // older than what we failed to save (e.g. still lists a task just completed),
       // and a fresh load beats painting stale rows on the next visit.

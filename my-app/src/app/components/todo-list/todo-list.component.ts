@@ -28,21 +28,6 @@ export interface SubmitterGroup{
   totalCount: number;
 }
 
-export interface LocalToDoTask {
-  id: string;
-  name: string;
-  description: string;
-  status: 'pending' | 'in_progress' | 'completed' | 'rejected' | 'APPROVED';
-  assignedTo: string;
-  listName: string;
-  submittedDate: string;
-  submittedBy: string;
-  statusDate: string;
-  createdDate: Date;
-  updatedDate: Date;
-  eFormDetails?: any;
-  webUrl?: string;
-}
 
 @Component({
   selector: 'app-todo-list',
@@ -82,16 +67,11 @@ export class TodoListComponent implements OnInit, OnDestroy {
   expandedUsers: Set<string> = new Set();
   currentUser: any;
   submitter: string = '';
-  subordinateTasks: ToDoTask[] = [];
   showSubordinateTasks = false;
   showFutureTasks = false;
   subordinateTasksLoading = false;
   subordinateTasksError: string | null = null;
   subordinateTasksLoaded = false;
-  subordinateTasksLoadedError = false;
-  subordinateTasksLoadedErrorMsg = '';
-  subordinateEmails: any;
-  isLoadingSubordinates: boolean | undefined;
   subordinateEmployees: DomainUser[] = [];
   private subordinateEmployeesLoadSeq = 0;
   constructor(
@@ -755,12 +735,6 @@ export class TodoListComponent implements OnInit, OnDestroy {
     return this.getEmployeeFullName(groupKey) || this.parseGroupKeyForDisplay(groupKey);
   }
 
-  // Show the eForm List ID on each row in the template.
-  getGroupEFormListId(groupKey: string): string {
-    const eFormListId = this.parseGroupKey(groupKey).eFormListId;
-    return eFormListId && eFormListId !== 'Unknown eForm' ? eFormListId : '';
-  }
-
   /** Human-readable task type for a group, e.g. "Sick Leave" instead of "SickLeaveByAppointment". */
   /*this is the label that will be displayed in the task list and the eform Id*/
   getGroupTaskLabel(groupKey: string): string {
@@ -770,12 +744,6 @@ export class TodoListComponent implements OnInit, OnDestroy {
     return this.showSubordinateTasks ? 'Subordinate pending tasks' : 'Tasks assigned to you';
   }
 
-  private formatTaskType(title: string | undefined): string {
-    return (title ?? '')
-      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-      .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
-      .trim();
-  }
   private getTaskEFormListId(task: { eFormDetails?: { eFormListId?: unknown } }): string {
     return String(task.eFormDetails?.eFormListId ?? '').trim() || 'Unknown eForm';
   }
@@ -812,10 +780,6 @@ export class TodoListComponent implements OnInit, OnDestroy {
   }
   // ── END: Group tasks by eForm List ID ────────────────────────────
 
-  private getEmployeeDisplayName(employee: DomainUser): string {
-    return employee.FullName || employee.ADmail || 'Unknown User';
-  }
-
   /** Finds a subordinate employee by email/full name/pin (case-insensitive). */
   private findSubordinateEmployee(groupKeyOrSubmitter: string): DomainUser | undefined {
     const submitter = this.parseGroupKey(groupKeyOrSubmitter).submitter;
@@ -828,14 +792,6 @@ export class TodoListComponent implements OnInit, OnDestroy {
       const pin = String(employee.PinNo ?? '').trim().toLowerCase();
       return (email && email === target) || (fullName && fullName === target) || (pin && pin === target);
     });
-  }
-
-  private isTaskAssignedToEmployee(assignedTo: string | undefined | null, employee: DomainUser): boolean {
-    return this.userService.matchesAssigneeField(assignedTo, employee.FullName, employee.ADmail) ||
-      this.userService.matchesAssigneeField(assignedTo, employee.ADmail, employee.ADmail) ||
-      (employee.PinNo
-        ? this.userService.matchesAssigneeField(assignedTo, employee.PinNo, employee.ADmail)
-        : false);
   }
 
   onCompleteTask(task: ToDoTask, event: CompleteTaskEvent): void {
@@ -1014,45 +970,6 @@ export class TodoListComponent implements OnInit, OnDestroy {
   }
   //end of request for action complete button logic
 
-  onRejectTask(taskId: string): void {
-    this.todoService.rejectTask(taskId);
-  }
-
-  getStatusColor(status: ToDoTask['status']): string {
-    switch (status) {
-      case 'pending':
-        return '#ffc107';
-      case 'in_progress':
-        return '#17a2b8';
-      case 'completed':
-        return '#28a745';
-      case 'rejected':
-        return '#dc3545';
-      default:
-        return '#6c757d';
-    }
-  }
-
-  formatDate(date: Date): string {
-    return new Date(date).toLocaleDateString();
-  }
-
-  toggleUserExpansion(userName: string): void {
-    if (this.expandedUsers.has(userName)) {
-      this.expandedUsers.delete(userName);
-    } else {
-      this.expandedUsers.add(userName);
-    }
-  }
-
-  isUserExpanded(userName: string): boolean {
-    return this.expandedUsers.has(userName);
-  }
-
-  isTaskAssignedToCurrentUser(task: ToDoTask): boolean {
-    return this.isTaskAssignedToCurrentUserTask(task);
-  }
-
   /** Submitter portion of a group key (safe for templates). */
   parseGroupKeyForDisplay(groupKey: string): string {
     return this.parseGroupKey(groupKey ?? '').submitter;
@@ -1068,10 +985,6 @@ export class TodoListComponent implements OnInit, OnDestroy {
       .filter(Boolean)
       .map(part => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
       .join(' ');
-  }
-
-  getSubmitterInitial(submitter: string): string {
-    return (this.formatSubmitterDisplayName(submitter).charAt(0) || '?').toUpperCase();
   }
 
   isSubmitterEmail(submitter: string): boolean {

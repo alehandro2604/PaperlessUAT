@@ -109,7 +109,7 @@
           >
           
             <app-change-task-date
-              *ngIf="sub.tasks?.length && subGroupHasDueDateColumn(sub)"
+              *ngIf="sub.tasks.length && subGroupHasDueDateColumn(sub)"
               [task]="sub.tasks[0]"
               (dateChange)="onChangeTaskDate(sub.tasks[0], $event)"
             ></app-change-task-date>
@@ -136,7 +136,6 @@
                 (completeTask)="onCompleteTask(rfaTask, $event)"
               ></app-new-comment-complete>
             </div>
-            <i class="fi fi-br-angle-right user-arrow" aria-hidden="true"></i>
           </div>
         </div>
       </div>

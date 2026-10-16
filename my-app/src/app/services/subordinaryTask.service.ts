@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { async, firstValueFrom, from, Observable, of } from 'rxjs';
+import { firstValueFrom, from, Observable, of } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { sharePointConfig } from '../sharepoint.config';
 import { AppConstants } from '../app.constants';
@@ -26,11 +26,6 @@ interface DomainUserColumnMap {
     ManagerEmail: string[];
 }
 
-interface SubordinateFolder {
-    employee: DomainUser;
-    tasks: ToDoTask[];
-    pendingCount: number;
-}
 
 @Injectable({
     providedIn: 'root'
@@ -44,7 +39,34 @@ export class SubordinaryTaskService {
     private usersLoadPromise: Promise<DomainUser[]> | null = null;
     private cachedSubordinates: DomainUser[] | null = null;
     private subordinatesLoadPromise: Promise<DomainUser[]> | null = null;
-    subordanteEmployees: any;
+    private static readonly SUBORDINATES_TTL_MS = 12 * 60 * 60 * 1000;
+    /** One storage key per manager so two users on one browser never share a list. */
+    private subordinatesStorageKey(identifiers: string[]): string {
+        return 'sub_reports_v1_' + this.normalize(identifiers[0] ?? '');
+    } subordanteEmployees: any;
+    
+      /** Returns the saved list, or null if missing, expired or unreadable. */
+      private readSavedSubordinates(key: string): DomainUser[] | null {
+        try {
+            const raw = sessionStorage.getItem(key);
+            if (!raw) return null;
+            const saved = JSON.parse(raw) as { at: number; users: DomainUser[] };
+            if (Date.now() - saved.at > SubordinaryTaskService.SUBORDINATES_TTL_MS) return null;
+            return Array.isArray(saved.users) ? saved.users : null;
+        } catch {
+            // Storage blocked or corrupt JSON: behave as if nothing was saved.
+            return null;
+        }
+    }
+
+    private writeSavedSubordinates(key: string, users: DomainUser[]): void {
+        try {
+            sessionStorage.setItem(key, JSON.stringify({ at: Date.now(), users }));
+        } catch {
+            // Storage full or blocked: caching is optional, so ignore.
+        }
+    }
+
     expandedEmployeeFolders: any;
 
     // This method is used to get the direct reports of a manager
@@ -53,7 +75,7 @@ export class SubordinaryTaskService {
         private readonly authService: AuthService,
         private readonly userService: UserService,
         private readonly siteMetadata: SiteMetadataService,
-        ) { }
+    ) { }
 
     getCachedSubordinates(): DomainUser[] {
         return this.cachedSubordinates ?? [];
@@ -100,10 +122,13 @@ export class SubordinaryTaskService {
     }// Build all manager lookup keys from login email/UPN/name (includes email local part, e.g. alehandro).
 
     async ensureSubordinatesForManager(identifiers: string[], forceRefresh = false): Promise<DomainUser[]> {
+        const storageKey = this.subordinatesStorageKey(identifiers);
+
         if (forceRefresh) {
             this.clearSubordinatesCache();
             this.cachedUsers = null;
             this.usersLoadPromise = null;
+            try { sessionStorage.removeItem(storageKey); } catch { /* ignore */ }
         }
         if (this.cachedSubordinates !== null) {
             return this.cachedSubordinates;
@@ -112,18 +137,31 @@ export class SubordinaryTaskService {
             return this.subordinatesLoadPromise;
         }
 
+        // Use the list saved earlier in this browser session, if still fresh.
+        // An empty array is valid too: it means "this user has no reports".
+        const saved = this.readSavedSubordinates(storageKey);
+        if (saved) {
+            this.cachedSubordinates = saved;
+            return saved;
+        }
+
         this.subordinatesLoadPromise = (async () => {
+            // ORIGINAL BODY (restored): build the lookup keys for this manager.
             const searchKeys = await this.buildManagerSearchKeys(identifiers);
             if (!searchKeys.length) {
                 this.cachedSubordinates = [];
+                this.writeSavedSubordinates(storageKey, this.cachedSubordinates);
                 return this.cachedSubordinates;
             }
 
+            // Walk the org tree for every strong key (emails, full names, pins).
             const results = await Promise.all(
                 searchKeys
                     .filter(key => this.isStrongManagerSearchKey(key))
                     .map(key => this.getAllSubordinates(key).catch(() => []))
             );
+
+            // De-duplicate people found through more than one key.
             const byKey = new Map<string, DomainUser>();
             for (const employee of results.flat()) {
                 const key = (employee.ADmail || employee.FullName).toLowerCase();
@@ -131,7 +169,10 @@ export class SubordinaryTaskService {
                     byKey.set(key, employee);
                 }
             }
+
             this.cachedSubordinates = [...byKey.values()];
+            // NEW: save the result for next time (including the empty case).
+            this.writeSavedSubordinates(storageKey, this.cachedSubordinates);
             return this.cachedSubordinates;
         })();
 
@@ -170,17 +211,17 @@ export class SubordinaryTaskService {
             })
         );
     }
-   
-      
-      toggleEmployeeFolder(key: string): void {
+
+
+    toggleEmployeeFolder(key: string): void {
         this.expandedEmployeeFolders.has(key)
-          ? this.expandedEmployeeFolders.delete(key)
-          : this.expandedEmployeeFolders.add(key);
-      }
-      
-      isEmployeeFolderExpanded(key: string): boolean {
+            ? this.expandedEmployeeFolders.delete(key)
+            : this.expandedEmployeeFolders.add(key);
+    }
+
+    isEmployeeFolderExpanded(key: string): boolean {
         return this.expandedEmployeeFolders.has(key);
-      }
+    }
 
     // This method is used to get the tasks for a subordinate
     async getAllSubordinateEmails(managerEmail: string, visited: Set<string> = new Set()): Promise<string[]> {
@@ -207,9 +248,9 @@ export class SubordinaryTaskService {
 
         const directReports = await this.getDirectReports(managerIdentifier).toPromise() ?? [];
         if (!directReports.length) return [];
-    
+
         const nested = await Promise.all(
-          directReports.map(u => this.getAllSubordinates(u.ADmail || u.FullName || u.PinNo, visited))
+            directReports.map(u => this.getAllSubordinates(u.ADmail || u.FullName || u.PinNo, visited))
         );
 
         return [...directReports, ...nested.flat()];
@@ -218,14 +259,13 @@ export class SubordinaryTaskService {
     async isSubordinate(managerEmail: string, targetEmail: string): Promise<boolean> {
         const allEmails = await this.getAllSubordinateEmails(managerEmail);
         return allEmails.includes(targetEmail.toLowerCase());
-      }
+    }
 
-      
+
     private async getDirectReportsFromGraph(managerIdentifier: string): Promise<DomainUser[]> {
         const manager = this.normalize(managerIdentifier);
         if (!manager) return [];
 
-        const managerLocal = manager.includes('@') ? manager.split('@')[0] : manager;
         const users = await this.loadDomainUsers();
         return users.filter(user => this.managerMatchesIdentifier(managerIdentifier, user));
     }
@@ -524,25 +564,6 @@ export class SubordinaryTaskService {
             .trim();
     }
 
-    private taskMatchesSearch(task: ToDoTask, query: string): boolean {
-        const extended = task as ToDoTask & {
-            listName?: string;
-            submittedDate?: string;
-            eFormDetails?: Record<string, unknown>;
-        };
-        const searchableValues = [
-            extended.name,
-            extended.description,
-            extended.status,
-            extended.assignedTo,
-            extended.listName,
-            extended.submittedBy,
-            extended.submittedDate,
-            ...Object.values(extended.eFormDetails ?? {}),
-        ];
-        return searchableValues.some(value => String(value ?? '').toLowerCase().includes(query));
-    }
-
     private isTaskAssignedToEmployee(assignedTo: string | undefined | null, employee: DomainUser): boolean {
         if (!assignedTo?.trim()) return false;
 
@@ -556,28 +577,6 @@ export class SubordinaryTaskService {
                 ? this.userService.matchesAssigneeField(assignee, employee.PinNo, employee.ADmail)
                 : false)
         );
-    }
-
-    private employeeMatchTokens(employee: DomainUser): string[] {
-        const tokens = new Set<string>();
-        const add = (value: string | undefined | null) => {
-            const normalized = this.normalizeMatchText(value ?? '');
-            if (normalized.length >= 4) tokens.add(normalized);
-        };
-
-        add(employee.FullName);
-        add(employee.ADmail);
-        add(employee.PinNo);
-        if (employee.ADmail.includes('@')) {
-            add(employee.ADmail.split('@')[0]);
-        }
-        employee.FullName.split(/\s+/).filter(part => part.length > 2).forEach(part => add(part));
-
-        return [...tokens];
-    }
-
-    private normalizeMatchText(value: string): string {
-        return value.toLowerCase().replace(/[^a-z0-9]/g, '');
     }
 
 }

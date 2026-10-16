@@ -767,41 +767,6 @@ export class SharePointTaskQueryService {
     return { items: [...byId.values()], nextLink: nextPath };
   }
 
-  private async fetchSharePointListItemsWithFilter(
-    siteId: string,
-    listId: string,
-    token: string,
-    filterExpr: string,
-    prefer: Record<string, string>,
-    maxPages = 0,
-    orderByExpr?: string,
-  ): Promise<any[]> {
-    const byId = new Map<string, any>();
-    const filter = encodeURIComponent(filterExpr);
-    const order = orderByExpr ? `&$orderby=${encodeURIComponent(orderByExpr)}` : '';
-    let nextPath: string | null =
-      `/sites/${siteId}/lists/${listId}/items?$expand=fields&$top=${AppConstants.hrTasksFastLoadPageSize}&$filter=${filter}${order}`;
-    let pages = 0;
-    const unlimited = !(maxPages > 0);
-
-    while (nextPath && (unlimited || pages < maxPages)) {
-      const page: any = await graphGetWithRetry(
-        this.http,
-        nextPath,
-        token,
-        AppConstants.graphFileListingTimeoutMs,
-        prefer,
-      );
-      for (const item of page?.value ?? []) {
-        if (item?.id != null) byId.set(String(item.id), item);
-      }
-      nextPath = toGraphPath(page?.['@odata.nextLink']);
-      pages += 1;
-    }
-
-    return [...byId.values()];
-  }
-
   /**
    * To Do items for a procurement list, newest first.
    *

@@ -26,10 +26,6 @@ const targets = {
     label: 'Paperless System UAT',
     localPort: 4201,
     backendUrl: 'http://localhost:3001',
-    // --- Deployed UAT (https://swiftpaperlessuat.enemalta.lan) ---
-    // Same-origin: IIS/ARR (or nginx) must proxy /api → http://127.0.0.1:3000
-    // redirectUri: 'https://swiftpaperlessuat.enemalta.lan',
-    // backendUrl: '',
     sitePath: 'sites/PaperlessUAT',
     siteId: 'emoffice365.sharepoint.com,d07b0fc2-c9d8-4793-8f51-0afb2e7d0fb7,e85f6d4d-da1c-4d28-b615-d9f7f44656c4',
   },
@@ -51,15 +47,18 @@ export const sharePointConfig = {
     : `http://localhost:${target.localPort}`,
   backendUrl: target.backendUrl,
 
+  // --- UAT on live URL (https://swiftpaperlessuat.enemalta.lan) ---
+  // To build for SwiftPaperless: comment out the LOCAL pair above, uncomment these two,
+  // run `npm run build:uat` or  `npm build:live', then switch them back.
+  // Same-origin: IIS/ARR (or nginx) must proxy /api → the UAT Node backend.
+  //redirectUri: 'https://swiftpaperlessuat.enemalta.lan',
+  //backendUrl: '',
+
   siteHostName: 'emoffice365.sharepoint.com',
   sitePath: target.sitePath,
   siteId: target.siteId,
   documentLibrariesTasks: [] as string[],
   hrPersonalListDisplayName: 'HRPersonal',
-  // Users listed here are allowed by the app UI to browse all top-level folders
-  // in HRPersonal. Users not listed here only see their own personal folder.
-  //no hard coded users here
-  hrPersonalAllAccessUsers: [] as string[],
 
   delegateListDisplayName: 'UsersWhoCanDelegate',
   allDomainUsersListDisplayName: 'AllDomainUsers',

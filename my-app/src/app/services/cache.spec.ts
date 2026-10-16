@@ -64,6 +64,9 @@ describe('CacheService', () => {
     const pending = service.set('fc:big', { rows: [] });
     await new Promise(r => setTimeout(r));
     http.expectOne(`${base}/entry`).flush('too large', { status: 413, statusText: 'Payload Too Large' });
+    // After a 413 the stale Redis copy is cleared.
+    await new Promise(r => setTimeout(r));
+    http.expectOne(r => r.method === 'DELETE').flush({ ok: true });
     await expect(pending).resolves.toBeUndefined();
   });
 });

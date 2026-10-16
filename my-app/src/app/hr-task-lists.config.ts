@@ -51,8 +51,3 @@ export function isHrTitleMatchedTaskList(listName: string): boolean {
     || key.includes('preformancereview');
 }
 
-/** True for performance review task lists (PerformanceReview_Tasks / _IESC). */
-export function isHrPreformanceReviewTaskList(listName: string): boolean {
-  const key = String(listName ?? '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-  return key.includes('performancereview') || key.includes('preformancereview');
-}

@@ -118,15 +118,6 @@ export class TodoService {
     return created;
   }
 
-  getCommentsForTask(taskId: string): Observable<TaskComment[]> {
-    return new Observable<TaskComment[]>(subscriber => {
-      const sub = this.commentsByTaskId$.subscribe(map => {
-        subscriber.next(map[taskId] ?? []);
-      });
-      return () => sub.unsubscribe();
-    });
-  }
-
   isLoading(): boolean {
     return this.loading.value;
   }

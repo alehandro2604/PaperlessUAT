@@ -49,6 +49,10 @@ export const AppConstants = {
    * To Do clears "Loading more…" so older assigned Proc* rows are not left behind.
    */
   todoProcInitialPages: 30,
+  /** Pages read per slice of that first Proc* scan; each slice is shown as soon as it lands. */
+  todoProcSlicePages: 3,
+  /** Minimum gap between To Do repaints while lists stream in (ms). */
+  todoPartialPublishMs: 500,
   /** Background drain chunk size for remaining Progress=Pending procurement cursors. */
   todoProcBackgroundPagesPerChunk: 40,
   /**
@@ -58,8 +62,6 @@ export const AppConstants = {
    * rows stay behind "Load more tasks" (or index Progress in SharePoint to fix at source).
    */
   todoProcBackgroundMaxChunks: 1,
-  /** Unused on login (auto-drain removed); kept for rare manual drain callers. */
-  todoDrainPagesPerList: 0,
   /** Manual "Load older" continues from stored cursors without re-scanning from page 1. */
   todoLoadMorePagesPerList: 50,
   /**
@@ -92,6 +94,12 @@ export const AppConstants = {
   hrFilesSourceEFormLookupSupplementPages: 2,
   /** Extra pages for Sick Certificate / source eForm lists when LookupId misses. */
   hrFilesSourceEFormScanPages: 6,
+  /**
+   * Newest eForm ids per person whose sibling workflow steps are looked up. Each 30 ids
+   * is one request per list with hits, so an unbounded history (hundreds of ids) made
+   * a single person cost hundreds of calls and minutes of "Loading more tasks…".
+   */
+  hrFilesSiblingLookupMaxEForms: 200,
   /** eForm ids combined with `or` in one related-steps query (halves per list if a list rejects it, down to 1). */
   hrFilesEFormKeyFilterChunkSize: 30,
   /** Graph $top for person LookupId queries (larger pages = fewer round-trips). */
@@ -124,6 +132,14 @@ export const AppConstants = {
    * Idle-prefetch HR Files person tasks (like All Files folder prefetch).
    * Keep moderate — each person fans out across many task lists.
    */
+  /**
+   * Master switch for crawling HR people nobody opened: the login warm of the first
+   * people, the visible-list prefetch and the hover prefetch. Each person costs a few
+   * hundred Graph calls (every task list, plus sibling-step lookups), so with this on an
+   * idle browser alone can trip 429. Off: a person is crawled only when clicked, then
+   * shared through Redis.
+   */
+  hrFilesBackgroundPrefetchEnabled: false,
   hrFilesTaskPrefetchMaxBatch: 6,
   hrFilesTaskPrefetchConcurrency: 2,
   hrFilesTaskPrefetchDelayMs: 500,
@@ -154,8 +170,6 @@ export const AppConstants = {
 
   /** UI recency window used for local visibility once tasks are loaded. */
   hrTasksRecentFetchDays: 30, //30 days instead of 30 days
-  /** Comments list UI: hide items older than this unless "Show all history" is on. */
-  hrTasksVisibleDays: 30, //30 days instead of 30 days
 
   // Graph API request timeouts
   graphDefaultTimeoutMs: 15_000,
@@ -169,8 +183,4 @@ export const AppConstants = {
   maxDriveItemsToCollect: 5000,
   maxDriveTraversalMs: 90_000,
 
-  // SharePoint folder attachment list (see filteredAttachments in app.ts)
-  recentAttachmentVisibilityDays: 30,
-  /** How many older files each "Load more" reveals (not days). */
-  olderAttachmentsPageSize: 50,
 } as const;

@@ -49,6 +49,9 @@ export class FileCrawlCacheService {
   /** Persisted snapshots older than this are dropped at sign-in instead of hydrated. */
   private readonly PERSIST_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days
 
+  /** Keys marked by expire() that have not been re-fetched (set) yet. */
+  private readonly expiredKeys = new Set<string>();
+
   private boundUser: string | null = null;
   private readyResolve!: () => void;
   private readonly ready = new Promise<void>(resolve => (this.readyResolve = resolve));
@@ -138,6 +141,7 @@ export class FileCrawlCacheService {
   async hydrateFromPersistent<T = any[]>(libraryKey: string): Promise<{ data: T; fresh: boolean } | null> {
     try {
       await this.ready;
+      if (this.expiredKeys.has(libraryKey)) return null;
       const entry = await this.persistent.get<T>(PERSIST_PREFIX + libraryKey);
       if (!entry) return null;
       if (Date.now() - entry.timestamp > this.PERSIST_MAX_AGE) {
@@ -182,6 +186,7 @@ export class FileCrawlCacheService {
    * Stores crawl / listing results for a given key (memory + Redis).
    */
   set(libraryKey: string, data: unknown): void {
+    this.expiredKeys.delete(libraryKey);
     this.cache.set(libraryKey, {
       data,
       timestamp: Date.now(),
@@ -194,6 +199,7 @@ export class FileCrawlCacheService {
    * that exceed the Redis/API body limit (HTTP 413).
    */
   setMemoryOnly(libraryKey: string, data: unknown): void {
+    this.expiredKeys.delete(libraryKey);
     this.cache.set(libraryKey, {
       data,
       timestamp: Date.now(),
@@ -207,6 +213,18 @@ export class FileCrawlCacheService {
   invalidate(libraryKey: string): void {
     this.cache.delete(libraryKey);
     this.enqueuePersist(() => this.persistent.clear(PERSIST_PREFIX + libraryKey));
+  }
+
+  /**
+   * Marks one key as needing a refresh without deleting it: get() misses, so the caller
+   * re-fetches, but getStale() still paints the old rows meanwhile and the shared Redis
+   * copy stays in place for other users until the fresh set() overwrites it.
+   */
+  expire(libraryKey: string): void {
+    const entry = this.cache.get(libraryKey);
+    if (entry) entry.timestamp = 0;
+    // Also keep hydrateFromPersistent() from pulling the old Redis copy back as "fresh".
+    this.expiredKeys.add(libraryKey);
   }
 
   /**

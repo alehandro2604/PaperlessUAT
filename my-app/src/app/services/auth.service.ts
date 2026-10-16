@@ -4,28 +4,12 @@ import { sharePointConfig } from '../sharepoint.config';
 import { AppConstants } from '../app.constants';
 import { withTimeout } from '../microsoft-graph';
 
-export interface UserProfile {
-  email: string;
-  username: string;
-  userPrincipalName: string;
-  employeeId?: string;
-}
-
 @Injectable({
   providedIn: 'root'
 })
 export class AuthService {
-  getSharePointListUrl() {
-      throw new Error('Method not implemented.');
-  }
-  getSharePointSiteUrl() {
-      throw new Error('Method not implemented.');
-  }
   getSharePointToken() {
       throw new Error('Method not implemented.');
-  }
-  getAccessToken() {
-    throw new Error('Method not implemented.');
   }
   private readonly graphScopes = ['User.Read'];
   private readonly sharePointReadScopes = ['Sites.Selected'];
@@ -37,7 +21,6 @@ export class AuthService {
     `https://${sharePointConfig.siteHostName}/.default`,
   ];
   private initialized = false;
-  private hasShownNotLoggedInAlert = false;
 
   private readonly msal = new PublicClientApplication({
     auth: {
@@ -186,15 +169,4 @@ export class AuthService {
     }
   }
 
-  shouldShowNotLoggedInAlert(): boolean {
-    if (!this.hasShownNotLoggedInAlert) {
-      this.hasShownNotLoggedInAlert = true;
-      return true;
-    }
-    return false;
-  }
-
-  resetNotLoggedInAlert(): void {
-    this.hasShownNotLoggedInAlert = false;
-  }
 }

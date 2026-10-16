@@ -138,12 +138,6 @@ export class FormConfigurationService {
     );
   }
 
-  getFormByTitle(title: string): EForm | undefined {
-    return this._forms$.value.find(
-      f => f.title.toLowerCase() === title.toLowerCase()
-    );
-  }
-
   getFormByDocLibrary(libraryName: string): EForm | undefined {
     const target = String(libraryName ?? '').trim().toLowerCase();
     if (!target) return undefined;
@@ -204,25 +198,6 @@ export class FormConfigurationService {
 
   get snapshot(): EForm[] {
     return this._forms$.value;
-  }
-
-  /** Every SharePoint task list referenced by the eForms config (HR + SAP workflows). */
-  getAllTaskListNames(): string[] {
-    return [...new Set(
-      this._forms$.value
-        .map((form) => String(form.taskListName ?? '').trim())
-        .filter(Boolean),
-    )];
-  }
-
-  /** Task lists for HR workflows only — used when opening a person in HR Files. */
-  getHrTaskListNames(): string[] {
-    return [...new Set(
-      this._forms$.value
-        .filter((form) => form.isHRWorkflow)
-        .map((form) => String(form.taskListName ?? '').trim())
-        .filter(Boolean),
-    )];
   }
 
   /**

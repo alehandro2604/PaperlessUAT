@@ -11,9 +11,6 @@ export interface CurrentUser {
   providedIn: 'root'
 })
 export class UserService {
-  geteformId(): string {
-    return '';
-  }
   private currentUser: CurrentUser | null = null;
 
   setCurrentUser(user: CurrentUser | null): void {

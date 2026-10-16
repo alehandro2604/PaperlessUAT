@@ -74,7 +74,10 @@ async function filterAllowedKeys(req, keys) {
   const groups = new Map();
   for (const key of keys) {
     const d = describeKey(key, ctx);
-    if (!d) continue;
+    if (!d) {
+      console.warn(`[perm] no permission rule for key "${key}" -> denied`);
+      continue;
+    }
     if (!groups.has(d.resource)) groups.set(d.resource, { ...d, keys: [] });
     groups.get(d.resource).keys.push(key);
   }
@@ -97,6 +100,9 @@ async function filterAllowedKeys(req, keys) {
       });
       for (const r of resp.responses ?? []) {
         const resource = chunk[Number(r.id)];
+        if (r.status < 200 || r.status >= 300) {
+          console.warn(`[perm] ${resource} -> HTTP ${r.status} (${r.body?.error?.code ?? 'no code'}) for ${groups.get(resource).path}`);
+        }
         if (r.status >= 200 && r.status < 300) verdict.set(resource, true);
         else if ([401, 403, 404].includes(r.status)) verdict.set(resource, false);
         else continue;                                     // 429/5xx: deny now, don't cache

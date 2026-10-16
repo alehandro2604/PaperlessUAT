@@ -16,6 +16,13 @@ const router = express.Router();
 
 // Matches the old client-side PERSIST_MAX_AGE (7 days); Redis evicts for us.
 const ENTRY_TTL_SECONDS = Number(process.env.CACHE_ENTRY_TTL_SECONDS || 7 * 24 * 60 * 60);
+// Personal entries (My Tasks, To Do…) only live for the user's browser session: they expire
+// shortly after the last tab closes (see /session/end) and, if a tab crashes without saying
+// goodbye, after this many seconds at the latest.
+const PERSONAL_TTL_SECONDS = Number(process.env.CACHE_PERSONAL_TTL_SECONDS || 12 * 60 * 60);
+// How long personal entries survive once the last tab is gone. Long enough that a refresh
+// (pagehide, then the reloaded page's /session/start) never loses them.
+const SESSION_END_GRACE_SECONDS = Number(process.env.CACHE_SESSION_GRACE_SECONDS || 90);
 
 /**
  * Shared across every signed-in account/browser so one crawl warms Redis for all:
@@ -111,7 +118,7 @@ router.put('/entry', wrap(async (req, res) => {
   if (!key) return res.status(400).json({ error: 'Missing key' });
   if (!(await canUseKey(req, key))) return res.status(403).json({ error: 'Access denied' });
   const entry = JSON.stringify({ data, timestamp: Date.now() });
-  await redisClient.setEx(ns(req, key), ENTRY_TTL_SECONDS, entry);
+  await redisClient.setEx(ns(req, key), isSharedKey(key) ? ENTRY_TTL_SECONDS : PERSONAL_TTL_SECONDS, entry);
   // Drop legacy personal copy once upgraded to shared.
   if (isSharedKey(key)) {
     await redisClient.del(`cache:${req.userOid}:${key}`);
@@ -147,6 +154,49 @@ router.delete('/entries', wrap(async (req, res) => {
   res.json({ ok: true, deleted: keys.length });
 }));
 
+// ─── Browser-session lifetime for personal entries ─────────────────────────
+// The page calls /session/start on load (same tab id after a refresh) and /session/end when
+// the tab goes away. Once no tab of this user is left, their personal entries get a short
+// expiry; the next /session/start (e.g. the reloaded page) puts the normal one back.
+// Shared entries (fc:files:…, folder comments) are never touched here.
+const sessionsKey = (req) => `cache:${req.userOid}:session:tabs`;
+const MAX_TAB_ID_LENGTH = 64;
+
+async function personalKeys(req) {
+  const own = sessionsKey(req);
+  return (await keysByPattern(`cache:${req.userOid}:*`)).filter((k) => k !== own);
+}
+
+async function setPersonalExpiry(req, seconds) {
+  const keys = await personalKeys(req);
+  if (keys.length === 0) return 0;
+  const multi = redisClient.multi();
+  for (const key of keys) multi.expire(key, seconds);
+  await multi.exec();
+  return keys.length;
+}
+
+const validTabId = (id) => typeof id === 'string' && id.length > 0 && id.length <= MAX_TAB_ID_LENGTH;
+
+router.post('/session/start', wrap(async (req, res) => {
+  const tabId = req.body?.tabId;
+  if (!validTabId(tabId)) return res.status(400).json({ error: 'Missing tabId' });
+  await redisClient.sAdd(sessionsKey(req), tabId);
+  await redisClient.expire(sessionsKey(req), PERSONAL_TTL_SECONDS);
+  const restored = await setPersonalExpiry(req, PERSONAL_TTL_SECONDS);
+  res.json({ ok: true, restored });
+}));
+
+router.post('/session/end', wrap(async (req, res) => {
+  const tabId = req.body?.tabId;
+  if (!validTabId(tabId)) return res.status(400).json({ error: 'Missing tabId' });
+  await redisClient.sRem(sessionsKey(req), tabId);
+  const stillOpen = await redisClient.sCard(sessionsKey(req));
+  if (stillOpen > 0) return res.json({ ok: true, expiring: 0, openTabs: stillOpen });
+  const expiring = await setPersonalExpiry(req, SESSION_END_GRACE_SECONDS);
+  res.json({ ok: true, expiring, openTabs: 0 });
+}));
+
 // ─── Per-task To Do cache ──────────────────────────────────────────────────
 // Replaces the single `fc:tasks:hr-user:v5` snapshot, which outgrew the upload
 // limit and had to be re-sent whole after every change.
@@ -156,12 +206,21 @@ router.delete('/entries', wrap(async (req, res) => {
 // Personal on purpose: the browser uploads these rows, so they must never be shared.
 // Keys sit under cache:<oid>: so logout's clearAll (DELETE /entries) wipes them too.
 
-const TODO_TASK_TTL_SECONDS = ENTRY_TTL_SECONDS;
+const TODO_TASK_TTL_SECONDS = PERSONAL_TTL_SECONDS;
 const MAX_TODO_UPSERTS_PER_CALL = 500;
 
 const todoIndexKey = (req) => `cache:${req.userOid}:todo:index`;
 const todoUpdatedKey = (req) => `cache:${req.userOid}:todo:updated`;
 const todoTaskKey = (req, key) => `cache:${req.userOid}:todo:task:${key}`;
+// { watermarks: { <list>: <newest lastModifiedDateTime> }, complete: bool } — lets a reload
+// top up from SharePoint instead of paging every list again. `complete` = last full crawl finished.
+const todoMetaKey = (req) => `cache:${req.userOid}:todo:meta`;
+
+const isValidTodoMeta = (meta) =>
+  !!meta && typeof meta === 'object' && typeof meta.complete === 'boolean' &&
+  !!meta.watermarks && typeof meta.watermarks === 'object' && !Array.isArray(meta.watermarks) &&
+  Object.keys(meta.watermarks).length <= 200 &&
+  Object.values(meta.watermarks).every((v) => typeof v === 'string' && v.length <= 40);
 
 // "<listName>:<itemId>", the same key AppComponent.getHrTaskKey builds.
 const isValidTodoTaskKey = (key) =>
@@ -169,11 +228,12 @@ const isValidTodoTaskKey = (key) =>
 
 // This user's To Do: { updatedAt, tasks: [{ key, data }] }. Expired tasks drop out of the index.
 router.get('/todo', wrap(async (req, res) => {
-  const [keys, updated] = await Promise.all([
+  const [keys, updated, rawMeta] = await Promise.all([
     redisClient.sMembers(todoIndexKey(req)),
     redisClient.get(todoUpdatedKey(req)),
+    redisClient.get(todoMetaKey(req)),
   ]);
-  if (keys.length === 0) return res.json({ updatedAt: 0, tasks: [] });
+  if (keys.length === 0) return res.json({ updatedAt: 0, tasks: [], meta: null });
 
   const values = await redisClient.mGet(keys.map((k) => todoTaskKey(req, k)));
   const expired = keys.filter((_, i) => !values[i]);
@@ -181,6 +241,7 @@ router.get('/todo', wrap(async (req, res) => {
 
   res.json({
     updatedAt: Number(updated) || 0,
+    meta: rawMeta ? JSON.parse(rawMeta) : null,
     tasks: keys.flatMap((key, i) => (values[i] ? [{ key, data: JSON.parse(values[i]) }] : [])),
   });
 }));
@@ -210,6 +271,9 @@ router.put('/tasks', wrap(async (req, res) => {
   }
   multi.setEx(todoUpdatedKey(req), TODO_TASK_TTL_SECONDS, String(Date.now()));
   multi.expire(todoIndexKey(req), TODO_TASK_TTL_SECONDS);
+  if (isValidTodoMeta(req.body?.meta)) {
+    multi.setEx(todoMetaKey(req), TODO_TASK_TTL_SECONDS, JSON.stringify(req.body.meta));
+  }
   await multi.exec();
   res.json({ ok: true, upserted, removed });
 }));
@@ -217,7 +281,10 @@ router.put('/tasks', wrap(async (req, res) => {
 // Forget this user's whole To Do cache (the old invalidate()).
 router.delete('/todo', wrap(async (req, res) => {
   const keys = await redisClient.sMembers(todoIndexKey(req));
-  await redisClient.del([...keys.map((k) => todoTaskKey(req, k)), todoIndexKey(req), todoUpdatedKey(req)]);
+  await redisClient.del([
+    ...keys.map((k) => todoTaskKey(req, k)),
+    todoIndexKey(req), todoUpdatedKey(req), todoMetaKey(req),
+  ]);
   res.json({ ok: true, deleted: keys.length });
 }));
 
