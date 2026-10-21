@@ -79,6 +79,8 @@ export const AppConstants = {
   hrTasksSubordinateLoadPageLimit: 5,
   /** Max parallel Graph list-item fetches when opening an HR Files person (avoids 429 throttling). */
   hrFilesTaskListConcurrency: 2,
+  /** Pause between batches of HR task-list fetches so SharePoint throttling (429) stays rare. */
+  hrTaskListBatchGapMs: 400,
   /**
    * Click-path concurrency for one HR person (worker pool, no batch gaps).
    * Only one person loads at a time here, so this can exceed the prefetch limit.

@@ -5,6 +5,7 @@ import { getFileCategory, getFileExtension, getFileIcon } from '../file-utils';
 import { graphGetWithRetry, normalizeName, toGraphPath , graphPost} from '../microsoft-graph';
 import { AttachmentFile } from '../components/attachments/attachment-list/attachment-list';
 import {firstValueFrom} from "rxjs";
+import { AppUser } from '../models/app-user.model';
 
 /** A file or folder from a SharePoint document library, as shown in Attachments. */
 export interface DriveFile extends AttachmentFile {
@@ -23,12 +24,7 @@ export interface DriveFolderRef {
 }
 
 /** The parts of the signed-in user used to find their personal HR folder. */
-export interface DriveUser {
-  email: string;
-  username: string;
-  userPrincipalName: string;
-  employeeId?: string;
-}
+export type DriveUser = AppUser;
 
 /** Fields we ask Graph for whenever we list a folder. */
 const CHILD_FIELDS =

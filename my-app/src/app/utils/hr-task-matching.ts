@@ -327,3 +327,17 @@ export function prioritizeHrPersonTaskLists(listNames: string[]): string[] {
     return diff !== 0 ? diff : a.localeCompare(b);
   });
 }
+
+export function getHrTaskKey(item: any): string {
+  return `${item.listName ?? 'unknown'}:${item.id}`;
+}
+
+export function mergeHrTasks(existing: any[], incoming: any[]): any[] {
+  const byKey = new Map<string, any>();
+  for (const it of existing) byKey.set(getHrTaskKey(it), it);
+  for (const it of incoming) byKey.set(getHrTaskKey(it), it);
+  return [...byKey.values()].sort(
+    (a, b) =>
+      new Date(b.submittedDate || 0).getTime() - new Date(a.submittedDate || 0).getTime()
+  );
+}

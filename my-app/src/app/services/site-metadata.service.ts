@@ -42,6 +42,11 @@ export class SiteMetadataService {
     }
   }
 
+  /** The site info if it's already loaded this session, otherwise null. No network call. */
+  get current(): SiteMetadata | null {
+    return this.cached;
+  }
+
   /** List metadata by internal name or display name. */
   async findList(token: string, listName: string): Promise<any | undefined> {
     const target = String(listName ?? '').trim().toLowerCase();
