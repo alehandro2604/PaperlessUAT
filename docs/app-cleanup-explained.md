@@ -24,6 +24,7 @@
 13. [What is still left to improve](#13-what-is-still-left-to-improve)
 14. [Glossary](#14-glossary)
 15. [Commit history of this work](#15-commit-history-of-this-work)
+16. [Recipe: starting a new feature (template)](#16-recipe-starting-a-new-feature-template)
 
 ---
 
@@ -799,3 +800,309 @@ npm --prefix my-app run start:uat -- --poll 2000
 | *(this commit)* | Step 2: feature stores – `app.ts` 6,286 → 103 lines; types moved to `models/`; this document |
 
 To see exactly what changed in a step: `git show <commit> --stat`, or open the commit on GitHub.
+
+---
+
+## 16. Recipe: starting a new feature (template)
+
+Use this every time you add something new, so the app stays organised and `app.ts` stays small. The running example is a made-up **"Recent changes"** panel: *files in the open folder that changed in the last 7 days*. Replace `RecentChanges` / `recent-changes` with your feature's name.
+
+### 16.1 Where does my code go?
+
+```mermaid
+flowchart TD
+    A["New piece of code"] --> B{"Does it draw<br/>something / catch a click?"}
+    B -- yes --> C["<b>Component</b><br/>components/feature-name/"]
+    B -- no --> D{"Does it call SharePoint,<br/>Graph or the backend?"}
+    D -- yes --> E["<b>Service</b><br/>services/feature-name.service.ts<br/>(returns data, never touches the screen)"]
+    D -- no --> F{"Does it remember state<br/>(loading, selected item, list)?"}
+    F -- yes --> G["<b>Store</b><br/>stores/feature-name.store.ts<br/>(signals + actions)"]
+    F -- no --> H{"Input → output only?"}
+    H -- yes --> I["<b>utils</b><br/>utils/topic.ts"]
+    H -- no --> J["Probably a store method –<br/>ask: which feature owns it?"]
+    K["A shape of data<br/>(interface / type)"] --> L["<b>models</b><br/>models/feature-name.model.ts"]
+    M["A number you might tune<br/>(page size, delay, limit)"] --> N["<b>app.constants.ts</b>"]
+    O["A cache key"] --> P["<b>utils/cache-keys.ts</b>"]
+```
+
+**Golden rules**
+
+1. **Never add feature logic to `app.ts`.** It only wires stores to the template.
+2. **Services fetch, stores decide, components show.** A service never changes the screen; a component never calls Graph directly.
+3. **New state = `signal()`.** It redraws by itself – no `refreshView()` needed.
+4. **Loops over Graph use `graphGetWithRetry()`** so they share the 4-request limit and the 429 back-off (see [12.2](#122-429-too-many-requests--sharepoint-throttling)).
+5. **One feature, one name** – `recent-changes` for every file of the feature.
+
+### 16.2 The steps
+
+```mermaid
+flowchart LR
+    S1["1 · Model<br/>the data shape"] --> S2["2 · Service<br/>fetch it"] --> S3["3 · Store<br/>state + actions"] --> S4["4 · Component<br/>draw it"] --> S5["5 · Wire it<br/>imports + tag"] --> S6["6 · Check<br/>build, F12,<br/>sign-out"] --> S7["7 · Commit"]
+```
+
+Do them **in this order**: each step only uses the ones before it, so you can build after every step and catch mistakes early.
+
+### 16.3 Step 1 – Model (`models/recent-changes.model.ts`)
+
+```ts
+/** One row in the Recent changes panel. */
+export interface RecentChange {
+  id: string;
+  name: string;
+  webUrl: string;
+  modifiedBy: string;
+  modifiedAt: string;   // ISO date from Graph
+}
+```
+
+*Why first:* everything else uses this type, and the editor can then autocomplete `item.` for you instead of `any`.
+
+### 16.4 Step 2 – Service (`services/recent-changes.service.ts`)
+
+```ts
+import { Injectable, inject } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { AppConstants } from '../app.constants';
+import { graphGetWithRetry } from '../microsoft-graph';
+import { RecentChange } from '../models/recent-changes.model';
+
+/**
+ * Fetches recently changed files from SharePoint. Never touches the screen:
+ * it takes ids + a token and returns data.
+ */
+@Injectable({ providedIn: 'root' })
+export class RecentChangesService {
+  private readonly http = inject(HttpClient);
+
+  /** Files in a folder changed within the last `days` days, newest first. */
+  async fetchRecent(driveId: string, folderId: string, token: string, days = 7): Promise<RecentChange[]> {
+    const resp: any = await graphGetWithRetry(
+      this.http,
+      `/drives/${driveId}/items/${folderId}/children?$select=id,name,webUrl,lastModifiedDateTime,lastModifiedBy,file&$top=200`,
+      token,
+      AppConstants.graphFileListingTimeoutMs,
+    );
+    const since = Date.now() - days * 24 * 60 * 60 * 1000;
+    return (resp?.value ?? [])
+      .filter((item: any) => item.file && new Date(item.lastModifiedDateTime).getTime() >= since)
+      .map((item: any): RecentChange => ({
+        id: item.id,
+        name: item.name,
+        webUrl: item.webUrl ?? '',
+        modifiedBy: item.lastModifiedBy?.user?.displayName ?? '',
+        modifiedAt: item.lastModifiedDateTime,
+      }))
+      .sort((a: RecentChange, b: RecentChange) => b.modifiedAt.localeCompare(a.modifiedAt));
+  }
+}
+```
+
+**Checklist for a service:** `providedIn: 'root'` · takes the **token as a parameter** · uses `graphGetWithRetry` (not bare `graphGet`) · returns typed data · no `refreshView`, no store imports.
+
+*Can I reuse an existing one?* Check `DriveFilesService` (files/folders), `TaskLoaderService` (task lists) and `SharePointTaskQueryService` (list queries) first – add a method there if it fits.
+
+### 16.5 Step 3 – Store (`stores/recent-changes.store.ts`)
+
+```ts
+import { Injectable, Injector, computed, inject, signal } from '@angular/core';
+import { RecentChange } from '../models/recent-changes.model';
+import { RecentChangesService } from '../services/recent-changes.service';
+import { SessionStore } from './session.store';
+import { AttachmentsStore } from './attachments.store';
+
+/** Recent changes panel: which files changed lately in the open folder. */
+@Injectable({ providedIn: 'root' })
+export class RecentChangesStore {
+  private readonly injector = inject(Injector);
+  private readonly recentChanges = inject(RecentChangesService);
+
+  // Other stores: lazy getters, never inject() – avoids circular dependencies (12.11).
+  private get session(): SessionStore { return this.injector.get(SessionStore); }
+  private get attachments(): AttachmentsStore { return this.injector.get(AttachmentsStore); }
+
+  // ---------- STATE (signals: the screen updates by itself) ----------
+  readonly items = signal<RecentChange[]>([]);
+  readonly loading = signal(false);
+  readonly error = signal('');
+
+  // ---------- DERIVED (recalculated automatically) ----------
+  readonly count = computed(() => this.items().length);
+
+  /** Bumped per load so a slow old answer can't overwrite a newer one. */
+  private loadSeq = 0;
+
+  // ---------- ACTIONS (what the UI can ask for) ----------
+  async loadForOpenFolder(): Promise<void> {
+    const driveId = this.attachments.currentLibraryDriveId;
+    const folderId = this.attachments.currentFolderId;
+    if (!driveId || !folderId) { this.items.set([]); return; }
+
+    const seq = ++this.loadSeq;
+    this.loading.set(true);
+    this.error.set('');
+    try {
+      const token = await this.session.getSharePointToken();
+      const rows = await this.recentChanges.fetchRecent(driveId, folderId, token);
+      if (seq !== this.loadSeq) return;            // user moved on - ignore this answer
+      this.items.set(rows);
+    } catch (err: any) {
+      if (seq === this.loadSeq) this.error.set(err?.message || 'Could not load recent changes.');
+    } finally {
+      if (seq === this.loadSeq) this.loading.set(false);
+    }
+  }
+
+  /** Called on sign-out (see Step 6). */
+  reset(): void {
+    this.loadSeq++;
+    this.items.set([]);
+    this.loading.set(false);
+    this.error.set('');
+  }
+}
+```
+
+**Checklist for a store:** state as `signal()` · derived values as `computed()` · other stores through **lazy getters** · async actions guarded against out-of-date answers (`loadSeq`) · a `reset()` for sign-out.
+
+### 16.6 Step 4 – Component
+
+Generate the files (from the `my-app` folder):
+
+```bash
+npx ng generate component components/recent-changes
+```
+
+`recent-changes.ts`:
+
+```ts
+import { Component, inject } from '@angular/core';
+import { DatePipe } from '@angular/common';
+import { RecentChangesStore } from '../../stores/recent-changes.store';
+
+@Component({
+  selector: 'app-recent-changes',
+  imports: [DatePipe],                       // every pipe/component the template uses
+  templateUrl: './recent-changes.html',
+  styleUrl: './recent-changes.css',
+})
+export class RecentChanges {
+  // Option A: the component reads its store directly (no inputs needed).
+  protected readonly store = inject(RecentChangesStore);
+}
+```
+
+`recent-changes.html`:
+
+```html
+<section class="recent-changes">
+  <header>
+    <h3>Recent changes ({{ store.count() }})</h3>
+    <button type="button" (click)="store.loadForOpenFolder()" [disabled]="store.loading()">Refresh</button>
+  </header>
+
+  @if (store.loading()) {
+    <p>Loading…</p>
+  } @else if (store.error()) {
+    <p class="error">{{ store.error() }}</p>
+  } @else {
+    @for (item of store.items(); track item.id) {
+      <a class="row" [href]="item.webUrl" target="_blank" rel="noopener noreferrer">
+        <span class="name">{{ item.name }}</span>
+        <span class="meta">{{ item.modifiedBy }} · {{ item.modifiedAt | date: 'dd/MM/yyyy HH:mm' }}</span>
+      </a>
+    } @empty {
+      <p>No files changed in the last 7 days.</p>
+    }
+  }
+</section>
+```
+
+`recent-changes.css`:
+
+```css
+:host { display: block; }               /* custom tags are inline by default */
+.row { display: flex; justify-content: space-between; padding: 6px 0; }
+.meta { color: #6b7280; font-size: 12px; }
+```
+
+**Option A or B?**
+
+| | A – component injects its store | B – component gets `input()` / emits `output()` |
+|---|---|---|
+| Use when | it's a whole panel for one feature | it's a reusable piece (a row, a list, a preview) |
+| Example here | Recent changes panel | `AttachmentList`, `PreviewAttachments` |
+| Pros | no wiring in `app.html` | works with any data, easy to reuse/test |
+
+### 16.7 Step 5 – Wire it in
+
+1. **`app.ts`** – add the component to `imports` (nothing else – no logic here):
+   ```ts
+   import { RecentChanges } from './components/recent-changes/recent-changes';
+   // …
+   imports: [ …, PreviewAttachments, RecentChanges ],
+   ```
+2. **`app.html`** – place the tag where it should appear:
+   ```html
+   <app-recent-changes />
+   ```
+3. **Trigger the load** from the feature that owns the moment. Here: when a folder finishes loading – one line at the end of `AttachmentsStore.applyDriveFolderContentsToUi()`:
+   ```ts
+   this.injector.get(RecentChangesStore).loadForOpenFolder();
+   ```
+   (or a button in the component, like the Refresh button above).
+
+### 16.8 Step 6 – Check before you commit
+
+| Check | How |
+|---|---|
+| Builds cleanly | the `ng serve` terminal has no red errors (restart with `--poll` if nothing changes – [12.12](#1212-my-code-changes-dont-show-up)) |
+| Works | click through the feature; F12 → Console has no new red errors |
+| Doesn't flood SharePoint | F12 → Network: no burst of calls, no `429` ([12.2](#122-429-too-many-requests--sharepoint-throttling)) |
+| Sign-out clears it | add `this.injector.get(RecentChangesStore).reset();` to `SessionStore.clearUserScopedSharePointState()`; sign out and in, nothing old shows ([12.13](#1213-old-data-after-sign-out--wrong-user)) |
+| Mobile | narrow the window (phone layout): still readable |
+| Tunables in one place | page sizes / delays → `app.constants.ts`; cache keys → `utils/cache-keys.ts` |
+| Documented | a line in section 11 of this file ("I want to change X") pointing at your files |
+
+### 16.9 Step 7 – Commit
+
+```bash
+git add -A
+```
+```bash
+git commit -m "Recent changes panel: model, service, store, component"
+```
+
+One feature per commit (or per working step) – easy to review, easy to undo.
+
+### 16.10 The whole template at a glance
+
+```
+models/recent-changes.model.ts        shape of the data            (Step 1)
+services/recent-changes.service.ts    fetch it from SharePoint     (Step 2)
+stores/recent-changes.store.ts        signals + actions + reset()  (Step 3)
+components/recent-changes/            draw it, call store actions  (Step 4)
+  ├── recent-changes.ts
+  ├── recent-changes.html
+  └── recent-changes.css
+app.ts       → add to imports[]                                    (Step 5)
+app.html     → <app-recent-changes />                              (Step 5)
+SessionStore.clearUserScopedSharePointState() → store.reset()      (Step 6)
+```
+
+```mermaid
+sequenceDiagram
+    actor U as You
+    participant C as RecentChanges (component)
+    participant S as RecentChangesStore
+    participant V as RecentChangesService
+    participant G as Microsoft Graph
+    U->>C: click Refresh (or a folder finishes loading)
+    C->>S: loadForOpenFolder()
+    S->>S: loading.set(true)
+    S->>V: fetchRecent(driveId, folderId, token)
+    V->>G: GET /drives/{d}/items/{f}/children
+    G-->>V: items
+    V-->>S: RecentChange[]
+    S->>S: items.set(rows) · loading.set(false)
+    S-->>C: signals changed → screen redraws by itself
+```
