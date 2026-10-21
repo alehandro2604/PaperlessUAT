@@ -8,29 +8,29 @@
     <div class="top-bar-left">
       <button class="round-icon app-launcher" aria-label="Open app launcher"></button>
       <div class="app-title-group">
-        <span class="app-system-name">{{ appSystemName }}</span>
+        <span class="app-system-name">{{ ui.appSystemName }}</span>
       </div>
     </div>
-    <div *ngIf="currentUser" class="user-log-wrapper">
+    <div *ngIf="session.currentUser" class="user-log-wrapper">
       <button
         type="button"
         class="user-log"
-        [class.is-open]="isUserMenuOpen"
+        [class.is-open]="ui.isUserMenuOpen"
         aria-haspopup="menu"
-        [attr.aria-expanded]="isUserMenuOpen"
-        (click)="toggleUserMenu($event)"
+        [attr.aria-expanded]="ui.isUserMenuOpen"
+        (click)="ui.toggleUserMenu($event)"
       >
-        <span class="user-avatar" aria-hidden="true">{{ getUserInitials(currentUser.username) }}</span>
-        <span class="user-log-name">{{ currentUser.username }}</span>
+        <span class="user-avatar" aria-hidden="true">{{ ui.getUserInitials(session.currentUser.username) }}</span>
+        <span class="user-log-name">{{ session.currentUser.username }}</span>
         <i class="fi fi-br-angle-small-down user-log-chevron" aria-hidden="true"></i>
       </button>
 
-      <div *ngIf="isUserMenuOpen" class="user-menu" role="menu" (click)="$event.stopPropagation()">
+      <div *ngIf="ui.isUserMenuOpen" class="user-menu" role="menu" (click)="$event.stopPropagation()">
         <div class="user-menu-header">
           <span class="user-menu-label">Signed in as</span>
-          <span class="user-menu-name">{{ currentUser.username }}</span>
+          <span class="user-menu-name">{{ session.currentUser.username }}</span>
         </div>
-        <button class="user-menu-item" type="button" role="menuitem" (click)="closeUserMenu(); logout()">
+        <button class="user-menu-item" type="button" role="menuitem" (click)="closeUserMenu(); session.logout()">
           <i class="fi fi-rr-sign-out-alt" aria-hidden="true"></i>
           Log Out
         </button>
@@ -44,81 +44,81 @@
         <i class="fi fi-rr-envelope" aria-hidden="true"></i>
       </button>
       <span class="app-divider">|</span>
-      <div *ngIf="currentUser" class="user-info-header">
-        <span class="user-name" *ngIf="selectedFolderName && showAllFilesSection; else messageBarSubmitter">{{ selectedFolderName }}</span>
+      <div *ngIf="session.currentUser" class="user-info-header">
+        <span class="user-name" *ngIf="allFiles.selectedFolderName && ui.showAllFilesSection; else messageBarSubmitter">{{ allFiles.selectedFolderName }}</span>
         <ng-template #messageBarSubmitter>
-          <span class="user-name">{{ (!showAllFilesSection && selectedSubmitter) || currentUser.username }}</span>
+          <span class="user-name">{{ (!ui.showAllFilesSection && todo.selectedSubmitter) || session.currentUser.username }}</span>
         </ng-template>
       </div>
-      <div *ngIf="!currentUser" class="not-logged-in-message">
-        <span>{{ isConnecting ? 'Signing in to Microsoft 365...' : statusMessage }}</span>
+      <div *ngIf="!session.currentUser" class="not-logged-in-message">
+        <span>{{ ui.isConnecting ? 'Signing in to Microsoft 365...' : ui.statusMessage }}</span>
       </div>
     </div>
     
     <div class="message-right">
-      <app-manual-refresh [isLoading]="isManualRefreshLoading" (refreshRequested)="onManualRefresh()"></app-manual-refresh>
+      <app-manual-refresh [isLoading]="ui.isManualRefreshLoading" (refreshRequested)="ui.onManualRefresh()"></app-manual-refresh>
     </div>
   </section>
 
-  <main class="main-layout" [class.all-files-layout]="showAllFilesSection">
+  <main class="main-layout" [class.all-files-layout]="ui.showAllFilesSection">
     <!-- ============================================================
          TASK CARD (left column)
          ============================================================ -->
-    <section class="card task-card" [class.active]="mobileCardView === 'task' || mobileCardView === 'todo' || mobileCardView === 'allFiles'" aria-label="Tasks">
+    <section class="card task-card" [class.active]="ui.mobileCardView === 'task' || ui.mobileCardView === 'todo' || ui.mobileCardView === 'allFiles'" aria-label="Tasks">
       <div class="card-header">
         <div class="mobile-screen-title">
-          <h2>{{ mobileSectionTitle }}</h2>
+          <h2>{{ ui.mobileSectionTitle }}</h2>
           <button
-            *ngIf="showToDoSection"
+            *ngIf="ui.showToDoSection"
             type="button"
             class="mobile-add-btn"
             aria-label="Add task"
-            (click)="openPowerAppsModal()"
+            (click)="ui.openPowerAppsModal()"
           >
             <i class="fi fi-br-plus" aria-hidden="true"></i>
           </button>
         </div>
         <div class="task-header-left">
-          <div class="user-profile-display" *ngIf="currentUser && currentUser.username"
-            [class.active]="!showToDoSection && !showAllFilesSection" (click)="toggleUserInfo()">
+          <div class="user-profile-display" *ngIf="session.currentUser && session.currentUser.username"
+            [class.active]="!ui.showToDoSection && !ui.showAllFilesSection" (click)="hr.toggleUserInfo()">
             <i class="fi fi-rr-user" aria-hidden="true"></i>
           </div>
           
-          <button class="user-outline-icon" *ngIf="!currentUser?.username" (click)="toggleUserInfo()"
+          <button class="user-outline-icon" *ngIf="!session.currentUser?.username" (click)="hr.toggleUserInfo()"
             aria-label="Show user options"></button>
 
-          <button class="tab-button To-do"  type="button" [class.active]="showToDoSection" (click)="toggleToDoSection()">To Do</button>
-          <button class="tab-button AllFiles" type="button" [class.active]="showAllFilesSection" (click)="toggleAllFilesSection()">All Files</button>
+          <button class="tab-button To-do"  type="button" [class.active]="ui.showToDoSection" (click)="todo.toggleToDoSection()">To Do</button>
+          <button class="tab-button AllFiles" type="button" [class.active]="ui.showAllFilesSection" (click)="allFiles.toggleAllFilesSection()">All Files</button>
           <div class="plus-btn">
-            <i class="fi fi-br-plus" (click)="openPowerAppsModal(); $event.stopPropagation()"></i>
+            <i class="fi fi-br-plus" (click)="ui.openPowerAppsModal(); $event.stopPropagation()"></i>
           </div>
         </div>
       </div>
 
       <div class="card-body">
         <app-loading-screen
-          [loading]="!(currentUser && currentUser.email)"
+          [loading]="!(session.currentUser && session.currentUser.email)"
           [compact]="true"
           message="Signing you in…"></app-loading-screen>
-        <div *ngIf="currentUser && currentUser.email">
+        <div *ngIf="session.currentUser && session.currentUser.email">
           <!-- ToDo Section -->
-          <div *ngIf="showToDoSection" class="todo-section">
+          <div *ngIf="ui.showToDoSection" class="todo-section">
             <app-todo-list
-            [loadingTasks]="isLoadingTodoTasks"
-            [loadingMoreTasks]="isLoadingMoreTodoTasks"
-            (submitterSelected)="onSubmitterSelected($event)"
-            (superiorModeChange)="onSuperiorModeChange($event)"
-            (taskCompleted)="onCompleteTask($event)"
-            (taskDueDateChanged)="onTaskDueDateChanged($event)"
-            (taskClaimed)="onTaskClaimed($event)">
+            [loadingTasks]="todo.isLoadingTodoTasks"
+            [loadingMoreTasks]="todo.isLoadingMoreTodoTasks"
+            (submitterSelected)="todo.onSubmitterSelected($event)"
+            (superiorModeChange)="todo.onSuperiorModeChange($event)"
+            (taskCompleted)="comments.onCompleteTask($event)"
+            (taskDueDateChanged)="comments.onTaskDueDateChanged($event)"
+            (taskClaimed)="comments.onTaskClaimed($event)">
           </app-todo-list>
 
-          <div class="load-more-container" *ngIf="hasMoreTodoTasks && !isLoadingTodoTasks && !todoProcurementDrainActive">
+          <div class="load-more-container" *ngIf="todo.hasMoreTodoTasks && !todo.isLoadingTodoTasks && !todo.todoProcurementDrainActive">
             <button
               type="button"
               class="load-more-btn"
-              [disabled]="isLoadingMoreTodoTasks"
-              (click)="loadMoreTodoTasks()">
+              [disabled]="todo.isLoadingMoreTodoTasks"
+              (click)="todo.loadMoreTodoTasks()">
               Load more tasks
             </button>
           </div>
@@ -126,32 +126,32 @@
 
           <!-- All Files Section — keep mounted after first open so cache / search state survives tab switches -->
           <div
-            *ngIf="allFilesMounted"
+            *ngIf="ui.allFilesMounted"
             class="all-files-section"
-            [class.all-files-section--hidden]="!showAllFilesSection">
+            [class.all-files-section--hidden]="!ui.showAllFilesSection">
             <app-all-files
-              [commentItems]="commentItems"
-              [selectedApprovalFilter]="selectedApprovalFilter"
-              (approvalFilterChange)="onApprovalFilterChange($event)"
-              (fileSelected)="onAllFileSelected($event)"
-              (commentSelected)="onAllFilesCommentSelected($event)"
-              (attachmentSelected)="onAllFilesAttachmentSelected($event)"
-              (ensureFolderComments)="onEnsureFolderComments($event)"
-              (ensureFolderAttachments)="onEnsureFolderAttachments($event)"
-              (librarySelected)="onLibrarySelected($event)"></app-all-files>
+              [commentItems]="comments.commentItems"
+              [selectedApprovalFilter]="comments.selectedApprovalFilter"
+              (approvalFilterChange)="comments.onApprovalFilterChange($event)"
+              (fileSelected)="allFiles.onAllFileSelected($event)"
+              (commentSelected)="allFiles.onAllFilesCommentSelected($event)"
+              (attachmentSelected)="allFiles.onAllFilesAttachmentSelected($event)"
+              (ensureFolderComments)="allFiles.onEnsureFolderComments($event)"
+              (ensureFolderAttachments)="allFiles.onEnsureFolderAttachments($event)"
+              (librarySelected)="allFiles.onLibrarySelected($event)"></app-all-files>
           </div>
 
           <!-- Normal User Profile Display -->
-          <div *ngIf="!showToDoSection && !showAllFilesSection" class="user-list-container">
+          <div *ngIf="!ui.showToDoSection && !ui.showAllFilesSection" class="user-list-container">
             <div class="filter-container">
-              <ng-container *ngIf="taskFilterForms$ | async as taskForms">
+              <ng-container *ngIf="comments.taskFilterForms$ | async as taskForms">
                 <div class="filter-field">
                   <span class="filter-label" id="hr-task-type-filter-label">Task type</span>
                   <app-dropdown
                     class="task-select-dropdown"
-                    [(ngModel)]="selectedTaskFilter"
-                    (ngModelChange)="onTaskFilterChange($event)"
-                    [options]="getTaskFilterOptions(taskForms)"
+                    [(ngModel)]="comments.selectedTaskFilter"
+                    (ngModelChange)="comments.onTaskFilterChange($event)"
+                    [options]="comments.getTaskFilterOptions(taskForms)"
                     placeholder="All Tasks"
                     ariaLabel="Filter by task type"
                     [fullWidth]="true"
@@ -163,9 +163,9 @@
                 <span class="filter-label" id="hr-status-filter-label">Status</span>
                 <app-dropdown
                   class="task-select-dropdown status-select-dropdown"
-                  [(ngModel)]="selectedApprovalFilter"
-                  (ngModelChange)="onApprovalFilterChange($event)"
-                  [options]="approvalFilterOptions"
+                  [(ngModel)]="comments.selectedApprovalFilter"
+                  (ngModelChange)="comments.onApprovalFilterChange($event)"
+                  [options]="comments.approvalFilterOptions"
                   placeholder="All statuses"
                   ariaLabel="Filter by approval status"
                   [fullWidth]="true"
@@ -176,14 +176,14 @@
 
             <div class="user-list-scroll">
               <app-hr-files
-                [items]="hrPersonalRootFolders"
-                [isLoading]="isLoadingHrFilesList"
-                [progressMessage]="userFileProgressMessage"
-                [errorMessage]="userFileError"
-                [warningMessage]="userFileWarning"
-                (loadRequested)="loadHrFilesInFirstSection()"
-                (itemSelected)="openHrFileListItem($event)"
-                (itemPrefetchRequested)="prefetchHrPersonComments($event)"
+                [items]="hr.hrPersonalRootFolders"
+                [isLoading]="hr.isLoadingHrFilesList"
+                [progressMessage]="attachments.userFileProgressMessage"
+                [errorMessage]="attachments.userFileError"
+                [warningMessage]="attachments.userFileWarning"
+                (loadRequested)="hr.loadHrFilesInFirstSection()"
+                (itemSelected)="hr.openHrFileListItem($event)"
+                (itemPrefetchRequested)="folderTasks.prefetchHrPersonComments($event)"
               />
             </div>
           </div>
@@ -194,14 +194,14 @@
     <!-- ============================================================
          COMMENTS CARD (centre column — HR Tasks / eForms)
          ============================================================ -->
-    <section class="card comment-card" [class.active]="mobileCardView === 'comments'" [hidden]="hideComments" aria-label="Comments">
+    <section class="card comment-card" [class.active]="ui.mobileCardView === 'comments'" [hidden]="ui.hideComments" aria-label="Comments">
       <div class="card-header">
         <div class="mobile-detail-bar">
-          <button type="button" class="mobile-detail-back" (click)="closeMobileDetail()">Back</button>
-          <span class="mobile-detail-title">{{ mobileDetailTitle }}</span>
+          <button type="button" class="mobile-detail-back" (click)="ui.closeMobileDetail()">Back</button>
+          <span class="mobile-detail-title">{{ ui.mobileDetailTitle }}</span>
           <div class="mobile-detail-switch" role="tablist" aria-label="Item details">
-            <button type="button" role="tab" [class.active]="mobileCardView === 'comments'" [attr.aria-selected]="mobileCardView === 'comments'" (click)="showMobileComments()">Comments</button>
-            <button type="button" role="tab" [class.active]="mobileCardView === 'attachments'" [attr.aria-selected]="mobileCardView === 'attachments'" (click)="showMobileAttachments()">Attachments</button>
+            <button type="button" role="tab" [class.active]="ui.mobileCardView === 'comments'" [attr.aria-selected]="ui.mobileCardView === 'comments'" (click)="ui.showMobileComments()">Comments</button>
+            <button type="button" role="tab" [class.active]="ui.mobileCardView === 'attachments'" [attr.aria-selected]="ui.mobileCardView === 'attachments'" (click)="ui.showMobileAttachments()">Attachments</button>
           </div>
         </div>
         <div class="comment-title-group">
@@ -209,15 +209,15 @@
           <h2>Comments</h2>
         </div>
         <div class="header-actions">
-          <div class="plus-btn" *ngIf="showToDoSection">
-            <button type="button" aria-label="Add new comment" (click)="openNewCommentModal(); $event.stopPropagation()">
+          <div class="plus-btn" *ngIf="ui.showToDoSection">
+            <button type="button" aria-label="Add new comment" (click)="comments.openNewCommentModal(); $event.stopPropagation()">
               <i class="fi fi-br-plus" aria-hidden="true"></i>
             </button>
           </div>
         </div>
       </div>
 
-      <div class="card-body" *ngIf="!hideComments">
+      <div class="card-body" *ngIf="!ui.hideComments">
         <div class="comment-search-row">
           <div class="search-field">
             <img class="search-icon" src="search.png" alt="Search">
@@ -225,44 +225,44 @@
               class="searchBar"
               type="search"
               placeholder="Search..."
-              (input)="onSearchChange($event)"
-              (search)="onSearchChange($event)"
-              [value]="searchQuery"
+              (input)="comments.onSearchChange($event)"
+              (search)="comments.onSearchChange($event)"
+              [value]="comments.searchQuery"
             />
           </div>
         </div>
 
         <!-- Empty state -->
-        <p *ngIf="!isLoadingComments && filteredCommentItems.length === 0 && !showAllFilesSection">
-          {{ commentsMessage || 'No HR Tasks found. Click refresh to load HR Tasks.' }}
+        <p *ngIf="!comments.isLoadingComments && comments.filteredCommentItems.length === 0 && !ui.showAllFilesSection">
+          {{ comments.commentsMessage || 'No HR Tasks found. Click refresh to load HR Tasks.' }}
         </p>
-        <p *ngIf="!isLoadingComments && filteredCommentItems.length === 0 && showAllFilesSection">
-          {{ commentsMessage || 'No tasks found. Click a folder in All Files to load tasks.' }}
+        <p *ngIf="!comments.isLoadingComments && comments.filteredCommentItems.length === 0 && ui.showAllFilesSection">
+          {{ comments.commentsMessage || 'No tasks found. Click a folder in All Files to load tasks.' }}
         </p>
 
         <!-- Skeleton rows instead of a spinner: cold loads feel shorter when the layout is already there -->
         <div
           class="comments-skeleton"
-          *ngIf="isLoadingComments || (isLoadingMoreComments && filteredCommentItems.length === 0)"
+          *ngIf="comments.isLoadingComments || (comments.isLoadingMoreComments && comments.filteredCommentItems.length === 0)"
           role="status"
-          [attr.aria-label]="commentsLoadingLabel"
+          [attr.aria-label]="comments.commentsLoadingLabel"
         >
-          <p class="comments-skeleton-label" *ngIf="isLoadingComments">{{ commentsLoadingLabel }}</p>
-          <div class="comments-skeleton-row" *ngFor="let row of commentsSkeletonRows">
+          <p class="comments-skeleton-label" *ngIf="comments.isLoadingComments">{{ comments.commentsLoadingLabel }}</p>
+          <div class="comments-skeleton-row" *ngFor="let row of comments.commentsSkeletonRows">
             <span class="comments-skeleton-bar comments-skeleton-bar--title"></span>
             <span class="comments-skeleton-bar comments-skeleton-bar--meta"></span>
             <span class="comments-skeleton-bar comments-skeleton-bar--short"></span>
           </div>
         </div>
 
-        <p class="comments-loading-more" *ngIf="isLoadingMoreComments && !isLoadingComments && filteredCommentItems.length > 0">
+        <p class="comments-loading-more" *ngIf="comments.isLoadingMoreComments && !comments.isLoadingComments && comments.filteredCommentItems.length > 0">
           Loading more tasks…
         </p>
 
         <!-- Detail modal: shown when user clicks "View Details" on a card -->
-        <div class="eform-content-viewer" *ngIf="selectedEFormContent">
+        <div class="eform-content-viewer" *ngIf="comments.selectedEFormContent">
 
-          <ng-container *ngIf="selectedEFormContent.detailView as view; else plainEFormViewer">
+          <ng-container *ngIf="comments.selectedEFormContent.detailView as view; else plainEFormViewer">
             <div class="task-detail-header">
               <div class="task-detail-header-info">
                 <div class="task-detail-badges">
@@ -272,7 +272,7 @@
                 <h3>{{ view.title }}</h3>
                 <p class="task-detail-subtitle" *ngIf="view.subtitle">{{ view.subtitle }}</p>
               </div>
-              <button type="button" class="task-detail-close" (click)="closeFormViewer()" aria-label="Close details">&times;</button>
+              <button type="button" class="task-detail-close" (click)="comments.closeFormViewer()" aria-label="Close details">&times;</button>
             </div>
 
             <div class="task-detail-body">
@@ -340,32 +340,32 @@
           <ng-template #plainEFormViewer>
           <div class="eform-content-header">
             <div class="eform-header-info">
-              <h3>{{ selectedEFormContent.fileName }}</h3>
+              <h3>{{ comments.selectedEFormContent.fileName }}</h3>
               <div class="eform-meta-info">
-                <span class="eform-upload-date">Uploaded: {{ selectedEFormContent.uploadDate | date:'M/d/yy' }}</span>
+                <span class="eform-upload-date">Uploaded: {{ comments.selectedEFormContent.uploadDate | date:'M/d/yy' }}</span>
               </div>
             </div>
-            <button class="close-content-btn" (click)="closeFormViewer()" aria-label="Close content">&times;</button>
+            <button class="close-content-btn" (click)="comments.closeFormViewer()" aria-label="Close content">&times;</button>
           </div>
           <div class="eform-content-body">   
-            <div *ngIf="isLoadingEFormContent" class="loading-content">
+            <div *ngIf="comments.isLoadingEFormContent" class="loading-content">
               Loading content...
             </div>   
-            <div *ngIf="!isLoadingEFormContent" class="content-display">
+            <div *ngIf="!comments.isLoadingEFormContent" class="content-display">
               <dl
                 class="eform-content-detail"
-                *ngIf="selectedEFormContent.detailRows?.length; else rawEFormContent">
+                *ngIf="comments.selectedEFormContent.detailRows?.length; else rawEFormContent">
 
                 <div
                   class="eform-content-detail-row"
-                  *ngFor="let row of selectedEFormContent.detailRows"
+                  *ngFor="let row of comments.selectedEFormContent.detailRows"
                   [class.eform-content-detail-row--section-end]="row.sectionBreak">
                   <dt>{{ row.label }}</dt>
                   <dd>{{ row.value }}</dd>
                 </div>
               </dl>
               <ng-template #rawEFormContent>
-                <pre>{{ selectedEFormContent.content }}</pre>
+                <pre>{{ comments.selectedEFormContent.content }}</pre>
               </ng-template>
             </div>
           </div>
@@ -373,16 +373,16 @@
         </div>
 
         <!-- HR Tasks list — hidden while loading so cards don't appear under the spinner -->
-        <div class="eforms-container" *ngIf="!selectedEFormContent && !isLoadingComments && filteredCommentItems.length > 0">
+        <div class="eforms-container" *ngIf="!comments.selectedEFormContent && !comments.isLoadingComments && comments.filteredCommentItems.length > 0">
           <div class="eform-list">
-            <div *ngFor="let eform of pagedCommentItems" class="eform-item"
+            <div *ngFor="let eform of comments.pagedCommentItems" class="eform-item"
               [attr.id]="'comment-item-' + eform.id"
-              [class.comment-item-highlight]="highlightedCommentId === (eform.id + '')">
+              [class.comment-item-highlight]="comments.highlightedCommentId === (eform.id + '')">
 
               <!-- Card header: title + status pill -->
               <div class="comment-card-top">
                 <div class="comment-card-heading">
-                  <h3 class="eform-title">{{ formatFormTitle(eform.name) }}</h3>
+                  <h3 class="eform-title">{{ ui.formatFormTitle(eform.name) }}</h3>
                   <p class="comment-card-subtitle">
                     <ng-container *ngIf="eform.eFormDetails?.eFormListId">eForm #{{ eform.eFormDetails.eFormListId }}</ng-container>
                     <ng-container *ngIf="eform.eFormDetails?.eFormListId && eform.eFormDetails?.category"> · </ng-container>
@@ -390,9 +390,9 @@
                   </p>
                 </div>
                 <span class="comment-card-pill"
-                  [attr.data-tone]="getCommentStatusTone(eform)"
+                  [attr.data-tone]="comments.getCommentStatusTone(eform)"
                   [attr.data-status]="eform.eFormDetails.status"
-                  *ngIf="eform.eFormDetails?.status && !shouldHideCommentStatus(eform)">
+                  *ngIf="eform.eFormDetails?.status && !comments.shouldHideCommentStatus(eform)">
                   {{ eform.eFormDetails.status }}
                 </span>
               </div>
@@ -411,7 +411,7 @@
 
                 <div
                   class="comment-card-person comment-card-person--completed"
-                  *ngIf="isEformComplete(eform) && getLastModifiedByName(eform) as completedByName">
+                  *ngIf="comments.isEformComplete(eform) && comments.getLastModifiedByName(eform) as completedByName">
                   <span class="comment-card-label">Completed by</span>
                   <span class="comment-card-name">{{ completedByName }} ✓</span>
                   <span class="comment-card-date" *ngIf="eform.eFormDetails?.customModifiedDate">
@@ -420,16 +420,16 @@
                 </div>
                 <div
                   class="comment-card-person comment-card-person--assigned"     
-                  *ngIf="!isEformComplete(eform) && getAssignedToDisplay(eform) as assignedToDisplay">
+                  *ngIf="!comments.isEformComplete(eform) && comments.getAssignedToDisplay(eform) as assignedToDisplay">
                   <span class="comment-card-label">Assigned to</span>
-                  <span class="comment-card-name" *ngIf="!showAssigneeDropdown(assignedToDisplay, eform)">
-                    {{ formatAssigneeLabel(assignedToDisplay, eform) }}
+                  <span class="comment-card-name" *ngIf="!comments.showAssigneeDropdown(assignedToDisplay, eform)">
+                    {{ comments.formatAssigneeLabel(assignedToDisplay, eform) }}
                   </span>
                   <app-dropdown
-                    *ngIf="showAssigneeDropdown(assignedToDisplay, eform)"
+                    *ngIf="comments.showAssigneeDropdown(assignedToDisplay, eform)"
                     class="assigned-select-dropdown"
-                    [options]="getAssigneeOptions(assignedToDisplay, eform)"
-                    [ngModel]="getAssignees(assignedToDisplay)[0]"
+                    [options]="comments.getAssigneeOptions(assignedToDisplay, eform)"
+                    [ngModel]="comments.getAssignees(assignedToDisplay)[0]"
                     ariaLabel="Assigned to"
                     triggerClass="assigned-select"
                     menuAlign="right"
@@ -449,7 +449,7 @@
                     <span
                       class="detail-value comment-text"
                       [innerHTML]="eform.eFormDetails.commentHtml"
-                      (click)="onCommentLinkClick($event)"
+                      (click)="comments.onCommentLinkClick($event)"
                     ></span>
                   </div>
                   <dl
@@ -473,9 +473,9 @@
                 <div class="eform-actions">
                   <!--Delegate Task Component-->
                   <app-delegate-component
-                    *ngIf="!showAllFilesSection"
+                    *ngIf="!ui.showAllFilesSection"
                     [task]="eform"
-                    (delegateTask)="onDelegateTask($event)">
+                    (delegateTask)="comments.onDelegateTask($event)">
                   </app-delegate-component>
                   <!-- Same link as "Please click HERE to update eForm" in the comment -->
                   <a
@@ -490,8 +490,8 @@
                   <button
                     type="button"
                     class="comment-card-btn comment-card-btn--primary"
-                    (click)="openHrTaskForm(eform)"
-                    [disabled]="isLoadingEFormContent || isUserCommentCard(eform)">
+                    (click)="comments.openHrTaskForm(eform)"
+                    [disabled]="comments.isLoadingEFormContent || comments.isUserCommentCard(eform)">
                     <i class="fi fi-rr-eye" aria-hidden="true"></i>
                     View details
                   </button>
@@ -500,9 +500,9 @@
 
             </div>
           </div>
-          <div *ngIf="hasMoreItems" class="load-more-container">
-            <button class="load-more-btn" (click)="loadMoreItems()">
-              Load more ({{ remainingItemCount }} remaining)
+          <div *ngIf="comments.hasMoreItems" class="load-more-container">
+            <button class="load-more-btn" (click)="comments.loadMoreItems()">
+              Load more ({{ comments.remainingItemCount }} remaining)
             </button>
           </div>
         </div>
@@ -512,14 +512,14 @@
     <!-- ============================================================
          ATTACHMENTS CARD (right column)
          ============================================================ -->
-    <section class="card attachment-card" [class.active]="mobileCardView === 'attachments'" aria-label="Attachments">
+    <section class="card attachment-card" [class.active]="ui.mobileCardView === 'attachments'" aria-label="Attachments">
       <div class="card-header">
         <div class="mobile-detail-bar">
-          <button type="button" class="mobile-detail-back" (click)="closeMobileDetail()">Back</button>
-          <span class="mobile-detail-title">{{ mobileDetailTitle }}</span>
+          <button type="button" class="mobile-detail-back" (click)="ui.closeMobileDetail()">Back</button>
+          <span class="mobile-detail-title">{{ ui.mobileDetailTitle }}</span>
           <div class="mobile-detail-switch" role="tablist" aria-label="Item details">
-            <button type="button" role="tab" [class.active]="mobileCardView === 'comments'" [attr.aria-selected]="mobileCardView === 'comments'" (click)="showMobileComments()">Comments</button>
-            <button type="button" role="tab" [class.active]="mobileCardView === 'attachments'" [attr.aria-selected]="mobileCardView === 'attachments'" (click)="showMobileAttachments()">Attachments</button>
+            <button type="button" role="tab" [class.active]="ui.mobileCardView === 'comments'" [attr.aria-selected]="ui.mobileCardView === 'comments'" (click)="ui.showMobileComments()">Comments</button>
+            <button type="button" role="tab" [class.active]="ui.mobileCardView === 'attachments'" [attr.aria-selected]="ui.mobileCardView === 'attachments'" (click)="ui.showMobileAttachments()">Attachments</button>
           </div>
         </div>
         <div class="attachment-title-group">
@@ -540,89 +540,89 @@
               class="searchBar-att"
               type="search"
               placeholder="Search..."
-              (input)="onAttachmentSearchChange($event)"
-              (search)="onAttachmentSearchChange($event)"
-              [value]="attachmentSearch"
+              (input)="attachments.onAttachmentSearchChange($event)"
+              (search)="attachments.onAttachmentSearchChange($event)"
+              [value]="attachments.attachmentSearch"
             />
           </div>
         </div>
 
-        <div *ngIf="!showUserFile">
-          <p class="error-message" *ngIf="errorMessage">{{ errorMessage }}</p>
-          <p *ngIf="!isLoadingUserFiles && attachmentItems.length === 0">
-            <ng-container *ngIf="showAllFilesSection">Click a folder in All Files to view attachments.</ng-container>
-            <ng-container *ngIf="showToDoSection">Click a task in To Do to view its attachments.</ng-container>
-            <ng-container *ngIf="!showAllFilesSection && !showToDoSection">Click the refresh icon to load your files.</ng-container>
+        <div *ngIf="!attachments.showUserFile">
+          <p class="error-message" *ngIf="ui.errorMessage">{{ ui.errorMessage }}</p>
+          <p *ngIf="!attachments.isLoadingUserFiles && attachments.attachmentItems.length === 0">
+            <ng-container *ngIf="ui.showAllFilesSection">Click a folder in All Files to view attachments.</ng-container>
+            <ng-container *ngIf="ui.showToDoSection">Click a task in To Do to view its attachments.</ng-container>
+            <ng-container *ngIf="!ui.showAllFilesSection && !ui.showToDoSection">Click the refresh icon to load your files.</ng-container>
           </p>
           <app-attachment-list
-            *ngIf="!isLoadingUserFiles && attachmentItems.length > 0"
-            [files]="filteredAttachments"
-            [highlightedId]="highlightedAttachmentId"
-            [fallbackAuthor]="currentUser?.username ?? ''"
-            (folderOpened)="openFolder($event)" />
+            *ngIf="!attachments.isLoadingUserFiles && attachments.attachmentItems.length > 0"
+            [files]="attachments.filteredAttachments"
+            [highlightedId]="attachments.highlightedAttachmentId"
+            [fallbackAuthor]="session.currentUser?.username ?? ''"
+            (folderOpened)="attachments.openFolder($event)" />
         </div>
 
-        <div *ngIf="showUserFile" class="user-file-panel">
+        <div *ngIf="attachments.showUserFile" class="user-file-panel">
           <div class="user-file-header">
             <button
-              *ngIf="showBackButtonInAttachments"
+              *ngIf="attachments.showBackButtonInAttachments"
               type="button"
               class="back-button"
-              [class.back-button--disabled]="!canGoBackInAttachments"
-              [disabled]="!canGoBackInAttachments"
-              (click)="goBackToParent()"
+              [class.back-button--disabled]="!attachments.canGoBackInAttachments"
+              [disabled]="!attachments.canGoBackInAttachments"
+              (click)="attachments.goBackToParent()"
             >← Back</button>
             <p>
-              <span *ngIf="currentFolderId">Folder contents</span>
-              <span *ngIf="!currentFolderId && !isUsingHrTaskList">Showing items for {{ currentUser?.username ||
+              <span *ngIf="attachments.currentFolderId">Folder contents</span>
+              <span *ngIf="!attachments.currentFolderId && !attachments.isUsingHrTaskList">Showing items for {{ session.currentUser?.username ||
                 'current user' }}</span>
-              <span *ngIf="!currentFolderId && isUsingHrTaskList">HR Task: {{ selectedHrTaskList }}</span>
-              <span *ngIf="!isLoadingUserFiles"> ({{ loadedHrPersonalItemCount }} items)</span>
+              <span *ngIf="!attachments.currentFolderId && attachments.isUsingHrTaskList">HR Task: {{ attachments.selectedHrTaskList }}</span>
+              <span *ngIf="!attachments.isLoadingUserFiles"> ({{ attachments.loadedHrPersonalItemCount }} items)</span>
             </p>
           </div>
 
           <!-- HR Task List selector -->
-          <div *ngIf="isUsingHrTaskList" class="hr-task-list-selector">
+          <div *ngIf="attachments.isUsingHrTaskList" class="hr-task-list-selector">
             <label for="hrTaskListSelect">Select HR Task List:</label>
             <app-dropdown
               triggerId="hrTaskListSelect"
               class="hr-task-list-dropdown"
-              [(ngModel)]="selectedHrTaskList"
-              (ngModelChange)="onHrTaskListSelected($event)"
-              [options]="hrTaskListOptions"
+              [(ngModel)]="attachments.selectedHrTaskList"
+              (ngModelChange)="attachments.onHrTaskListSelected($event)"
+              [options]="attachments.hrTaskListOptions"
               placeholder="-- Select a list --"
               ariaLabel="Select HR task list"
               [fullWidth]="true"
             />
-            <button type="button" class="load-list-btn" (click)="loadHrTaskListItems()"
-              [disabled]="!selectedHrTaskList || isLoadingUserFiles">
+            <button type="button" class="load-list-btn" (click)="attachments.loadHrTaskListItems()"
+              [disabled]="!attachments.selectedHrTaskList || attachments.isLoadingUserFiles">
               Load Items
             </button>
           </div>
 
           <div class="user-file-content">
-            <p *ngIf="isLoadingUserFiles">{{ userFileProgressMessage || 'Loading files from SharePoint...' }}</p>
-            <p *ngIf="!isLoadingUserFiles && userFiles.length === 0 && !isUsingHrTaskList && !userFileWarning">No files or folders found.</p>
-            <p *ngIf="!isLoadingUserFiles && userFileWarning">{{ userFileWarning }}</p>
+            <p *ngIf="attachments.isLoadingUserFiles">{{ attachments.userFileProgressMessage || 'Loading files from SharePoint...' }}</p>
+            <p *ngIf="!attachments.isLoadingUserFiles && attachments.userFiles.length === 0 && !attachments.isUsingHrTaskList && !attachments.userFileWarning">No files or folders found.</p>
+            <p *ngIf="!attachments.isLoadingUserFiles && attachments.userFileWarning">{{ attachments.userFileWarning }}</p>
 
                        <app-attachment-list
-              *ngIf="!isUsingHrTaskList && !isLoadingUserFiles && userFiles.length > 0"
-              [files]="filteredAttachments"
-              [highlightedId]="highlightedAttachmentId"
-              [fallbackAuthor]="currentUser?.username ?? ''"
-              [class.attachment-list--with-preview]="!!previewFile()"
-              (folderOpened)="openFolder($event)"
-              (fileSelected)="previewFile.set($event)" />
+              *ngIf="!attachments.isUsingHrTaskList && !attachments.isLoadingUserFiles && attachments.userFiles.length > 0"
+              [files]="attachments.filteredAttachments"
+              [highlightedId]="attachments.highlightedAttachmentId"
+              [fallbackAuthor]="session.currentUser?.username ?? ''"
+              [class.attachment-list--with-preview]="!!attachments.previewFile()"
+              (folderOpened)="attachments.openFolder($event)"
+              (fileSelected)="attachments.previewFile.set($event)" />
 
             <app-preview-attachments
-              *ngIf="!isUsingHrTaskList && !isLoadingUserFiles && previewFile()"
+              *ngIf="!attachments.isUsingHrTaskList && !attachments.isLoadingUserFiles && attachments.previewFile()"
               class="attachment-preview-slot"
-              [file]="previewFile()" />
+              [file]="attachments.previewFile()" />
 
 
             <app-loading-screen
-            [loading]="isLoadingUserFiles"
-            [message]="userFileProgressMessage || 'Loading files from SharePoint...'"
+            [loading]="attachments.isLoadingUserFiles"
+            [message]="attachments.userFileProgressMessage || 'Loading files from SharePoint...'"
           ></app-loading-screen>
           </div>
         </div>
@@ -634,19 +634,19 @@
 
   <!-- PowerApps modal - root level so it works from any mobile tab -->
   <app-powerapps-modal
-    [open]="showPowerAppsModal"
-    (closed)="closePowerAppsModal()"
+    [open]="ui.showPowerAppsModal"
+    (closed)="ui.closePowerAppsModal()"
   ></app-powerapps-modal>
 
   <app-new-comment
-    [open]="isCommentPanelOpen"
-    [taskId]="selectedTask?.Id ?? ''"
-    [listName]="selectedCommentListName"
-    [eFormListId]="selectedEFormListId ?? ''"
-    [eFormTitle]="selectedEFormTitle ?? ''"
-    [showRequestForAction]="showRequestForActionCategory"
-    (closed)="closeNewCommentModal()"
-    (saved)="onNewCommentSaved($event)"
+    [open]="comments.isCommentPanelOpen"
+    [taskId]="comments.selectedTask?.Id ?? ''"
+    [listName]="comments.selectedCommentListName"
+    [eFormListId]="todo.selectedEFormListId ?? ''"
+    [eFormTitle]="todo.selectedEFormTitle ?? ''"
+    [showRequestForAction]="comments.showRequestForActionCategory"
+    (closed)="comments.closeNewCommentModal()"
+    (saved)="comments.onNewCommentSaved($event)"
   ></app-new-comment>
   
 </div>
@@ -656,26 +656,26 @@
   class="small-action mobile"
   type="button"
   aria-label="Add task"
-  (click)="openPowerAppsModal()"
+  (click)="ui.openPowerAppsModal()"
 >
   <i class="fi fi-br-plus"></i>
 </button>
 
 <app-mobile-navigation
-  [activeIndex]="activeNavIndex"
-  (navItemClick)="onNavItemClick($event)">
+  [activeIndex]="ui.activeNavIndex"
+  (navItemClick)="ui.onNavItemClick($event)">
 </app-mobile-navigation>
 
-@if (modal.visible) {
-<div class="modal-overlay" (click)="closeModal()">
-  <div class="modal-box" [class]="'modal-' + modal.type" (click)="$event.stopPropagation()">
+@if (ui.modal.visible) {
+<div class="modal-overlay" (click)="ui.closeModal()">
+  <div class="modal-box" [class]="'modal-' + ui.modal.type" (click)="$event.stopPropagation()">
     <div class="modal-header">
-      <span class="modal-title">{{ modal.title }}</span>
-      <button class="modal-close" (click)="closeModal()">✕</button>
+      <span class="modal-title">{{ ui.modal.title }}</span>
+      <button class="modal-close" (click)="ui.closeModal()">✕</button>
     </div>
-    <p class="modal-message">{{ modal.message }}</p>
+    <p class="modal-message">{{ ui.modal.message }}</p>
     <div class="modal-footer">
-      <button class="modal-btn" (click)="closeModal()">OK</button>
+      <button class="modal-btn" (click)="ui.closeModal()">OK</button>
 
     </div>
   </div>
