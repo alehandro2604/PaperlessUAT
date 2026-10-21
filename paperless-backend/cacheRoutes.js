@@ -287,4 +287,57 @@ router.delete('/todo', wrap(async (req, res) => {
   res.json({ ok: true, deleted: keys.length });
 }));
 
+// ─── Shared list filter results ────────────────────────────────────────────
+// Which $filter / $orderby queries each SharePoint task list accepts, learned by whichever
+// browser tried first, so nobody else repeats the probes that 400/404. Only list ids,
+// column names and yes/no are stored — no list content — so any signed-in user may read
+// and add to it. One hash field per "<listId>|<field>": the newest answer wins without
+// overwriting other lists, and the hash expires so changed lists get re-learned.
+const LIST_FILTERS_KEY = 'shared:meta:list-filters';
+const LIST_FILTERS_TTL_SECONDS = 7 * 24 * 60 * 60;
+const MAX_LIST_FILTER_UPDATES = 1000;
+const ORDER_BY_FIELD = '$orderby';
+const isValidListId = (s) => typeof s === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(s);
+const isValidFilterField = (s) => typeof s === 'string' && /^[A-Za-z0-9_]{1,128}$/.test(s);
+
+// { fields: { <listId>: { <field>: bool } }, orderBy: { <listId>: bool } }
+router.get('/list-filters', wrap(async (req, res) => {
+  const all = await redisClient.hGetAll(LIST_FILTERS_KEY);
+  const fields = {};
+  const orderBy = {};
+  for (const [hashField, value] of Object.entries(all ?? {})) {
+    const [listId, field] = hashField.split('|');
+    if (!listId || !field) continue;
+    if (field === ORDER_BY_FIELD) orderBy[listId] = value === '1';
+    else (fields[listId] ??= {})[field] = value === '1';
+  }
+  res.json({ fields, orderBy });
+}));
+
+// Merge results in (same shape as GET). Unknown shapes are skipped, not rejected.
+router.put('/list-filters', wrap(async (req, res) => {
+  const updates = {};
+  for (const [listId, byField] of Object.entries(req.body?.fields ?? {})) {
+    if (!isValidListId(listId) || !byField || typeof byField !== 'object') continue;
+    for (const [field, ok] of Object.entries(byField)) {
+      if (isValidFilterField(field) && typeof ok === 'boolean') updates[`${listId}|${field}`] = ok ? '1' : '0';
+    }
+  }
+  for (const [listId, ok] of Object.entries(req.body?.orderBy ?? {})) {
+    if (isValidListId(listId) && typeof ok === 'boolean') updates[`${listId}|${ORDER_BY_FIELD}`] = ok ? '1' : '0';
+  }
+  const count = Object.keys(updates).length;
+  if (count > MAX_LIST_FILTER_UPDATES) {
+    return res.status(413).json({ error: `At most ${MAX_LIST_FILTER_UPDATES} results per call` });
+  }
+  if (count > 0) {
+    await redisClient.hSet(LIST_FILTERS_KEY, updates);
+    // Expiry is set once, not refreshed, so the whole set is re-learned weekly.
+    if ((await redisClient.ttl(LIST_FILTERS_KEY)) < 0) {
+      await redisClient.expire(LIST_FILTERS_KEY, LIST_FILTERS_TTL_SECONDS);
+    }
+  }
+  res.json({ ok: true, saved: count });
+}));
+
 module.exports = router;

@@ -1,0 +1,9 @@
+/* :host = the <app-attachment-list> tag itself.
+   It must be a flex item that passes the card's height down,
+   otherwise .attachment-table-wrapper can't scroll. */
+:host {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}

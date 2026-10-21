@@ -19,11 +19,13 @@ const corsOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
+// maxAge lets the browser reuse a preflight (OPTIONS) for 10 minutes per URL instead of
+// sending one before every cache call.
 app.use(
   cors(
     corsOrigins.length
-      ? { origin: corsOrigins, credentials: true }
-      : undefined // default: reflect request origin (fine for local / same-network UAT)
+      ? { origin: corsOrigins, credentials: true, maxAge: 600 }
+      : { maxAge: 600 } // default: reflect request origin (fine for local / same-network UAT)
   )
 );
 // Cache snapshots are multi-MB JSON that gzips ~90%+; compress responses both ways

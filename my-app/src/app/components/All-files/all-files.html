@@ -57,7 +57,9 @@
         class="empty">
         {{ error }}
       </div>
-      <div *ngIf="isGraphSearching" class="loading">Searching SharePoint…</div>
+      <div
+        *ngIf="isGraphSearching || (isFolderSearchPending && files.length === 0 && !isLoading && !isLoadingAllLibraries && !isSearchingMoreFiles)"
+        class="loading">Searching SharePoint…</div>
       <div *ngIf="isSearchingMoreFiles && !isGraphSearching" class="loading">Searching more folders…</div>
 
       <!-- Comments search: Live-style comment rows (not folder cards) -->
@@ -166,7 +168,7 @@
         </ng-container>
       </div>
       <div
-        *ngIf="(filterType === 'files' || filterType === 'all') && !isLoading && !isLoadingAllLibraries && !isGraphSearching && !isSearchingMoreFiles && searchTerm.trim() && files.length === 0"
+        *ngIf="(filterType === 'files' || filterType === 'all') && !isLoading && !isLoadingAllLibraries && !isGraphSearching && !isSearchingMoreFiles && !isFolderSearchPending && searchTerm.trim() && files.length === 0"
         class="empty">
         No matching folders found.
       </div>

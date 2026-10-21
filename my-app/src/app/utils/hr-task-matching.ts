@@ -3,6 +3,8 @@
 // this-reference dependency trace before extraction.
 
 import { sharePointConfig } from '../sharepoint.config';
+import { normalizeName } from '../microsoft-graph';
+import { stringifyTaskFieldValue } from './person-name-matching';
 
 export function isItemSubmittedBy(
   item: { submittedBy?: string; eFormDetails?: Record<string, unknown> },
@@ -251,4 +253,77 @@ export function getTaskEFormTitle(item: { eFormDetails?: Record<string, unknown>
 
 export function extractTrailingFolderId(folderName: string): string {
   return String(folderName ?? '').trim().match(/(?:^|[-_\s])(\d+)\s*$/)?.[1] ?? '';
+}
+
+export function flattenHrMappedByList(mappedByList: Map<string, any[]>): any[] {
+  return [...mappedByList.values()]
+    .flat()
+    .sort((a: any, b: any) =>
+      new Date(b.submittedDate || 0).getTime() - new Date(a.submittedDate || 0).getTime(),
+    );
+}
+
+export function collectEFormKeysFromMappedTasks(items: any[], folderName?: string): Set<string> {
+  const folderEFormId = folderName ? extractTrailingFolderId(folderName) : '';
+  const keys = new Set<string>();
+  for (const item of items) {
+    for (const key of extractEFormKeysFromMappedItem(item)) {
+      if (folderEFormId && key !== folderEFormId) continue;
+      keys.add(key);
+    }
+  }
+  if (folderEFormId) keys.add(folderEFormId);
+  return keys;
+}
+
+export function extractChildSubjectNamesFromFields(
+  fields: Record<string, unknown>,
+  selectedName: string,
+  seen: Set<string>,
+): string[] {
+  const names: string[] = [];
+  for (const [key, rawValue] of Object.entries(fields)) {
+    if (!isChildSubjectColumn(key)) continue;
+
+    const text = stringifyTaskFieldValue(rawValue);
+    for (const candidate of text.split(/[\r\n;]+/)) {
+      const name = candidate.replace(/^#?\d+;#/, '').trim();
+      const normalizedName = normalizeName(name);
+      if (!name || !normalizedName || normalizedName === selectedName || seen.has(normalizedName)) {
+        continue;
+      }
+      seen.add(normalizedName);
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+/**
+ * Query high-traffic HR lists first so Comments gets a newest-first hit sooner
+ * (avoids a long blank "Loading tasks..." while empty lists run ahead of Sick/Missing Punch).
+ */
+export function prioritizeHrPersonTaskLists(listNames: string[]): string[] {
+  const rank = (name: string): number => {
+    const key = String(name ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (key.includes('sickcertificate')) return 0;
+    if (key.includes('missingpunch')) return 1;
+    if (key.includes('changeofshift')) return 2;
+    if (key.includes('telework')) return 3;
+    if (key.includes('rest')) return 4;
+    if (key.startsWith('hrtask')) return 5;
+    if (
+      key.includes('probation') ||
+      key.includes('increment') ||
+      key.includes('performancereview') ||
+      key.includes('preformancereview')
+    ) {
+      return 6;
+    }
+    return 7;
+  };
+  return [...listNames].sort((a, b) => {
+    const diff = rank(a) - rank(b);
+    return diff !== 0 ? diff : a.localeCompare(b);
+  });
 }

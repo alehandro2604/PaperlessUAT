@@ -138,8 +138,7 @@
               (attachmentSelected)="onAllFilesAttachmentSelected($event)"
               (ensureFolderComments)="onEnsureFolderComments($event)"
               (ensureFolderAttachments)="onEnsureFolderAttachments($event)"
-              (librarySelected)="onLibrarySelected($event)"
-              (foldersForPrefetch)="onFoldersForPrefetch($event)"></app-all-files>
+              (librarySelected)="onLibrarySelected($event)"></app-all-files>
           </div>
 
           <!-- Normal User Profile Display -->
@@ -555,40 +554,12 @@
             <ng-container *ngIf="showToDoSection">Click a task in To Do to view its attachments.</ng-container>
             <ng-container *ngIf="!showAllFilesSection && !showToDoSection">Click the refresh icon to load your files.</ng-container>
           </p>
-          <div *ngIf="!isLoadingUserFiles && attachmentItems.length > 0" class="attachment-table-wrapper">
-            <div class="attachment-table-header">
-              <span class="att-col-name">Name</span>
-              <span class="att-col-date">Date</span>
-              <span class="att-col-author">Author</span>
-            </div>
-            <p *ngIf="filteredAttachments.length === 0">No files found in this folder.</p>
-            <div *ngFor="let item of filteredAttachments" class="attachment-table-row"
-              [attr.id]="'attachment-item-' + item.id"
-              [class.attachment-item-highlight]="highlightedAttachmentId === (item.id + '')"
-              [class.attachment-row-folder]="item.isFolder" [class.attachment-row-file]="!item.isFolder">
-              <span class="att-col-name">
-                <span *ngIf="item.isFolder" class="att-folder-link" (click)="openFolder(item)">
-                  <img src="/folder.png" alt="folder" class="att-folder-icon" />
-                  {{ item.name }}
-                </span>
-                <a *ngIf="!item.isFolder" class="att-file-link" [href]="item.webUrl" target="_blank"
-                  rel="noopener noreferrer">
-                  <img *ngIf="item.fileIcon" [src]="item.fileIcon" alt="file" class="att-file-icon" />
-                  <img *ngIf="!item.fileIcon" src="/files.png" alt="file" class="att-file-icon" />
-                  {{ item.name }}
-                </a>
-              </span>
-              <span class="att-col-date att-meta">
-                <ng-container *ngIf="item.lastModifiedDateTime; else noDatePreview">
-                  {{ item.lastModifiedDateTime | date:'dd/MM/yyyy' }}
-                </ng-container>
-                <ng-template #noDatePreview>—</ng-template>
-              </span>
-              <span class="att-col-author att-meta">
-                {{ item.modifiedBy || currentUser?.username || '—' }}
-              </span>
-            </div>
-          </div>
+          <app-attachment-list
+            *ngIf="!isLoadingUserFiles && attachmentItems.length > 0"
+            [files]="filteredAttachments"
+            [highlightedId]="highlightedAttachmentId"
+            [fallbackAuthor]="currentUser?.username ?? ''"
+            (folderOpened)="openFolder($event)" />
         </div>
 
         <div *ngIf="showUserFile" class="user-file-panel">
@@ -634,40 +605,20 @@
             <p *ngIf="!isLoadingUserFiles && userFiles.length === 0 && !isUsingHrTaskList && !userFileWarning">No files or folders found.</p>
             <p *ngIf="!isLoadingUserFiles && userFileWarning">{{ userFileWarning }}</p>
 
-            <div *ngIf="!isUsingHrTaskList && !isLoadingUserFiles && userFiles.length > 0" class="attachment-table-wrapper">
-              <div class="attachment-table-header">
-                <span class="att-col-name">Name</span>
-                <span class="att-col-date">Date</span>
-                <span class="att-col-author">Author</span>
-              </div>
-              <div *ngFor="let item of filteredAttachments" class="attachment-table-row"
-                [attr.id]="'attachment-item-' + item.id"
-                [class.attachment-item-highlight]="highlightedAttachmentId === (item.id + '')"
-                [class.attachment-row-folder]="item.isFolder" [class.attachment-row-file]="!item.isFolder">
-                <span class="att-col-name">
-                  <span *ngIf="item.isFolder" class="att-folder-link" (click)="openFolder(item)">
-                    <img src="/folder.png" alt="folder" class="att-folder-icon" />
-                    {{ item.name }}
-                  </span>
-                  <a *ngIf="!item.isFolder" class="att-file-link" [href]="item.webUrl" target="_blank"
-                    rel="noopener noreferrer">
-                    <img *ngIf="item.fileIcon" [src]="item.fileIcon" alt="file" class="att-file-icon" />
-                    <img *ngIf="!item.fileIcon" src="/files.png" alt="file" class="att-file-icon" />
-                    {{ item.name }}
-                  </a>
-                </span>
+                       <app-attachment-list
+              *ngIf="!isUsingHrTaskList && !isLoadingUserFiles && userFiles.length > 0"
+              [files]="filteredAttachments"
+              [highlightedId]="highlightedAttachmentId"
+              [fallbackAuthor]="currentUser?.username ?? ''"
+              [class.attachment-list--with-preview]="!!previewFile()"
+              (folderOpened)="openFolder($event)"
+              (fileSelected)="previewFile.set($event)" />
 
-                <span class="att-col-date att-meta">
-                  <ng-container *ngIf="item.lastModifiedDateTime; else noDate">
-                    {{ item.lastModifiedDateTime | date:'dd/MM/yyyy' }}
-                  </ng-container>
-                  <ng-template #noDate>—</ng-template>
-                </span>
-                <span class="att-col-author att-meta">
-                  {{ item.modifiedBy || currentUser?.username || '—' }}
-                </span>
-              </div>
-            </div>
+            <app-preview-attachments
+              *ngIf="!isUsingHrTaskList && !isLoadingUserFiles && previewFile()"
+              class="attachment-preview-slot"
+              [file]="previewFile()" />
+
 
             <app-loading-screen
             [loading]="isLoadingUserFiles"

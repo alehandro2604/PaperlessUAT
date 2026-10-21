@@ -51,6 +51,12 @@ export const AppConstants = {
   todoProcInitialPages: 30,
   /** Pages read per slice of that first Proc* scan; each slice is shown as soon as it lands. */
   todoProcSlicePages: 3,
+  /**
+   * Stop a list's first Proc* scan after this many slices in a row with no row assigned
+   * to the user. Rows come newest-modified first, so a long empty run means the rest is
+   * old; its cursor stays for "Load older" and the background drain skips that list.
+   */
+  todoProcEmptySlicesBeforeStop: 2,
   /** Minimum gap between To Do repaints while lists stream in (ms). */
   todoPartialPublishMs: 500,
   /** Background drain chunk size for remaining Progress=Pending procurement cursors. */

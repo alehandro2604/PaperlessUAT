@@ -167,8 +167,6 @@ const SEARCH_DEBOUNCE_MS = 250;
 const RENDER_PAGE_SIZE = 100;
 /** Start rendering the next page when this close (px) to the bottom of the list. */
 const RENDER_AHEAD_PX = 800;
-/** Debounce folder-prefetch emissions so progressive paint doesn't spam the parent. */
-const PREFETCH_EMIT_DEBOUNCE_MS = 1500;
 /** Memory-only Comments search index (never Redis — payloads hit HTTP 413). */
 const COMMENT_TASKS_CACHE_KEY = 'tasks:all-files-comments:v2-mem';
 const DRIVES_CACHE_KEY = 'files:drives:v1';
@@ -220,8 +218,6 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   /** Asks parent to quietly cache Attachments for All Files folders during search. */
   @Output() ensureFolderAttachments = new EventEmitter<{ driveId: string; folderId: string }>();
   @Output() librarySelected: EventEmitter<{ name: string; driveId: string }> = new EventEmitter();
-  /** Visible folders for the parent to idle-prefetch into the per-folder contents cache. */
-  @Output() foldersForPrefetch = new EventEmitter<Array<{ driveId: string; folderId: string }>>();
   /** Emits when the Select status filter changes (filters Comments in the parent). */
   @Output() approvalFilterChange = new EventEmitter<string>();
   searchTerm = '';
@@ -286,6 +282,14 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   isSearchingMoreFiles = false;
   /** True while Microsoft Graph drive search is running for the current query. */
   isGraphSearching = false;
+  /**
+   * True from the keystroke until every stage of the current All/Files folder search
+   * (debounce, Graph name search, cached roots, root crawl) has finished. The stages
+   * hand over to each other, so between them no single loading flag is set and
+   * "No matching folders found." used to flash before the results arrived.
+   */
+  isFolderSearchPending = false;
+  private folderSearchRun = 0;
   /** Folder hits from Graph drive search (merged into Files/All filtered views). */
   private graphSearchFolders: SpFile[] = [];
   private graphSearchSeq = 0;
@@ -317,9 +321,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
   private fullyLoadedAllLibraries = new Set<string>();
 
   private searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private prefetchEmitTimer: ReturnType<typeof setTimeout> | null = null;
   private commentSearchFilterTimer: ReturnType<typeof setTimeout> | null = null;
-  private lastPrefetchSignature = '';
   private readonly subscriptions = new Subscription();
   private viewDestroyed = false;
 
@@ -499,7 +501,6 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     this.subscriptions.unsubscribe();
     this.commentTasksWarmAborted = true;
     if (this.searchDebounceTimer) clearTimeout(this.searchDebounceTimer);
-    if (this.prefetchEmitTimer) clearTimeout(this.prefetchEmitTimer);
     if (this.commentSearchFilterTimer) clearTimeout(this.commentSearchFilterTimer);
   }
 
@@ -553,9 +554,13 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         if (!drive) continue;
 
         // Prefer a complete per-library cache so switching libraries / remounts stay instant.
-        // Pull this library's shared Redis entry into memory first (no-op if already loaded).
-        await this.fileCrawlCache.hydrateFromPersistent(this.libraryFilesCacheKey(library.name));
-        const libCached = this.readLibraryFilesCache(library.name);
+        // Pull this library's shared Redis entry into memory first, unless it is already
+        // there (hydrate always asks the backend, e.g. after loadCachedLibraryRoots).
+        let libCached = this.readLibraryFilesCache(library.name);
+        if (!libCached) {
+          await this.fileCrawlCache.hydrateFromPersistent(this.libraryFilesCacheKey(library.name));
+          libCached = this.readLibraryFilesCache(library.name);
+        }
         if (libCached?.complete && libCached.items.length > 0) {
           this.fullyLoadedAllLibraries.add(library.name);
           const tagged = libCached.items.map((item) => ({
@@ -636,6 +641,46 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
       }
       this.isLoadingAllLibraries = false;
       this.allLibrariesCrawlActive = false;
+      this.refreshView();
+    }
+  }
+
+  /**
+   * Paint every library whose complete root list is already cached (memory or shared
+   * Redis). Backend reads only, all at once and no Graph, so it can run while the Graph
+   * name search holds the Graph slots. loadAllLibrariesFiles later crawls the rest.
+   */
+  private async loadCachedLibraryRoots(): Promise<void> {
+    if (this.isLoadingAllLibraries || this.allLibrariesCrawlActive) return;
+    const pending = this.documentLibraries.filter((l) => !this.fullyLoadedAllLibraries.has(l.name));
+    if (pending.length === 0) return;
+
+    await Promise.all(
+      pending
+        .filter((l) => !this.readLibraryFilesCache(l.name))
+        .map((l) => this.fileCrawlCache.hydrateFromPersistent(this.libraryFilesCacheKey(l.name))),
+    );
+
+    let added = false;
+    for (const library of pending) {
+      const libCached = this.readLibraryFilesCache(library.name);
+      if (!libCached?.complete || libCached.items.length === 0) continue;
+      // Without a drive id the rows cannot be opened; the full pass fills it from /drives.
+      const driveId = libCached.driveId ?? libCached.items.find((f) => f.driveId)?.driveId;
+      if (!driveId) continue;
+      const tagged = libCached.items.map((item) => ({
+        ...item,
+        libraryName: library.name,
+        driveId: item.driveId ?? driveId,
+      }));
+      const others = this.allLibrariesFiles.filter((f) => f.libraryName !== library.name);
+      this.allLibrariesFiles = [...others, ...tagged];
+      this.fullyLoadedAllLibraries.add(library.name);
+      added = true;
+    }
+
+    if (added && this.filterType !== 'files') {
+      this.applyFilters();
       this.refreshView();
     }
   }
@@ -1615,20 +1660,27 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     this.graphSearchFolders = [];
     this.graphAttachmentHits = [];
     this.isGraphSearching = false;
+    this.clearFolderSearchPending();
 
     if (this.filterType === 'files') {
-      void this.loadFiles().then(() => {
-        if (this.searchTerm.trim()) {
-          void this.continueFilesSearchInBackground();
-          void this.searchFoldersViaGraph(this.searchTerm.trim(), 'files');
-        }
-      });
+      const term = this.searchTerm.trim();
+      if (!term) {
+        void this.loadFiles();
+        return;
+      }
+      this.trackFolderSearch(this.loadFiles().then(() => {
+        if (this.searchTerm.trim() !== term) return;
+        return Promise.all([
+          this.continueFilesSearchInBackground(),
+          this.searchFoldersViaGraph(term, 'files'),
+        ]);
+      }));
       return;
     }
     if (this.filterType === 'all') {
       this.applyFilters();
       if (this.searchTerm.trim()) {
-        void this.searchAllLibraries(this.searchTerm.trim());
+        this.trackFolderSearch(this.searchAllLibraries(this.searchTerm.trim()));
       }
       return;
     }
@@ -1651,8 +1703,29 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     this.applyFilters();
   }
 
+  /** Keep isFolderSearchPending on until `work` settles, unless a newer search took over. */
+  private trackFolderSearch(work: Promise<unknown>): void {
+    const run = ++this.folderSearchRun;
+    this.isFolderSearchPending = true;
+    void work.finally(() => {
+      if (run !== this.folderSearchRun) return;
+      this.isFolderSearchPending = false;
+      this.refreshView();
+    });
+  }
+
+  /** Stop any pending-search state, e.g. the term was cleared or the view changed. */
+  private clearFolderSearchPending(): void {
+    this.folderSearchRun++;
+    this.isFolderSearchPending = false;
+  }
+
   searchFiles(searchTerm: string): void {
     this.searchTerm = searchTerm ?? '';
+    // Pending from the keystroke, so the debounce gap does not read as "nothing found".
+    this.folderSearchRun++;
+    this.isFolderSearchPending =
+      !!this.searchTerm.trim() && (this.filterType === 'all' || this.filterType === 'files');
     if (this.searchDebounceTimer) clearTimeout(this.searchDebounceTimer);
     this.searchDebounceTimer = setTimeout(() => {
       this.searchDebounceTimer = null;
@@ -1692,18 +1765,25 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
     if (this.filterType === 'files') {
       this.applyFilters();
       if (term) {
-        void this.continueFilesSearchInBackground();
-        void this.searchFoldersViaGraph(term, 'files');
+        this.trackFolderSearch(Promise.all([
+          this.continueFilesSearchInBackground(),
+          this.searchFoldersViaGraph(term, 'files'),
+        ]));
+      } else {
+        this.clearFolderSearchPending();
       }
       return;
     }
     if (this.filterType === 'all') {
       this.applyFilters();
       if (term) {
-        void this.searchAllLibraries(term);
+        this.trackFolderSearch(this.searchAllLibraries(term));
+      } else {
+        this.clearFolderSearchPending();
       }
       return;
     }
+    this.clearFolderSearchPending();
     this.applyFilters();
   }
 
@@ -1713,9 +1793,14 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
    * loaded in the background so matches on Assigned To / library also appear.
    */
   private async searchAllLibraries(term: string): Promise<void> {
-    // Let the search have Graph to itself first; the full root crawl (which adds
-    // Assigned To / library matches) starts only once the first results are in.
+    // Cached root lists come from Redis, not Graph, so read them alongside the name
+    // search: Assigned To / library matches then show in ~1-2 s instead of waiting
+    // for every library's name search first.
+    const cachedRoots = this.loadCachedLibraryRoots();
+    // Let the search have Graph to itself first; the root crawl of libraries with no
+    // cached list starts only once the first results are in.
     await this.searchFoldersViaGraph(term, 'all');
+    await cachedRoots;
     if (this.filterType !== 'all' || this.searchTerm.trim() !== term) return;
     await this.loadAllLibrariesFiles();
     if (this.filterType === 'all' && this.searchTerm.trim()) {
@@ -1814,42 +1899,7 @@ export class AllFilesComponent implements OnInit, OnDestroy {//component that di
         this.applyCommentsFilter(term);
         break;
     }
-    this.emitFoldersForPrefetch();
     this.refreshView();
-  }
-
-  private emitFoldersForPrefetch(): void {
-    // Don't compete with active Graph work — prefetch was a major 429 source.
-    if (
-      this.allLibrariesCrawlActive ||
-      this.isLoadingAllLibraries ||
-      this.isLoading ||
-      this.isLoadingMoreFiles ||
-      this.isSearchingMoreFiles ||
-      this.isSearchingMoreCommentTasks ||
-      this.isCrawlingCommentTasks ||
-      this.isSearchingMoreAttachments ||
-      this.commentTasksFetchInFlight ||
-      this.isLoadingMoreCommentTasks
-    ) {
-      return;
-    }
-
-    const folders = this.files
-      .filter((file) => file.isfolder && !!file.driveId)
-      .slice(0, 8)
-      .map((file) => ({ driveId: file.driveId!, folderId: file.id }));
-    if (folders.length === 0) return;
-
-    const signature = folders.map((f) => `${f.driveId}:${f.folderId}`).join('|');
-    if (signature === this.lastPrefetchSignature) return;
-
-    if (this.prefetchEmitTimer) clearTimeout(this.prefetchEmitTimer);
-    this.prefetchEmitTimer = setTimeout(() => {
-      this.prefetchEmitTimer = null;
-      this.lastPrefetchSignature = signature;
-      this.foldersForPrefetch.emit(folders);
-    }, PREFETCH_EMIT_DEBOUNCE_MS);
   }
 
   /** All: show folders across every library (AllFiles order), filtered by folder reference. */

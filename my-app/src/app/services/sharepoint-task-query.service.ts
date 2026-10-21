@@ -18,12 +18,22 @@ import { graphGet, graphGetWithRetry, toGraphPath } from '../microsoft-graph';
 import { buildPersonLookupFilterExpr } from '../utils/hr-task-matching';
 import { getEmailFromHrFolderName } from '../utils/person-name-matching';
 import { SubordinaryTaskService } from './subordinaryTask.service';
+import { AuthService } from './auth.service';
+
+/**
+ * Title probes test a filter expression, not a column (every list has Title). Once one has
+ * failed on this many lists and worked on none, it is skipped everywhere without probing.
+ */
+const EXPRESSION_PROBE_FIELDS = new Set(['TitleContains', 'TitleEq', 'TitlePinEmail', 'TitlePinPrefix']);
+const DEAD_PROBE_MIN_FAILED_LISTS = 5;
+const SHARED_FILTER_SAVE_DEBOUNCE_MS = 2000;
 
 @Injectable({ providedIn: 'root' })
 export class SharePointTaskQueryService {
   constructor(
     private readonly http: HttpClient,
     private readonly subordinaryTaskService: SubordinaryTaskService,
+    private readonly auth: AuthService,
   ) { }
 
 
@@ -39,6 +49,7 @@ export class SharePointTaskQueryService {
       folderPin?: string;
     },
   ): Promise<any[] | null> {
+    await this.loadSharedListFilterStatus();
     const prefer = { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' };
     const filters: Array<{ field: string; expr: string }> = [];
 
@@ -122,6 +133,8 @@ export class SharePointTaskQueryService {
   private listFilterStatusHydrated = false;
   /** Person/group columns discovered via Graph columns API (avoids filter probes that 400/404). */
   private readonly listPersonColumnsCache = new Map<string, Array<{ name: string; allowMultiple: boolean }>>();
+  /** One columns-API answer per list (null = lookup failed), shared by person and eForm id checks. */
+  private readonly listColumnsCache = new Map<string, Promise<any[] | null>>();
   /** Lists where AssignedToLookupId filter already returned 400/404 - skip on future To Do loads. */
   private readonly assigneeLookupBlockedListIds = new Set<string>();
   private readonly sharePointListOrderBySupported = new Map<string, boolean>();
@@ -149,13 +162,152 @@ export class SharePointTaskQueryService {
     this.listFilterFieldStatus.clear();
     this.assigneeLookupBlockedListIds.clear();
     this.listPersonColumnsCache.clear();
+    this.listColumnsCache.clear();
     this.sharePointListOrderBySupported.clear();
     this.eFormChunkSizeByListId.clear();
+    this.filterFieldStats.clear();
+    this.sharedFilterLoad = null;
+    this.sharedFilterKnown.clear();
+    this.pendingSharedFields.clear();
+    this.pendingSharedOrderBy.clear();
+    if (this.sharedFilterSaveTimer) {
+      clearTimeout(this.sharedFilterSaveTimer);
+      this.sharedFilterSaveTimer = null;
+    }
     this.listFilterStatusHydrated = false;
   }
   getListFilterFieldStatus(listId: string, field: string): boolean | undefined {
     this.ensureListFilterStatusHydrated();
-    return this.listFilterFieldStatus.get(listId)?.get(field);
+    const known = this.listFilterFieldStatus.get(listId)?.get(field);
+    if (known !== undefined) return known;
+    return this.isDeadExpressionProbe(field) ? false : undefined;
+  }
+
+  /** A Title expression that failed on several lists and never worked — not worth probing. */
+  private isDeadExpressionProbe(field: string): boolean {
+    if (!EXPRESSION_PROBE_FIELDS.has(field)) return false;
+    const stats = this.filterFieldStats.get(field);
+    return !!stats && stats.ok === 0 && stats.failed >= DEAD_PROBE_MIN_FAILED_LISTS;
+  }
+
+  /** Lists where each field worked / failed, for isDeadExpressionProbe. */
+  private readonly filterFieldStats = new Map<string, { ok: number; failed: number }>();
+
+  private countFilterResult(field: string, previous: boolean | undefined, works: boolean): void {
+    if (previous === works) return;
+    const stats = this.filterFieldStats.get(field) ?? { ok: 0, failed: 0 };
+    if (previous === true) stats.ok -= 1;
+    if (previous === false) stats.failed -= 1;
+    if (works) stats.ok += 1;
+    else stats.failed += 1;
+    this.filterFieldStats.set(field, stats);
+  }
+
+  // ── Shared with other users through Redis (/api/cache/list-filters) ──
+  private sharedFilterLoad: Promise<void> | null = null;
+  /** What Redis already holds, so only new or changed results are uploaded. */
+  private readonly sharedFilterKnown = new Map<string, boolean>();
+  private readonly pendingSharedFields = new Map<string, Map<string, boolean>>();
+  private readonly pendingSharedOrderBy = new Map<string, boolean>();
+  private sharedFilterSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Pull the filter results other users have learned, once per session, so their failed
+   * probes are not repeated here. This browser's own results win; anything it knows that
+   * Redis does not is uploaded. Failures are ignored (probing still works without it).
+   */
+  loadSharedListFilterStatus(): Promise<void> {
+    this.sharedFilterLoad ??= (async () => {
+      this.ensureListFilterStatusHydrated();
+      try {
+        const res = await firstValueFrom(this.http.get<{
+          fields?: Record<string, Record<string, boolean>>;
+          orderBy?: Record<string, boolean>;
+        }>(`${sharePointConfig.backendUrl}/api/cache/list-filters`, { headers: await this.backendHeaders() }));
+        for (const [listId, byField] of Object.entries(res?.fields ?? {})) {
+          for (const [field, ok] of Object.entries(byField ?? {})) {
+            this.sharedFilterKnown.set(`${listId}|${field}`, ok === true);
+            if (this.listFilterFieldStatus.get(listId)?.get(field) === undefined) {
+              this.markListFilterField(listId, field, ok === true, false);
+            }
+          }
+        }
+        for (const [listId, ok] of Object.entries(res?.orderBy ?? {})) {
+          this.sharedFilterKnown.set(`${listId}|$orderby`, ok === true);
+          if (!this.sharePointListOrderBySupported.has(listId)) {
+            this.sharePointListOrderBySupported.set(listId, ok === true);
+          }
+        }
+        this.persistListFilterStatus();
+      } catch (err) {
+        console.warn('[list-filters] shared results unavailable; probing as usual', err);
+        return;
+      }
+      // Seed Redis with what this browser learned before results were shared.
+      for (const [listId, byField] of this.listFilterFieldStatus) {
+        for (const [field, ok] of byField) this.queueSharedFilterResult(listId, field, ok);
+      }
+      for (const [listId, ok] of this.sharePointListOrderBySupported) {
+        this.queueSharedOrderByResult(listId, ok);
+      }
+    })();
+    return this.sharedFilterLoad;
+  }
+
+  private queueSharedFilterResult(listId: string, field: string, works: boolean): void {
+    if (this.sharedFilterKnown.get(`${listId}|${field}`) === works) return;
+    let byField = this.pendingSharedFields.get(listId);
+    if (!byField) {
+      byField = new Map();
+      this.pendingSharedFields.set(listId, byField);
+    }
+    byField.set(field, works);
+    this.scheduleSharedFilterSave();
+  }
+
+  private queueSharedOrderByResult(listId: string, works: boolean): void {
+    if (this.sharedFilterKnown.get(`${listId}|$orderby`) === works) return;
+    this.pendingSharedOrderBy.set(listId, works);
+    this.scheduleSharedFilterSave();
+  }
+
+  private scheduleSharedFilterSave(): void {
+    // Nothing is uploaded before the shared results were read (that read seeds the queue).
+    if (!this.sharedFilterLoad) return;
+    if (this.sharedFilterSaveTimer) clearTimeout(this.sharedFilterSaveTimer);
+    this.sharedFilterSaveTimer = setTimeout(() => {
+      this.sharedFilterSaveTimer = null;
+      void this.flushSharedFilterResults();
+    }, SHARED_FILTER_SAVE_DEBOUNCE_MS);
+  }
+
+  private async flushSharedFilterResults(): Promise<void> {
+    if (this.pendingSharedFields.size === 0 && this.pendingSharedOrderBy.size === 0) return;
+    const fields: Record<string, Record<string, boolean>> = {};
+    for (const [listId, byField] of this.pendingSharedFields) fields[listId] = Object.fromEntries(byField);
+    const orderBy = Object.fromEntries(this.pendingSharedOrderBy);
+    this.pendingSharedFields.clear();
+    this.pendingSharedOrderBy.clear();
+    try {
+      await firstValueFrom(this.http.put(
+        `${sharePointConfig.backendUrl}/api/cache/list-filters`,
+        { fields, orderBy },
+        { headers: await this.backendHeaders() },
+      ));
+      for (const [listId, byField] of Object.entries(fields)) {
+        for (const [field, ok] of Object.entries(byField)) this.sharedFilterKnown.set(`${listId}|${field}`, ok);
+      }
+      for (const [listId, ok] of Object.entries(orderBy)) this.sharedFilterKnown.set(`${listId}|$orderby`, ok);
+    } catch (err) {
+      // Best effort: the next new result re-queues; this browser keeps its own copy anyway.
+      console.warn('[list-filters] could not share filter results', err);
+    }
+  }
+
+  /** Token for the Paperless backend API (not Graph), as TodoTaskStoreService uses. */
+  private async backendHeaders(): Promise<{ Authorization: string }> {
+    const token = await this.auth.acquireTokenSilent([sharePointConfig.backendApiScope]);
+    return { Authorization: `Bearer ${token}` };
   }
 
   /** Whether this list is known to accept $orderby on item queries (undefined = untested). */
@@ -171,11 +323,17 @@ export class SharePointTaskQueryService {
       byField = new Map();
       this.listFilterFieldStatus.set(listId, byField);
     }
+    const previous = byField.get(field);
     byField.set(field, works);
+    this.countFilterResult(field, previous, works);
     if (field === 'AssignedToLookupId' && works === false) {
       this.assigneeLookupBlockedListIds.add(listId);
     }
-    if (persist) this.persistListFilterStatus();
+    // persist=false is a restore from storage/Redis, not a new finding — nothing to share.
+    if (persist && previous !== works) {
+      this.persistListFilterStatus();
+      this.queueSharedFilterResult(listId, field, works);
+    }
   }
 
   private listFilterStatusLsKey(): string {
@@ -221,8 +379,10 @@ export class SharePointTaskQueryService {
   /** Remember whether this list accepts $orderby on item queries (and persist). */
   private markListOrderBySupported(listId: string, works: boolean): void {
     this.ensureListFilterStatusHydrated();
+    if (this.sharePointListOrderBySupported.get(listId) === works) return;
     this.sharePointListOrderBySupported.set(listId, works);
     this.persistListFilterStatus();
+    this.queueSharedOrderByResult(listId, works);
   }
 
   /** Known-good fields first, then untried; skip fields that already returned 400/404 for this list. */
@@ -251,25 +411,55 @@ export class SharePointTaskQueryService {
     const cached = this.listPersonColumnsCache.get(listId);
     if (cached) return cached;
 
-    try {
-      const resp: any = await firstValueFrom(
+    const columns = await this.getListColumns(siteId, listId, token);
+    const cols = (columns ?? [])
+      .filter((col: any) => !!col?.personOrGroup && !!col?.name)
+      .map((col: any) => ({
+        name: String(col.name),
+        allowMultiple: col.personOrGroup.allowMultipleSelection === true,
+      }));
+    this.listPersonColumnsCache.set(listId, cols);
+    return cols;
+  }
+
+  /** The list's columns from the Graph columns API, fetched once per list per session. */
+  private getListColumns(siteId: string, listId: string, token: string): Promise<any[] | null> {
+    let pending = this.listColumnsCache.get(listId);
+    if (!pending) {
+      pending = firstValueFrom(
         graphGet(
           this.http,
-          `/sites/${siteId}/lists/${listId}/columns?$select=name,displayName,personOrGroup`,
+          `/sites/${siteId}/lists/${listId}/columns?$select=name,displayName,personOrGroup,text`,
           token,
         ),
-      );
-      const cols = (resp?.value ?? [])
-        .filter((col: any) => !!col?.personOrGroup && !!col?.name)
-        .map((col: any) => ({
-          name: String(col.name),
-          allowMultiple: col.personOrGroup.allowMultipleSelection === true,
-        }));
-      this.listPersonColumnsCache.set(listId, cols);
-      return cols;
-    } catch {
-      this.listPersonColumnsCache.set(listId, []);
-      return [];
+      )
+        .then((resp: any) => (resp?.value ?? []) as any[])
+        .catch(() => null);
+      this.listColumnsCache.set(listId, pending);
+    }
+    return pending;
+  }
+
+  /**
+   * Settle untested eForm id columns from column metadata, so a list without the column
+   * (or with it as multi-line text, which $filter rejects) is never probed with a filter
+   * that 400s. Leaves them untested when the columns lookup itself fails.
+   */
+  private async markEFormKeyColumnsFromMetadata(
+    siteId: string,
+    listId: string,
+    token: string,
+    fields: string[],
+  ): Promise<void> {
+    const untested = fields.filter(field => this.getListFilterFieldStatus(listId, field) === undefined);
+    if (untested.length === 0) return;
+    const columns = await this.getListColumns(siteId, listId, token);
+    if (!columns) return;
+    for (const field of untested) {
+      const col = columns.find((c: any) => String(c?.name ?? '').toLowerCase() === field.toLowerCase());
+      if (!col || col.text?.allowMultipleLines === true) {
+        this.markListFilterField(listId, field, false);
+      }
     }
   }
 
@@ -309,9 +499,12 @@ export class SharePointTaskQueryService {
     token: string,
     eFormKeys: Set<string>,
   ): Promise<any[]> {
+    await this.loadSharedListFilterStatus();
     const prefer = { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' };
     const byId = new Map<string, any>();
-    const fieldNames = this.orderFilterableFields(listId, ['eFormListId', 'ListId', 'field_11']);
+    const candidates = ['eFormListId', 'ListId', 'field_11'];
+    await this.markEFormKeyColumnsFromMetadata(siteId, listId, token, candidates);
+    const fieldNames = this.orderFilterableFields(listId, candidates);
     if (fieldNames.length === 0) return [];
     const keys = [...eFormKeys];
 
@@ -406,6 +599,7 @@ export class SharePointTaskQueryService {
 
   /** Resolve SharePoint site-local user Id (LookupId) from email via User Information List. */
   async resolveSharePointUserLookupId(email: string, token: string): Promise<string | null> {
+    await this.loadSharedListFilterStatus();
     const emailLower = email.trim().toLowerCase();
     if (!emailLower || !this.siteId) return null;
     const cached = this.sharePointUserLookupIdByEmail.get(emailLower);
@@ -511,6 +705,7 @@ export class SharePointTaskQueryService {
       onIncomplete?: () => void;
     },
   ): Promise<any[] | null> {
+    await this.loadSharedListFilterStatus();
     const prefer = { Prefer: 'HonorNonIndexedQueriesWarningMayFailRandomly' };
     const preferredBases = ['Requestor', 'Author', 'SubmittedBy', 'CreatedBy', 'Employee', 'EmployeeName'];
     const skipBases = new Set([
@@ -648,6 +843,7 @@ export class SharePointTaskQueryService {
       onPage?: (items: any[]) => void;
     },
   ): Promise<any[] | null> {
+    await this.loadSharedListFilterStatus();
     if (this.assigneeLookupBlockedListIds.has(listId)) return null;
     if (this.getListFilterFieldStatus(listId, 'AssignedToLookupId') === false) {
       this.assigneeLookupBlockedListIds.add(listId);

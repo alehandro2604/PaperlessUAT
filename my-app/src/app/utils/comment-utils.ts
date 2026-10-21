@@ -247,3 +247,31 @@ export function buildQuickCommentItemFromSearchHit(hit: CommentSearchHit, listNa
     },
   };
 }
+
+/** Newest submittedDate first - ignore submitter for ordering. */
+export function sortCommentItemsByDateDesc<T extends { submittedDate?: string; lastModifiedDateTime?: string }>(
+  items: T[],
+): T[] {
+  return [...items].sort(
+    (a, b) =>
+      new Date(b.submittedDate || b.lastModifiedDateTime || 0).getTime() -
+      new Date(a.submittedDate || a.lastModifiedDateTime || 0).getTime(),
+  );
+}
+
+export function applyDueDatePatch(item: any, dueDate: string): any {
+  const details = { ...(item?.eFormDetails ?? {}) };
+  const rawFields = { ...(details.rawFields ?? {}) };
+  let wroteRaw = false;
+  for (const key of ['DueDate', 'DueDate0', 'Due', 'Due_x0020_Date'] as const) {
+    if (Object.prototype.hasOwnProperty.call(rawFields, key)) {
+      rawFields[key] = dueDate;
+      wroteRaw = true;
+      break;
+    }
+  }
+  if (!wroteRaw) rawFields['DueDate'] = dueDate;
+  details.dueDate = dueDate;
+  details.rawFields = rawFields;
+  return { ...item, dueDate, eFormDetails: details };
+}

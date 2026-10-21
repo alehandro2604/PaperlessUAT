@@ -32,7 +32,8 @@ interface TodoResponse {
 /** Same freshness window as FileCrawlCacheService.CACHE_TTL. */
 const FRESH_FOR_MS = 60 * 60 * 1000;
 const SAVE_DEBOUNCE_MS = 1500;
-const UPSERTS_PER_REQUEST = 200;
+/** Backend cap is MAX_TODO_UPSERTS_PER_CALL (500) in cacheRoutes.js. */
+const UPSERTS_PER_REQUEST = 500;
 
 /** FNV-1a, as in cache.ts — detects which tasks changed since they were last saved. */
 function fingerprint(text: string): string {
@@ -62,6 +63,8 @@ export class TodoTaskStoreService {
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   /** Saves run one after another so a delete can never overtake an earlier upload. */
   private saving: Promise<void> = Promise.resolve();
+  /** While above zero, changes are only collected; the upload waits for releaseSaves(). */
+  private holds = 0;
 
   constructor(
     private readonly http: HttpClient,
@@ -179,7 +182,26 @@ export class TodoTaskStoreService {
     this.loaded = true;
   }
 
+  /**
+   * Collect changes without uploading, e.g. while a To Do load repaints every few
+   * hundred ms. Each call needs a matching releaseSaves().
+   */
+  holdSaves(): void {
+    this.holds += 1;
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+  }
+
+  /** End a holdSaves(); the last release uploads everything collected in one save. */
+  releaseSaves(): void {
+    this.holds = Math.max(0, this.holds - 1);
+    if (this.holds === 0) this.scheduleSave();
+  }
+
   private scheduleSave(): void {
+    if (this.holds > 0) return;
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
@@ -198,7 +220,11 @@ export class TodoTaskStoreService {
 
     try {
       const headers = await this.headers();
-      // One request when there are only removals; otherwise chunks of 200 tasks.
+      console.info(
+        `[todo-store] saving ${upserts.length} changed and ${removes.length} removed tasks ` +
+        `(${this.items.length} in To Do cache)`,
+      );
+      // One request when there are only removals; otherwise chunks of UPSERTS_PER_REQUEST tasks.
       for (let i = 0; i < Math.max(upserts.length, 1); i += UPSERTS_PER_REQUEST) {
         const chunk = upserts.slice(i, i + UPSERTS_PER_REQUEST);
         await firstValueFrom(this.http.put(`${this.base}/tasks`, {

@@ -1,0 +1,42 @@
+<div class="attachment-table-wrapper">
+  <div class="attachment-table-header">
+    <span class="att-col-name">Name</span>
+    <span class="att-col-date">Date</span>
+    <span class="att-col-author">Author</span>
+  </div>
+
+  @for (item of files(); track item.id) {
+    <div class="attachment-table-row"
+      [id]="'attachment-item-' + item.id"
+      [class.attachment-item-highlight]="highlightedId() === item.id"
+      [class.attachment-row-folder]="item.isFolder"
+      [class.attachment-row-file]="!item.isFolder"
+      (mouseenter)="onHover(item)"
+      (mouseleave)="onHoverLeave()"
+      (click)="onClick(item)">
+
+      <span class="att-col-name">
+        @if (item.isFolder) {
+          <span class="att-folder-link" (click)="folderOpened.emit(item)">
+            <img src="/folder.png" alt="folder" class="att-folder-icon" />
+            {{ item.name }}
+          </span>
+        } @else {
+          <a class="att-file-link" [href]="item.webUrl" target="_blank" rel="noopener noreferrer">
+            <img [src]="item.fileIcon || '/files.png'" alt="file" class="att-file-icon" />
+            {{ item.name }}
+          </a>
+        }
+      </span>
+
+      <span class="att-col-date att-meta">
+        {{ item.lastModifiedDateTime ? (item.lastModifiedDateTime | date: 'dd/MM/yyyy') : '—' }}
+      </span>
+      <span class="att-col-author att-meta">
+        {{ item.modifiedBy || fallbackAuthor() || '—' }}
+      </span>
+    </div>
+  } @empty {
+    <p>No files found in this folder.</p>
+  }
+</div>

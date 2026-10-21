@@ -379,3 +379,16 @@
 
 .att-col-author { grid-area: author; text-align: left; margin-left: 0; }
 .att-col-date   { grid-area: date;   text-align: right; margin: 0; }
+
+/* ── File list + preview sharing the card ──────────────────────
+   With a preview open, the list only takes the height its files need
+   (max 40%, then it scrolls) and the preview fills everything left. */
+.attachment-list--with-preview {
+  flex: 0 1 auto;      /* size to content, may shrink */
+  max-height: 40%;
+}
+.attachment-preview-slot {
+  flex: 1 1 0;         /* take all remaining height */
+  min-height: 260px;   /* stay readable on short screens */
+  margin-top: 10px;
+}

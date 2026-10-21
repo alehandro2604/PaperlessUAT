@@ -29,6 +29,32 @@ async function getUserDrives(req, client, siteId) {
   return drives;
 }
 
+// Lists this user can see, so a task-list key can be matched by internal name. Asking Graph
+// for /lists/{name} matches the list's title instead, so a list whose title differs from
+// its internal name (e.g. ProcTasks1) was a 404 and its shared Comments were always denied.
+async function getUserLists(req, client, siteId) {
+  const key = `perm:${req.userOid}:lists`;
+  const cached = await redisClient.get(key);
+  if (cached) return JSON.parse(cached);
+  const lists = [];
+  let page = await client.api(`/sites/${siteId}/lists`).select('id,name,displayName').top(999).get();
+  for (;;) {
+    for (const l of page.value ?? []) lists.push({ id: l.id, name: l.name, displayName: l.displayName });
+    const next = page['@odata.nextLink'];
+    if (!next) break;
+    page = await client.api(next).get();
+  }
+  await redisClient.setEx(key, ALLOW_TTL, JSON.stringify(lists));
+  return lists;
+}
+
+// Internal (URL) name first, then title, as AppComponent.findSiteList does.
+function findList(lists, listName) {
+  const key = norm(listName);
+  return (lists ?? []).find((l) => norm(l.name) === key)
+    ?? (lists ?? []).find((l) => norm(l.displayName) === key);
+}
+
 // Key → which SharePoint object guards it. null = unknown shape → deny.
 function describeKey(key, ctx) {
   let m = key.match(/^fc:files:folder:([^:]+):([^:]+)$/);
@@ -44,7 +70,11 @@ function describeKey(key, ctx) {
   }
 
   m = key.match(/^fc:tasks:lib:v\d+:([^:]+):/);
-  if (m) return { resource: `list:${m[1]}`, path: `/sites/${ctx.siteId}/lists/${encodeURIComponent(m[1])}?$select=id` };
+  if (m) {
+    const list = findList(ctx.lists, m[1]);
+    if (!list) return null;
+    return { resource: `list:${list.id}`, path: `/sites/${ctx.siteId}/lists/${list.id}?$select=id` };
+  }
 
   // `ids:` = cached { email, lookupId } for the person — same folder guards it.
   m = key.match(/^fc:tasks:hr-folder:(?:v\d+:|ids:)?(.+)$/);
@@ -64,7 +94,9 @@ async function filterAllowedKeys(req, keys) {
     client = await getGraphClient(req.userToken);          // OBO: acts as the user
     const siteId = await getSiteId(client);
     const drives = await getUserDrives(req, client, siteId);
-    ctx = { siteId, drives, hrDriveId: drives.find((d) => norm(d.name) === norm(HR_LIBRARY))?.id };
+    // Only fetched when a task-list key is being checked.
+    const lists = keys.some((k) => /^fc:tasks:lib:/.test(k)) ? await getUserLists(req, client, siteId) : [];
+    ctx = { siteId, drives, lists, hrDriveId: drives.find((d) => norm(d.name) === norm(HR_LIBRARY))?.id };
   } catch (err) {
     console.warn('[perm] cannot verify, denying shared cache:', err.message);
     return allowed;                                        // fail closed
