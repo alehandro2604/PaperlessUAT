@@ -20,9 +20,10 @@
 9. [The new attachment preview](#9-the-new-attachment-preview)
 10. [How the cleanup was done safely](#10-how-the-cleanup-was-done-safely)
 11. ["I want to change X – which file?"](#11-i-want-to-change-x--which-file)
-12. [What is still left to improve](#12-what-is-still-left-to-improve)
-13. [Glossary](#13-glossary)
-14. [Commit history of this work](#14-commit-history-of-this-work)
+12. [Something's wrong? Where to look (troubleshooting scenarios)](#12-somethings-wrong-where-to-look-troubleshooting-scenarios)
+13. [What is still left to improve](#13-what-is-still-left-to-improve)
+14. [Glossary](#14-glossary)
+15. [Commit history of this work](#15-commit-history-of-this-work)
 
 ---
 
@@ -87,7 +88,7 @@ Two more ideas you need:
 
 **`providedIn: 'root'` = one shared instance.** Every store and service here is created once for the whole app. When `AppComponent` and `TodoStore` both `inject(CommentsStore)`, they get *the same object* – so they see the same data.
 
-**"Zoneless" and `refreshView()`.** This app runs Angular *without Zone.js*. That means Angular does **not** notice when a normal variable changes after an `await` or a `setTimeout`. The code therefore calls `refreshView()` after changing state, which redraws the screen. (Signals don't need this – see [section 12](#12-what-is-still-left-to-improve).)
+**"Zoneless" and `refreshView()`.** This app runs Angular *without Zone.js*. That means Angular does **not** notice when a normal variable changes after an `await` or a `setTimeout`. The code therefore calls `refreshView()` after changing state, which redraws the screen. (Signals don't need this – see [section 13](#13-what-is-still-left-to-improve).)
 
 ---
 
@@ -453,7 +454,306 @@ timeline
 
 ---
 
-## 12. What is still left to improve
+## 12. Something's wrong? Where to look (troubleshooting scenarios)
+
+Use this when something breaks: find the symptom, then go to the file and function named. Paths are relative to `my-app/src/app/` unless they start with `paperless-backend/`.
+
+### 12.0 First, how to see what's happening
+
+Almost every problem below is found the same way:
+
+```mermaid
+flowchart LR
+    A["Press F12"] --> B["<b>Console</b> tab<br/>red errors, warnings,<br/>[todo] / [Attachments search] logs"]
+    A --> C["<b>Network</b> tab<br/>filter: graph.microsoft.com<br/>or localhost:300"]
+    C --> D["click a red row →<br/>Status code + Response"]
+    D --> E["look the status up<br/>in the table below"]
+```
+
+**Status codes in one line each:** `401` not signed in / token expired · `403` no permission · `404` not found · `413` request too big · `429` too many requests (throttled) · `500`/`502`/`503` the server failed · `(failed)` network/backend not reachable.
+
+### 12.1 Quick lookup
+
+| You see… | Most likely cause | Look in |
+|---|---|---|
+| **429** errors in Network, things load slowly or stop | SharePoint is throttling us – too many Graph calls at once | [12.2](#122-429-too-many-requests--sharepoint-throttling) – `microsoft-graph.ts`, `app.constants.ts` |
+| **401** / "InteractionRequired", stuck on sign-in | token expired or sign-in failed | [12.3](#123-401--sign-in-loops--token-problems) – `services/auth.service.ts`, `stores/session.store.ts` |
+| **403** on a list or folder | this user has no permission in SharePoint | [12.4](#124-403-or-a-list-folder-that-shows-nothing-for-one-user) |
+| Calls to `localhost:3000`/`3001` fail, or **413** from `/api/cache` | the Node backend / Redis is down, or a cache payload is too big | [12.5](#125-backend--redis-cache-problems) – `paperless-backend/`, `services/cache.ts` |
+| To Do is **missing tasks** or shows someone else's | list not queried, assignee filter, or paging stopped | [12.6](#126-to-do-is-missing-tasks-or-shows-the-wrong-ones) – `stores/todo.store.ts`, `services/todo-fetch.service.ts` |
+| HR Files person shows **no / wrong Comments** | person matching or list choice | [12.7](#127-hr-files-person-shows-no-or-wrong-comments) – `services/task-loader.service.ts` |
+| Attachments **empty** for a To Do task / folder | folder not found in the library, or library ↔ task-list mapping | [12.8](#128-attachments-are-empty) – `stores/attachments.store.ts` |
+| Preview shows **"No preview"** or stays loading | no `driveId`, unsupported type, or Graph refused | [12.9](#129-the-file-preview-doesnt-work) – `services/drive-files.service.ts` |
+| Data **changed but the screen didn't** | a missing `refreshView()` after an `await` | [12.10](#1210-the-data-changed-but-the-screen-didnt-update) |
+| App **won't start**, console says `NG0200` / circular dependency | a store injected another store directly | [12.11](#1211-app-wont-start-ng0200--circular-dependency) |
+| Your **code changes don't show** in the browser | the dev server isn't seeing saved files (OneDrive) | [12.12](#1212-my-code-changes-dont-show-up) |
+| Old/other user's data after **sign-out** | something isn't cleared on sign-out | [12.13](#1213-old-data-after-sign-out--wrong-user) – `SessionStore.clearUserScopedSharePointState` |
+| Talking to the **wrong SharePoint site** (Live vs UAT) | started with the wrong configuration | [12.14](#1214-wrong-sharepoint-site-live-vs-uat) – `sharepoint.config.ts` |
+| **Slow** first load, fast after | Redis cache was cold | [12.15](#1215-first-load-is-slow-later-loads-are-fast) |
+| "**Request timed out**" in Attachments | Graph slower than the timeout / watchdog | [12.16](#1216-sharepoint-request-timed-out) – `app.constants.ts` |
+| Build error "**is not a known element**" | component not in the parent's `imports` | [12.17](#1217-build-errors-you-will-meet) |
+
+---
+
+### 12.2 429 "Too Many Requests" – SharePoint throttling
+
+**What you see:** red `429` rows in the Network tab (to `graph.microsoft.com`), lists load in bursts with pauses, or a section seems to "hang" for a while and then continue.
+
+**Why it happens:** SharePoint limits how many requests one user can make in a short time. When we go over, it answers `429` with a `Retry-After` header ("wait N seconds"). The app is built to *slow down and retry*, not to fail.
+
+```mermaid
+flowchart TD
+    A["Any Graph GET<br/>graphGetWithRetry()"] --> B{"Free slot?<br/>max 4 at once"}
+    B -- no --> W["wait in queue<br/>(clicks jump the queue)"] --> B
+    B -- yes --> C["send request"]
+    C --> D{"status"}
+    D -- "200" --> OK["done"]
+    D -- "429" --> E["wait Retry-After<br/>(or 1, 2, 4, 8 s)"]
+    E --> F["ALL callers pause<br/>(shared cooldown)"]
+    F --> G{"tried 4 times?"}
+    G -- no --> C
+    G -- yes --> X["throw – caller shows error"]
+    D -- "other error" --> X
+    E --> H["background work (polls, warm-up,<br/>prefetch) stops for 2 minutes"]
+```
+
+**Where to look:**
+
+| File | What it controls |
+|---|---|
+| `microsoft-graph.ts` → `graphGetWithRetry()` | the retry loop: only **429** is retried, max 4 times, honours `Retry-After` (capped at 30 s) |
+| `microsoft-graph.ts` → `MAX_CONCURRENT_GRAPH_REQUESTS` (4) | how many Graph calls can be in flight app-wide |
+| `microsoft-graph.ts` → `BACKGROUND_BACKOFF_AFTER_429_MS` (2 min) + `isGraphBackgroundBackedOff()` | after a 429, background work (polls, warm-ups) skips its runs |
+| `microsoft-graph.ts` → `clearGraphThrottleCooldown()` | a user click cancels a leftover cooldown so it isn't stuck behind background traffic |
+| `app.constants.ts` → `hrFilesTaskListConcurrency`, `hrTasksTodoListConcurrency`, `hrFilesInteractiveListConcurrency`, `hrFilesTaskPrefetchConcurrency` | how many SharePoint lists are read in parallel per feature |
+| `app.constants.ts` → `hrTaskListBatchGapMs`, `hrFilesTaskPrefetchBatchGapMs` (400 ms) | the pause between batches of list reads |
+| `app.constants.ts` → `todoInitialPagesPerList`, `todoProcInitialPages`, `hrFilesTaskListPageLimit` | how many pages are read per list (fewer pages = fewer calls) |
+| `stores/session.store.ts` → `backgroundGraphAllowed()`, `pollSharePointTaskCaches()` | the 10-minute background poll; it skips when the tab is hidden, after a 429, or when the user has been idle longer than `AppConstants.backgroundIdleAfterMs` |
+| `stores/attachments.store.ts` → `pauseFolderPrefetch()` | pauses background folder work while the user is clicking |
+
+**What to try:**
+1. In Network, see **which feature** fires the 429s (the URL tells you: `/lists/.../items` = task lists, `/drives/.../children` = folders, `/search` = All Files search).
+2. Lower that feature's **concurrency** or **page limit** in `app.constants.ts`, or raise its **batch gap**.
+3. Check nothing new calls `graphGet()` in a loop – loops must use `graphGetWithRetry()` so they share the 4-slot limit and the cooldown.
+4. Background code you add should start with `if (isGraphBackgroundBackedOff()) return;`.
+
+Background reading: `docs/redis-cache-current-setup.md` (why the cache exists – it saves Graph calls).
+
+---
+
+### 12.3 401 / sign-in loops / token problems
+
+**What you see:** `401` on Graph calls, a console error mentioning `InteractionRequiredAuthError`, the app keeps going back to "Pick an account", or it says "Signing in…" forever.
+
+```mermaid
+flowchart TD
+    A["SessionStore.checkLoginOnStart()"] --> B["authService.initialize()"]
+    B --> C{"back from Microsoft?"}
+    C -- yes --> D["handleRedirect() → setActiveAccount"]
+    C -- no --> E["trySilentSignIn()"]
+    E -- fails --> F["beginSignInRedirect() → Microsoft page"]
+    D --> G["loadCurrentUserProfile()"]
+    E -- works --> G
+    G --> H["getSharePointToken()<br/>→ authService.acquireSharePointToken()"]
+```
+
+**Where to look:** `services/auth.service.ts` (`acquireTokenSilent`, `acquireSharePointToken`, the MSAL setup and scopes) and `stores/session.store.ts` (`checkLoginOnStart`, `trySilentSignIn`, `beginSignInRedirect`, `loadCurrentUserProfile`).
+
+**What to try:** sign out and in again; clear site data for `localhost:4201` (F12 → Application → Clear storage); check the redirect URI registered in Entra ID matches the port you use (4200 Live / 4201 UAT); check the scopes in `auth.service.ts` if one specific call is refused.
+
+---
+
+### 12.4 403, or a list / folder that shows nothing for one user
+
+**What you see:** `403` in Network for one list or drive, or one person sees an empty section that works for others.
+
+**Why:** that user has no permission on that SharePoint list/library. The app does not fix permissions – SharePoint does.
+
+**Where to look:** `services/site-metadata.service.ts` → `lookupListDirect()` returns `'forbidden'` for 403 (used when a list is missing from the site's list enumeration); the All Files library search in `components/All-files/all-files.ts`. Confirm in SharePoint itself (open the list as that user).
+
+---
+
+### 12.5 Backend / Redis cache problems
+
+**What you see:** failed or `500` calls to `localhost:3000` (Live) / `localhost:3001` (UAT) `/api/cache/...`; data still loads but **slowly** (straight from SharePoint); or `413` from `/api/cache/tasks` or `/api/cache/list-filters`.
+
+```mermaid
+flowchart LR
+    A["Store asks for data"] --> B["FileCrawlCacheService<br/>memory"]
+    B -- miss --> C["IndexedDB<br/>(this browser)"]
+    C -- miss --> D["Backend /api/cache<br/>→ Redis (shared)"]
+    D -- miss --> E["Microsoft Graph<br/>(slow, can 429)"]
+    E --> F["save back to Redis +<br/>memory for next time"]
+```
+
+**Where to look:**
+
+| File | What |
+|---|---|
+| `services/file-crawl.service.ts` (`FileCrawlCacheService`) | memory + IndexedDB layer, `hydrateFromPersistent`, `getStale`, `invalidate` |
+| `services/cache.ts`, `services/cache-session.service.ts` | the HTTP calls to the backend `/api/cache` |
+| `services/todo-task-store.service.ts` | the To Do cache (one Redis entry per task) |
+| `utils/cache-keys.ts` | every cache key format – a version bump (`v9` → `v10`) drops old entries |
+| `paperless-backend/cacheRoutes.js` | the `/api/cache/*` routes; the 413 limits are `MAX_TODO_UPSERTS_PER_CALL` and `MAX_LIST_FILTER_UPDATES` |
+| `paperless-backend/server.js` | the Express server (`PORT`, default 3000) |
+| `sharepoint.config.ts` → `backendUrl` | which backend URL the front end calls |
+
+**What to try:** is the backend running (`npm --prefix paperless-backend run dev` or `dev:uat`) and is Redis running? The app keeps working without them, just slower. For 413s, look at what the front end is sending in one call and split it.
+
+Background reading: `docs/redis-cache-current-setup.md`.
+
+---
+
+### 12.6 To Do is missing tasks, or shows the wrong ones
+
+```mermaid
+flowchart TD
+    A["TodoStore.loadTodoTasksForCurrentUser()"] --> B["which lists?<br/>TaskLoaderService.getTaskListsToQuery()"]
+    B --> C["per list: TodoFetchService.fetchItemsForList()"]
+    C --> D{"list supports the<br/>assignee filter?"}
+    D -- yes --> E["filtered query (fast)"]
+    D -- no --> F["scan newest pages<br/>(todoInitialPagesPerList)"]
+    C --> G{"Proc* list?"}
+    G -- yes --> H["Progress = Pending slices"]
+    E & F & H --> I["HrTaskMapperService maps rows<br/>→ isAssignedToCurrentUser?"]
+    I --> J["To Do cards + TodoTaskStoreService cache"]
+```
+
+| Symptom | Look in |
+|---|---|
+| a whole list's tasks are missing | `hr-task-lists.config.ts` (`HR_TASK_LIST_NAMES`, `TODO_EXTRA_TASK_LIST_NAMES`) and `TaskLoaderService.getTaskListsToQuery()` – is the list name included? Also the eForms config (`FormConfigurationService.getAllQueryListNames()`). |
+| old tasks missing, new ones fine | paging stopped: `TodoFetchService.todoListCursors` and the "Load remaining tasks" button (`TodoStore.loadMoreTodoTasks()`); page limits in `app.constants.ts` |
+| a task assigned to me isn't shown | `HrTaskMapperService.mapSharePointItemToHrTask()` (assignee matching) and `SharePointTaskQueryService.blockedAssigneeLookupListIds` (lists that reject the assignee filter fall back to scanning) |
+| stale tasks after a change in SharePoint | `TodoStore.refreshTodoTasksIncrementally()` (watermarks in `TodoFetchService.todoListWatermarks`) and the cache in `TodoTaskStoreService` |
+| subordinate mode wrong | `TodoStore.onSuperiorModeChange()` / `reloadTodoTasksWithSubordinates()` and `SubordinaryTaskService` |
+
+Console logs starting with `[todo]` describe what each list did.
+
+---
+
+### 12.7 HR Files person shows no, or wrong, Comments
+
+**Flow:** `HrFilesStore.openHrFileListItem()` → `FolderTasksStore.loadHrPersonalTasksForFolder()` → `TaskLoaderService.collectHrPersonalTasksFromLists()`.
+
+| Symptom | Look in |
+|---|---|
+| nobody's tasks show | `TaskLoaderService.getTaskListsToQuery()` and `prioritizeHrPersonTaskLists()` (`utils/hr-task-matching.ts`) |
+| some of a person's tasks are missing / someone else's appear | `HrTaskFolderMatchService.doesHrTaskBelongToFolderPerson()` and `doesMappedHrTaskBelongToFolderPerson()` – how a task is matched to the folder's person (email, LookupId, name hints) |
+| person's email/LookupId wrong | `SharePointTaskQueryService.resolveHrFolderPersonEmail()`; the cached ids under `utils/cache-keys.ts` → `hrPersonIdsCacheKey()` |
+| old tasks after an edit | the folder cache: `FolderTasksStore.invalidateFolderTaskCache()` / `syncTaskCachesAfterMutation()`; key `hrFolderTaskCacheKey()` |
+
+---
+
+### 12.8 Attachments are empty
+
+| Where you opened it | Flow / where to look |
+|---|---|
+| a **To Do task** | `AttachmentsStore.loadTodoTaskAttachments()` → `getLibraryForTaskList()` (which document library belongs to this task list – comes from `FormConfigurationService.documentLibraryTaskMap$`) → `resolveLibraryDriveId()` → `findTodoTaskFolder()` (the task's folder in that library). Messages come from `showTodoAttachmentsMessage()`. |
+| an **All Files folder** | `AllFilesStore.onAllFileSelected()` → `AttachmentsStore.loadDriveFolderContents()` → `DriveFilesService.fetchFolderChildren()` |
+| **HR Files / My Files** | `HrFilesStore.openHrFileListItem()` / `openMyFiles()`; personal folder lookup in `DriveFilesService.findUserFolder()` |
+| a cached listing is wrong | key `driveFolderCacheKey()` in `utils/cache-keys.ts`; cache in `FileCrawlCacheService` |
+
+---
+
+### 12.9 The file preview doesn't work
+
+```mermaid
+flowchart TD
+    A["Preview box shows…"] --> B{"what?"}
+    B -- "nothing at all" --> C["is <app-preview-attachments> in app.html<br/>and in AppComponent imports?<br/>does AttachmentList emit fileSelected?"]
+    B -- "'No preview' for every file" --> D["file has no driveId →<br/>DriveFilesService.toDriveFile()"]
+    B -- "'No preview' for some files" --> E["type SharePoint can't preview<br/>(.zip, .msg…) – expected"]
+    B -- "stuck on Loading" --> F["Network: POST …/preview<br/>status + response"]
+    B -- "white/blank iframe" --> G["link host not *.sharepoint.com,<br/>or a Content-Security-Policy frame-src block"]
+```
+
+**Files:** `components/preview-attachments/preview.ts` (`load()`), `services/drive-files.service.ts` (`getPreviewUrl()`), `components/attachments/attachment-list/attachment-list.ts` (`onHover`, `onClick`), `stores/attachments.store.ts` (`previewFile`, `closePreview`, the `userFiles` setter).
+
+---
+
+### 12.10 The data changed but the screen didn't update
+
+**Why:** the app is zoneless. After an `await`/`setTimeout`, changing a plain field does **not** redraw by itself.
+
+**Fix:** after changing state in a store, call `this.view.refreshView()` (it batches, so calling it often is cheap). Signals (`signal()`) redraw by themselves – new state is best written as a signal.
+
+**Where:** `stores/view-refresh.service.ts`; it is connected to the screen in `app.ts` (`this.view.attach(...)`).
+
+---
+
+### 12.11 App won't start: NG0200 / circular dependency
+
+**What you see:** blank page, console says `NG0200: Circular dependency in DI detected for …Store`.
+
+**Why:** two stores asked for each other *while being created*, e.g. `private comments = inject(CommentsStore)` in `TodoStore` **and** `inject(TodoStore)` in `CommentsStore`.
+
+**Fix:** reach other stores through a **lazy getter**, like every store already does:
+
+```ts
+private readonly injector = inject(Injector);
+private get comments(): CommentsStore { return this.injector.get(CommentsStore); }
+```
+
+Services (`DriveFilesService`, `TaskLoaderService`…) never inject stores, so they can use plain `inject()`.
+
+---
+
+### 12.12 My code changes don't show up
+
+**Why:** the project is in OneDrive, which hides file-change events from Angular's watcher, so `ng serve` keeps serving old code.
+
+**Fix:** stop the server (Ctrl+C) and start it with polling, then hard-reload the page (Ctrl+Shift+R):
+
+```bash
+npm --prefix my-app run start:uat -- --poll 2000
+```
+
+---
+
+### 12.13 Old data after sign-out / wrong user
+
+**Where:** `stores/session.store.ts` → `logout()` and `clearUserScopedSharePointState()` – they clear the caches, the site info (`SiteMetadataService.reset()`), the user's folder cache (`DriveFilesService.clearUserFolderCache()`) and the task query state. Any **new per-user state** you add to a store must be cleared here too.
+
+---
+
+### 12.14 Wrong SharePoint site (Live vs UAT)
+
+| Command | Site | Port |
+|---|---|---|
+| `npm --prefix my-app run start:live` | `sites/PaperlessLive` | 4200 |
+| `npm --prefix my-app run start:uat` | `sites/PaperlessUAT` | 4201 |
+
+**Where:** `sharepoint.config.ts` (labels, `sitePath`, `backendUrl`), `sharepoint.target.ts` / `sharepoint.target.uat.ts` (swapped by the `uat` configuration in `angular.json`). The top bar title says "UAT" when you're on UAT (`UiStore.appSystemName`).
+
+---
+
+### 12.15 First load is slow, later loads are fast
+
+**Why:** the first load after the shared Redis cache was emptied (or for a new person/folder) has to read everything from SharePoint; afterwards it comes from cache. This is expected.
+
+**Where:** `utils/cache-keys.ts` (bumping a key version empties that cache), `FileCrawlCacheService`, and the measurements in `docs/redis-cache-current-setup.md` and `docs/whole-app-test-report.md`.
+
+---
+
+### 12.16 "SharePoint request timed out"
+
+**Where:** `app.constants.ts` → `graphDefaultTimeoutMs` (15 s per call), `graphFileListingTimeoutMs` (60 s for folder listings), `userFileLoadingWatchdogMs` (120 s for a whole Attachments load). The watchdog is `AttachmentsStore.startUserFileLoadingWatchdog()`; errors are shown by `handleUserFilesError()`.
+
+---
+
+### 12.17 Build errors you will meet
+
+| Error | Meaning | Fix |
+|---|---|---|
+| `'app-x' is not a known element` | the component isn't in the parent's `imports: [...]` | add it to `imports` in the parent `@Component` |
+| `Property 'x' does not exist on type 'AppComponent'` (in `app.html`) | the template uses a name without its store | write `todo.x`, `comments.x`… (see the stores table in section 6) |
+| `Property 'x' does not exist on type 'SomeStore'` | `x` lives in another store | use `this.<store>.x` (e.g. `this.comments.commentItems`) |
+| `Cannot find module '…'` | wrong import path | from `stores/` use `../services/...`, from `app.ts` use `./services/...` |
+| `X is not a function` at runtime | called before it exists, or a typo the template didn't catch | check the console stack trace for the file/line |
+
+---
+
+## 13. What is still left to improve
 
 `app.ts` is minimal, but the **stores** still carry the old style. Next steps, in order of value:
 
@@ -468,7 +768,7 @@ timeline
 
 ---
 
-## 13. Glossary
+## 14. Glossary
 
 | Word | Meaning |
 |---|---|
@@ -490,7 +790,7 @@ timeline
 
 ---
 
-## 14. Commit history of this work
+## 15. Commit history of this work
 
 | Commit | What |
 |---|---|
