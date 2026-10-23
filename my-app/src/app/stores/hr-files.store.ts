@@ -222,9 +222,16 @@ export class HrFilesStore {
   }
 
   async loadMyFilesFromDrive(): Promise<void> {
+    // This load is slow. If the user opens a To Do task (or a library folder) before it
+    // finishes, that view owns the Attachments panel and this result must be dropped.
+    const todoSeq = this.attachments.todoAttachmentLoadSeq;
+    const isSuperseded = () =>
+      this.attachments.todoAttachmentLoadSeq !== todoSeq || !!this.attachments.currentLibraryDriveId;
     try {
       const token = await this.session.getSharePointToken();
       const targetDriveId = await this.getTargetDriveId(token);
+
+      if (isSuperseded()) return;
 
       if (!targetDriveId) {
         const site = await this.siteMetadataService.resolve(token);
@@ -239,11 +246,14 @@ export class HrFilesStore {
         return;
       }
 
-      await this.loadCurrentUserPersonalFolderFiles(targetDriveId, token);
+      await this.loadCurrentUserPersonalFolderFiles(targetDriveId, token, isSuperseded);
     } catch (error: unknown) {
-      this.attachments.handleUserFilesError(error);
+      if (!isSuperseded()) this.attachments.handleUserFilesError(error);
     } finally {
-      if (this.attachments.isLoadingUserFiles) {
+      if (isSuperseded()) {
+        // Stop our watchdog so it can't flag the newer view as timed out.
+        this.attachments.clearUserFileLoadingWatchdog();
+      } else if (this.attachments.isLoadingUserFiles) {
         this.attachments.isLoadingUserFiles = false;
         this.attachments.clearUserFileLoadingWatchdog();
         this.view.refreshView();
@@ -535,11 +545,16 @@ export class HrFilesStore {
     return folders;
   }
 
-  async loadCurrentUserPersonalFolderFiles(targetDriveId: string, token: string): Promise<void> {
+  async loadCurrentUserPersonalFolderFiles(
+    targetDriveId: string,
+    token: string,
+    isSuperseded: () => boolean = () => false,
+  ): Promise<void> {
     this.attachments.userFileProgressMessage = 'Locating your Personal folder/Files...';
     this.view.refreshView();
 
     const userFolder = await this.driveFiles.findUserFolder(targetDriveId, token, this.session.currentUser);
+    if (isSuperseded()) return;
     if (!userFolder?.id) {
       this.attachments.userFileError =
         `Could not find a personal folder for ${this.session.currentUser?.username || 'the logged-in user'} in "${this.targetLibraryName}".`;
@@ -551,13 +566,18 @@ export class HrFilesStore {
     this.hrPersonalFolderName = userFolder.name;
 
     const driveLoadResult = await this.driveFiles.getAllDriveItems(targetDriveId, token, userFolder.id, {
-      onBatch: () => this.attachments.startUserFileLoadingWatchdog(),
+      onBatch: () => {
+        if (!isSuperseded()) this.attachments.startUserFileLoadingWatchdog();
+      },
       onProgress: progress => {
+        if (isSuperseded()) return;
         this.attachments.userFileProgressMessage = progress;
         this.view.refreshView();
       },
     });
 
+    // A To Do task or library folder was opened meanwhile - don't overwrite its files.
+    if (isSuperseded()) return;
     this.attachments.applyDriveItems(driveLoadResult.items, userFolder.id);
 
     if (driveLoadResult.wasTruncated) {

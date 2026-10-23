@@ -203,7 +203,10 @@ export class UiStore {
       this.attachments.currentLibraryDriveId ||
       this.attachments.attachmentBrowsingRoot ||
       this.attachments.currentFolderId ||
-      (this.attachments.showUserFile && this.attachments.userFiles.length > 0)
+      (this.attachments.showUserFile && this.attachments.userFiles.length > 0) ||
+      // To Do task already filled the panel (even if empty: "No attachments folder...").
+      // Don't fall through to My Files, which would show the user's personal folders.
+      (this.showToDoSection && this.attachments.showUserFile)
     ) {
       this.attachments.showUserFile = true;
       this.view.refreshView();

@@ -13,6 +13,7 @@ describe('AttachmentList', () => {
 
     fixture = TestBed.createComponent(AttachmentList);
     component = fixture.componentInstance;
+    fixture.componentRef.setInput('files', []); // required input
     await fixture.whenStable();
   });
 
