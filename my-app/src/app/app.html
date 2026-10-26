@@ -234,7 +234,9 @@
 
         <!-- Empty state -->
         <p *ngIf="!comments.isLoadingComments && comments.filteredCommentItems.length === 0 && !ui.showAllFilesSection">
-          {{ comments.commentsMessage || 'No HR Tasks found. Click refresh to load HR Tasks.' }}
+          {{ comments.searchQuery.trim() ? 'No comments match your search.'
+            : comments.commentsMessage || (comments.selectedTask ? 'No comments for this task yet.'
+            : 'No HR Tasks found. Click refresh to load HR Tasks.') }}
         </p>
         <p *ngIf="!comments.isLoadingComments && comments.filteredCommentItems.length === 0 && ui.showAllFilesSection">
           {{ comments.commentsMessage || 'No tasks found. Click a folder in All Files to load tasks.' }}
@@ -573,8 +575,8 @@
             >← Back</button>
             <p>
               <span *ngIf="attachments.currentFolderId">Folder contents</span>
-              <span *ngIf="!attachments.currentFolderId && !attachments.isUsingHrTaskList">Showing items for {{ session.currentUser?.username ||
-                'current user' }}</span>
+              <span *ngIf="!attachments.currentFolderId && !attachments.isUsingHrTaskList">Showing items for {{
+               (ui.showToDoSection && todo.selectedSubmitter) || session.currentUser?.username || 'current user' }}</span>
               <span *ngIf="!attachments.currentFolderId && attachments.isUsingHrTaskList">HR Task: {{ attachments.selectedHrTaskList }}</span>
               <span *ngIf="!attachments.isLoadingUserFiles"> ({{ attachments.loadedHrPersonalItemCount }} items)</span>
             </p>

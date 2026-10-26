@@ -2980,6 +2980,12 @@
   color: inherit;
   cursor: pointer;
   font-size: inherit;
+  min-width: 32px;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
 }
 
 .new-comment-badge{

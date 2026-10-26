@@ -27,10 +27,10 @@
     <!-- Replaces visiblePowerAppsLinks -->
     <ul class="powerapps-links">
       <li *ngFor="let form of activeForms$ | async">
-        <div class="powerapps-link-card" (click)="openForm(form)" style="cursor: pointer;">
+        <button type="button" class="powerapps-link-card" (click)="openForm(form)">
           <span>{{ form.title }}</span>
           <i class="fi fi-br-angle-right" aria-hidden="true"></i>
-        </div>
+        </button>
       </li>
     </ul>
 

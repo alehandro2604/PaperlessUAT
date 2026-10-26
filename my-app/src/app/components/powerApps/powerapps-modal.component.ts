@@ -1,8 +1,9 @@
-import { Component, EventEmitter, Input, Output } from '@angular/core';
+import { Component, EventEmitter, HostListener, Input, Output } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Observable } from 'rxjs';
 import { EForm } from '../../models/form-configuration.model';
 import { FormConfigurationService } from '../../services/form-configuration.service';
+
 
 @Component({
   selector: 'app-powerapps-modal',
@@ -14,7 +15,10 @@ import { FormConfigurationService } from '../../services/form-configuration.serv
 export class PowerappsModalComponent {
   @Input() open = false;
   @Output() closed = new EventEmitter<void>();
-
+  @HostListener('document:keydown.escape')
+  onEscape():void {
+    if(this.open) this.close();
+  }
   protected selectedFormTab: 'HR' | 'WorkFlows' = 'HR';
 
   //add power apps links here from the service

@@ -1,16 +1,19 @@
 <div class="scene">
-  <div class="nav-bar" id="navBar">
-    <div class="nav-item" [class.active]="activeIndex === 0" (click)="onTap(0)">
+  <nav class="nav-bar" id="navBar" aria-label="Main">
+    <button type="button" class="nav-item" [class.active]="activeIndex === 0"
+      [attr.aria-current]="activeIndex === 0 ? 'page' : null" (click)="onTap(0)">
       <img src="/account.png" alt="" class="nav-icon" />
       <span class="nav-label">HR</span>
-    </div>
-    <div class="nav-item" [class.active]="activeIndex === 1" (click)="onTap(1)">
+    </button>
+    <button type="button" class="nav-item" [class.active]="activeIndex === 1"
+      [attr.aria-current]="activeIndex === 1 ? 'page' : null" (click)="onTap(1)">
       <img src="/todo.png" alt="" class="nav-icon" />
       <span class="nav-label">To Do</span>
-    </div>
-    <div class="nav-item" [class.active]="activeIndex === 2" (click)="onTap(2)">
+    </button>
+    <button type="button" class="nav-item" [class.active]="activeIndex === 2"
+      [attr.aria-current]="activeIndex === 2 ? 'page' : null" (click)="onTap(2)">
       <img src="/allfiles.png" alt="" class="nav-icon" />
       <span class="nav-label">All Files</span>
-    </div>
-  </div>
+    </button>
+  </nav>
 </div>
