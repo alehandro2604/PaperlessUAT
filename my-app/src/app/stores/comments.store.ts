@@ -363,14 +363,64 @@ export class CommentsStore {
     }, 80);
   }
 
+  /** "list|title" - the file a task or comment belongs to when it has no eForm list ID. */
+  private getTaskFileKey(item: { listName?: unknown; name?: unknown; eFormDetails?: Record<string, unknown> }): string {
+    const listName = String(item.listName ?? item.eFormDetails?.['listName'] ?? '').trim().toLowerCase();
+    const title = getTaskEFormTitle(item).toLowerCase();
+    return `${listName}|${title}`;
+  }
+
+  /** "list#id" - item ids are only unique within one SharePoint list. */
+  private getTaskItemKey(item: { id?: unknown; listName?: unknown; eFormDetails?: Record<string, unknown> }): string {
+    const listName = String(item.listName ?? item.eFormDetails?.['listName'] ?? '').trim().toLowerCase();
+    return `${listName}#${String(item.id ?? '').trim()}`;
+  }
+
+  /** The opened To Do group's tasks (list#id) and the files they belong to (list|title). */
+  private getSelectedTaskKeys(): { items: Set<string>; files: Set<string> } {
+    const items = new Set<string>();
+    const files = new Set<string>();
+    const groupTitle = String(this.todo.selectedEFormTitle ?? '').trim().toLowerCase();
+    for (const id of this.todo.selectedGroupTaskIds) {
+      // The same id can exist in several lists, so pick the one whose title is the opened group's.
+      const sameId = this.todoService.getTasksById(id);
+      const candidates = sameId.length
+        ? sameId
+        : this.commentItems.filter(item => String(item.id ?? '').trim() === id);
+      const task = groupTitle
+        ? candidates.find(c => getTaskEFormTitle(c as any).toLowerCase() === groupTitle)
+        : (candidates.length === 1 ? candidates[0] : undefined);
+      if (!task) continue;
+      items.add(this.getTaskItemKey(task as any));
+      const fileKey = this.getTaskFileKey(task as any);
+      // Without a list and a real title the key would match unrelated items.
+      if (!fileKey.startsWith('|') && !fileKey.endsWith('|unknown title')) files.add(fileKey);
+    }
+    return { items, files };
+  }
+
   filterCommentItems(): Array<typeof this.commentItems[0]> {
     let filtered = this.commentItems;
     if (this.todo.selectedSubmitter && !this.ui.showAllFilesSection) {
+      // Tasks with no eForm list ID (e.g. "Monitor Workflow") can't be matched on that ID:
+      // every comment without one would match. Link them on list + Title instead.
+      const noFormIdTasks = this.todo.selectedEFormListId === 'Unknown eForm'
+        ? this.getSelectedTaskKeys()
+        : null;
+
       filtered = filtered.filter(item => {
         const matchesEFormList = !this.todo.selectedEFormListId || (
           (String(item.eFormDetails?.eFormListId ?? '').trim() || 'Unknown eForm') === this.todo.selectedEFormListId
         );
         if (!matchesEFormList) {
+          return false;
+        }
+
+        if (
+          noFormIdTasks &&
+          !noFormIdTasks.items.has(this.getTaskItemKey(item)) &&
+          !noFormIdTasks.files.has(this.getTaskFileKey(item))
+        ) {
           return false;
         }
 

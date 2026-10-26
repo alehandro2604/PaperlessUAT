@@ -172,6 +172,13 @@ export class TodoService {
     return this.tasks.value.find(task => String(task.id ?? '').trim() === id);
   }
 
+  /** Every task with this id. Ids are per SharePoint list, so two lists can share one. */
+  getTasksById(taskId: string): ToDoTask[] {
+    const id = String(taskId ?? '').trim();
+    if (!id) return [];
+    return this.tasks.value.filter(task => String(task.id ?? '').trim() === id);
+  }
+
   private async assignActionRequestToUser(
     taskId: string,
     listName: string,
