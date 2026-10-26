@@ -429,6 +429,12 @@ export class TodoListComponent implements OnInit, OnDestroy {
   }
 
   private isActiveSubordinateTask(task: any): boolean {
+    // Same Progress gate as the user's own To Do: "Complete" writes Progress, and
+    // Request for Action cards have no other status, so without this they came back on reload.
+    const rawFields = (task?.eFormDetails?.rawFields ?? {}) as Record<string, unknown>;
+    const progress = String(rawFields['Progress'] ?? task?.eFormDetails?.progress ?? '').toLowerCase().trim();
+    if (progress === 'complete' || progress === 'completed') return false;
+
     const { rawStatus, normalizedStatus, fromSharePoint } = this.getTodoStatusSignals(task);
     const status = `${rawStatus} ${fromSharePoint}`.trim();
     if (
