@@ -1,29 +1,29 @@
 @if (file(); as f){
-    <section class="preview">
-        <header class="preview-header">
-            <h2 class="preview-title">{{ f.name }}</h2>
-            <span class="preview-meta">
-                {{ f.lastModifiedDateTime ? (f.lastModifiedDateTime | date: 'dd/MM/yyyy') : '—' }}
-                &nbsp;|&nbsp;
-                {{ f.modifiedBy || '—' }}
-            </span>
-        </header>
+<section class="preview">
+    <header class="preview-header">
+        <h2 class="preview-title">{{ f.name }}</h2>
+        <span class="preview-meta">
+            {{ f.lastModifiedDateTime ? (f.lastModifiedDateTime | date: 'dd/MM/yyyy') : '—' }}
+            &nbsp;|&nbsp;
+            {{ f.modifiedBy || '—' }}
+        </span>
+    </header>
 
-<div class="preview-body">
-      @switch (status()) {
+    <div class="preview-body">
+        @switch (status()) {
         @case ('loading') {
-          <p class="preview-msg">Loading preview…</p>
+        <p class="preview-msg">Loading preview…</p>
         }
         @case ('ready') {
-          <iframe [src]="link()" [title]="'Preview of ' + f.name"></iframe>
+        <iframe [src]="link()" [title]="'Preview of ' + f.name"></iframe>
         }
         @case ('failed') {
-          <p class="preview-msg">
+        <p class="preview-msg">
             No preview for this file.
             <a [href]="f.webUrl" target="_blank" rel="noopener noreferrer">Open it</a>
-          </p>
+        </p>
         }
-      }
+        }
     </div>
-    </section>
+</section>
 }

@@ -79,7 +79,7 @@ export class DriveFilesService {
   async fetchFolderChildren(driveId: string, folderId: string, token: string): Promise<DriveFile[]> {
     const resp: any = await graphGetWithRetry(
       this.http,
-      `/drives/${driveId}/items/${folderId}/children?$select=${CHILD_FIELDS}&$top=500`,
+      `/drives/${driveId}/items/${folderId}/children?$select=${CHILD_FIELDS}&$top=500`,// Graph limits to 500 items per page, so this is the max we can get in one call
       token,
       AppConstants.graphFileListingTimeoutMs,
     );

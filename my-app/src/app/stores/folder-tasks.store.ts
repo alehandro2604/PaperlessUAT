@@ -820,7 +820,7 @@ export class FolderTasksStore {
           if (!this.comments.isLoadingComments || this.comments.commentItems.length > 0) return;
           this.comments.isLoadingComments = false;
           this.comments.isLoadingMoreComments = true;
-          this.comments.commentsMessage = 'Looking up tasks…';
+          this.comments.commentsMessage = 'No tasks found.';
           this.view.refreshView();
         }, 900);
       }

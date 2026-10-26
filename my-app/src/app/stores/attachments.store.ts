@@ -41,39 +41,24 @@ export class AttachmentsStore {
   private get allFiles(): AllFilesStore { return this.injector.get(AllFilesStore); }
 
   showUserFile = false;
-
   isLoadingUserFiles = false;
-
   userFileProgressMessage = '';
-
   userFileError = '';
-
   userFileWarning = '';
-
   currentFolderId: string | null = null;
-
   currentFolderWebUrl = '';
-
   currentFolderName = '';
-
   folderStack: Array<{ id: string; name: string; webUrl: string }> = [];
 
   /** Top-level folder opened from HR Files / All Files - back never goes above this. */
   attachmentBrowsingRoot: { id: string; name: string; webUrl: string } | null = null;
-
   currentLibraryDriveId: string | null = null;
-
   currentLibraryName: string | null = null;
-
   /** After Attachments-search click: highlight this file id in the Attachments panel. */
   pendingAttachmentFocusId: string | null = null;
-
   highlightedAttachmentId: string | null = null;
-
   allowedHrTaskLists: string[] = [];
-
   selectedHrTaskList: string = '';
-
   get isUsingHrTaskList(): boolean { return this.selectedHrTaskList !== ''; }
 
   /** File shown in the preview box (set when a row is hovered or clicked). */
