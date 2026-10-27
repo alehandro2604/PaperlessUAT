@@ -234,7 +234,8 @@
 
         <!-- Empty state -->
         <p *ngIf="!comments.isLoadingComments && comments.filteredCommentItems.length === 0 && !ui.showAllFilesSection">
-          {{ comments.searchQuery.trim() ? 'No comments match your search.'
+          {{ ui.showToDoSection && !todo.selectedSubmitter ? 'Click a task in To Do to view its comments.'
+            : comments.searchQuery.trim() ? 'No comments match your search.'
             : comments.commentsMessage || (comments.selectedTask ? 'No comments for this task yet.'
             : 'No HR Tasks found. Click refresh to load HR Tasks.') }}
         </p>

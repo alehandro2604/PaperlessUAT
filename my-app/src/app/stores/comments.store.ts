@@ -420,6 +420,11 @@ export class CommentsStore {
   }
 
   filterCommentItems(): Array<typeof this.commentItems[0]> {
+    // To Do: Comments only shows the task that is open. Nothing open → nothing to show.
+    if (this.ui.showToDoSection && !this.todo.selectedSubmitter) {
+      return [];
+    }
+
     let filtered = this.commentItems;
     if (this.todo.selectedSubmitter && !this.ui.showAllFilesSection) {
       // Tasks with no eForm list ID (e.g. "Monitor Workflow") can't be matched on that ID:
