@@ -19,33 +19,34 @@ You need three things running. Open three terminals.
 ```
 
 ```powershell
-# 2. Backend  → http://localhost:3000
+# 2. Backend  → http://localhost:3001
 cd paperless-backend
 npm install
-npm run dev
+npm run dev:uat
 ```
 
 ```powershell
-# 3. Frontend → http://localhost:4200
+# 3. Frontend → http://localhost:4201
 cd my-app
 npm install
 npm start
 ```
 
-Check the backend at http://localhost:3000/api/health. It should return `{ "server": "ok", "redis": "PONG" }`.
+Check the backend at http://localhost:3001/api/health. It should return `{ "server": "ok", "redis": "PONG" }`.
 
-### Live and UAT side by side
+### This repo is UAT only
 
-The same code runs against either SharePoint site. Nothing needs editing to switch; pick the target when you start it. Both can run at once, sharing one Redis.
+Everything here points at the UAT SharePoint site. There is no live target to switch to.
 
-| | Live (`sites/PaperlessLive`) | UAT (`sites/PaperlessUAT`) |
-|---|---|---|
-| Backend | `npm run dev` → :3000, reads `.env` | `npm run dev:uat` → :3001, reads `.env.uat` |
-| Frontend | `npm run start:live` → :4200 | `npm run start:uat` → :4201 (header says "UAT") |
-| Build | `npm run build:live` | `npm run build:uat` |
-| Redis | database 0 | database 1 |
+| | UAT (`sites/PaperlessUAT`) |
+|---|---|
+| Backend | `npm run dev:uat` → :3001, reads `.env.uat` |
+| Frontend | `npm start` (same as `npm run start:uat`) → :4201, header says "Paperless System UAT" |
+| Build | `npm run build:uat` → `my-app/dist/my-app-uat/browser` |
+| Redis | database 1 (`redis://localhost:6379/1`) |
+| Deployed at | https://swiftpaperlessuat.enemalta.lan |
 
-The site settings for each target are in `my-app/src/app/sharepoint.config.ts`. `http://localhost:4201` must be a Single-page application redirect URI in Entra.
+The site settings are in `my-app/src/app/sharepoint.config.ts`. `http://localhost:4201` must be a Single-page application redirect URI in Entra.
 
 ---
 
@@ -56,7 +57,7 @@ flowchart LR
     U([User]) --> A[Angular app<br/>my-app]
     A -- "1. Sign in (MSAL)" --> E[Microsoft Entra ID]
     A -- "2. Read/write tasks, files<br/>(Graph token)" --> G[Microsoft Graph]
-    G --> SP[(SharePoint<br/>PaperlessLive)]
+    G --> SP[(SharePoint<br/>PaperlessUAT)]
     A -- "3. Save/load cache<br/>(API token)" --> B[Node backend<br/>paperless-backend]
     B --> R[(Redis)]
     B -- "permission check<br/>(on behalf of user)" --> G
@@ -84,7 +85,7 @@ Angular could talk to Graph alone. The backend exists for three reasons:
 
 1. **Shared cache.** The browser can't share data between users. Redis can. When one person opens an HR folder, the result is stored once and the next person gets it instantly.
 2. **Safety.** The backend checks every user's token and asks Graph *as that user* (the "on-behalf-of" flow) before returning shared data. Nobody can read a cached folder they can't open in SharePoint.
-3. **Secrets.** The client secret must never live in the browser. Only the backend holds it (in `.env`).
+3. **Secrets.** The client secret must never live in the browser. Only the backend holds it (in `.env.uat`).
 
 ---
 
@@ -108,7 +109,7 @@ flowchart LR
 
 - **The browser never talks to Redis directly.** Every request goes through the backend, which checks the user's Microsoft sign-in first.
 - **There are two caches.** The app also keeps a copy in the browser's memory (`file-crawl.service.ts`) while it's open. Redis is the one that survives a reload and is shared between users.
-- **Live and UAT are kept apart:** Live uses database **0** (`redis://localhost:6379`), UAT uses database **1** (`redis://localhost:6379/1`, in `.env.uat`).
+- **UAT uses Redis database 1** (`redis://localhost:6379/1`, set in `.env.uat`). Database 0 belongs to the live app, so don't clear it if both share one Redis.
 
 ### What's stored
 
@@ -180,11 +181,11 @@ Now **each task is stored separately** (about 2–3 KB each), plus a short index
 2. **Step 4:** make the Refresh button use that sync.
 3. **Step 5 (optional), webhooks:** SharePoint notifies the backend when a list changes. This only works if the server can be reached from the internet.
 
-Until step 3 is done, a task completed **outside** this app (in Live, or by someone else) can still show in To Do until the next Refresh.
+Until step 3 is done, a task completed **outside** this app (in SharePoint, Power Apps, or by someone else) can still show in To Do until the next Refresh.
 
 ### Looking at the data
 
-- **Redis Insight** (free desktop app): connect to `localhost`, port `6379`, then pick **db0** (Live) or **db1** (UAT).
+- **Redis Insight** (free desktop app): connect to `localhost`, port `6379`, then pick **db1** (UAT).
   - **Browse:** see keys, their size and expiry.
   - **Analyze:** see what uses the most memory.
 - **`redis-cli`:** in `redis-windows/`, e.g. `redis-cli -n 1 scard cache:<userId>:todo:index` gives how many To Do tasks a user has cached.
@@ -202,21 +203,21 @@ Until step 3 is done, a task completed **outside** this app (in Live, or by some
 
 ---
 
-## 5. The `.env` file
+## 5. The `.env.uat` file
 
-Lives in `paperless-backend/.env`. **Never commit it** (it's already in `.gitignore`).
+Lives in `paperless-backend/.env.uat` and is read by `npm run dev:uat` / `npm run start:uat`. **Never commit it** (it's already in `.gitignore`).
 
 | Key | What it is | Example |
 |---|---|---|
 | `TENANT_ID` | Enemalta's Microsoft tenant id | from `sharepoint.config.ts` |
 | `CLIENT_ID` | The Azure app registration id | from `sharepoint.config.ts` |
 | `CLIENT_SECRET` | Secret for that app (Azure → *Certificates & secrets*) | `abc~123…` |
-| `REDIS_URL` | Where Redis is running | `redis://localhost:6379` |
-| `SITE_PATH` | SharePoint site in Graph form | `emoffice365.sharepoint.com:/sites/PaperlessLive` |
+| `REDIS_URL` | Where Redis is running (UAT uses database 1) | `redis://localhost:6379/1` |
+| `SITE_PATH` | SharePoint site in Graph form | `emoffice365.sharepoint.com:/sites/PaperlessUAT` |
 | `TASKS_LIST` | Default list for `/api/tasks` | `HRTaskTelework` |
 | `CACHE_TTL_SECONDS` | Expiry for `/api/tasks` cache | `300` |
-| `PORT` | Backend port | `3000` |
-| `CORS_ORIGINS` | Sites allowed to call the backend (comma-separated) | `http://localhost:4200` |
+| `PORT` | Backend port | `3001` |
+| `CORS_ORIGINS` | Sites allowed to call the backend (comma-separated) | `http://localhost:4201` |
 | `CACHE_ENTRY_TTL_SECONDS` | *(optional)* Cache expiry, default 7 days | `604800` |
 | `HR_LIBRARY_NAME` | *(optional)* HR library name, default `HRPersonal` | `HRPersonal` |
 
@@ -451,12 +452,12 @@ flowchart TD
 
 ## 11. Deploying to UAT
 
-1. Run Redis and the backend on the server (`npm start`, port 3000).
-2. Point IIS or nginx so `/api/*` goes to `http://127.0.0.1:3000`.
-3. In `sharepoint.config.ts`, switch to the UAT lines: `redirectUri` = the UAT URL, `backendUrl` = `''`.
-4. `ng build`, then copy `dist/my-app/browser` to the IIS site.
-5. Add the UAT URL as a redirect URI in the Azure app registration.
-6. Test: `https://<uat>/api/health` should show `redis: PONG`.
+1. Run Redis and the backend on the server: `npm run start:uat` in `paperless-backend` (reads `.env.uat`, port **3001**).
+2. Point IIS so `/api/*` goes to that backend. The rule is in `web.config`; it currently forwards to `http://127.0.0.1:3000`, so change it to `3001` (or set `PORT` in the server's `.env.uat` to match).
+3. In `my-app`, run `npm run build:uat`. No config edits are needed: a production build uses https://swiftpaperlessuat.enemalta.lan and a same-origin backend automatically.
+4. Copy the contents of `my-app/dist/my-app-uat/browser` to the IIS site, and keep `web.config` there.
+5. Make sure https://swiftpaperlessuat.enemalta.lan is a redirect URI in the Azure app registration.
+6. Test: https://swiftpaperlessuat.enemalta.lan/api/health should show `redis: PONG`.
 
 **Desktop app:** run `my-app/desktop/build-desktop.bat`. The installer appears in `my-app/desktop/release/`.
 
@@ -464,29 +465,31 @@ flowchart TD
 
 ## 12. Saving your work to GitHub
 
-Run these from the `Paperless` folder.
+Run these from the `Paperless_UAT` folder.
+
+> **Always name the `uat` remote.** This folder has two remotes: `uat` is this repo (PaperlessUAT), `origin` is the **live** Paperless repo. A plain `git pull` or `git push` uses `origin`, which pulls live code into UAT (or pushes UAT code to live).
 
 ```powershell
 # See what changed
 git status
 
-# Stage everything (files in .gitignore, like .env, are skipped)
+# Stage everything (files in .gitignore, like .env.uat, are skipped)
 git add -A
 
 # Save a snapshot with a message
 git commit -m "Describe what you changed"
 
-# Upload to GitHub on your current branch
-git push
+# Upload to the UAT repo
+git push uat main
 ```
 
-The first time you push a new branch, use `git push -u origin <branch-name>`.
+The first time you push a new branch, use `git push -u uat <branch-name>`.
 
 **Working on a branch** (recommended, so `main` stays safe):
 
 ```powershell
 git checkout main
-git pull
+git pull uat main
 git checkout -b my-change
 # ...make changes, then add / commit / push as above...
 ```
