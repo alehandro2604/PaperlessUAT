@@ -4,11 +4,9 @@
   "scripts": {
     "ng": "ng",
     "start": "ng serve",
-    "start:live": "ng serve --configuration live",
-    "start:uat": "ng serve --configuration uat",
+    "start:uat": "ng serve",
     "build": "ng build",
-    "build:live": "ng build --output-path dist/my-app-live",
-    "build:uat": "ng build --configuration production,uat --output-path dist/my-app-uat",
+    "build:uat": "ng build --output-path dist/my-app-uat",
     "watch": "ng build --watch --configuration development",
     "test": "ng test"
   },

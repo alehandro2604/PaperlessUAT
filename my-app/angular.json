@@ -48,14 +48,6 @@
               "optimization": false,
               "extractLicenses": false,
               "sourceMap": true
-            },
-            "uat": {
-              "fileReplacements": [
-                {
-                  "replace": "src/app/sharepoint.target.ts",
-                  "with": "src/app/sharepoint.target.uat.ts"
-                }
-              ]
             }
           },
           "defaultConfiguration": "production"
@@ -67,14 +59,7 @@
               "buildTarget": "my-app:build:production"
             },
             "development": {
-              "buildTarget": "my-app:build:development"
-            },
-            "live": {
               "buildTarget": "my-app:build:development",
-              "port": 4200
-            },
-            "uat": {
-              "buildTarget": "my-app:build:development,uat",
               "port": 4201
             }
           },
