@@ -10,6 +10,7 @@ import { CommentService, CommentTask } from './comment.service';
 import { DelegateService, DomainUser } from './delegate.service';
 import { SiteMetadataService } from './site-metadata.service';
 import { UserService } from './user.service';
+import { isSameTask } from '../utils/task-identity';
 
 export interface TaskComment {
   id: string;
@@ -251,10 +252,11 @@ export class TodoService {
     this.tasks.next(updated);
   }
 
-  removeTask(taskId: string): void {
+  /** Pass `listName` so a task with the same id in another list is left alone. */
+  removeTask(taskId: string, listName?: string): void {
     const id = String(taskId ?? '').trim();
     if (!id) return;
-    this.tasks.next(this.tasks.value.filter(task => String(task.id ?? '').trim() !== id));
+    this.tasks.next(this.tasks.value.filter(task => !isSameTask(task, id, listName)));
   }
 
   /**

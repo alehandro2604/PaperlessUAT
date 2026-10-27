@@ -24,6 +24,7 @@ import { FolderTasksStore } from './folder-tasks.store';
 import { AttachmentsStore } from './attachments.store';
 import { HrFilesStore } from './hr-files.store';
 import { AllFilesStore } from './all-files.store';
+import { isSameTask } from '../utils/task-identity';
 
 /**
  * The To Do list: first load, paging/"load more", background procurement drain, incremental refresh, subordinate mode and the To Do cache.
@@ -862,21 +863,21 @@ export class TodoStore {
    * Remove a completed/delegated task from the To Do Redis snapshot (`tasks:hr-user`)
    * so the next instant paint does not bring it back.
    */
-  removeTaskFromTodoCache(taskId: string): void {
+  removeTaskFromTodoCache(taskId: string, listName?: string): void {
     const id = String(taskId ?? '').trim();
     if (!id) return;
 
     const cached = this.todoStore.getAll();
     if (!Array.isArray(cached) || cached.length === 0) return;
 
-    const next = cached.filter((item: any) => String(item?.id ?? '').trim() !== id);
+    const next = cached.filter((item: any) => !isSameTask(item, id, listName));
     if (next.length === cached.length) return;
 
     this.todoStore.replaceAll(next);
   }
 
   /** Merge field updates into the To Do Redis snapshot for one task id. */
-  patchTaskInTodoCache(taskId: string, patch: (item: any) => any): void {
+  patchTaskInTodoCache(taskId: string, patch: (item: any) => any, listName?: string): void {
     const id = String(taskId ?? '').trim();
     if (!id) return;
 
@@ -885,7 +886,7 @@ export class TodoStore {
 
     let changed = false;
     const next = cached.map((item: any) => {
-      if (String(item?.id ?? '').trim() !== id) return item;
+      if (!isSameTask(item, id, listName)) return item;
       changed = true;
       return patch(item);
     });

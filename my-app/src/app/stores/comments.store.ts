@@ -15,6 +15,7 @@ import { isSyntheticCommentCard, shouldHideCommentStatus, isCommentTypeItem, ext
 import { isItemSubmittedBy, getDateSearchTokens, getTaskEFormTitle, extractTrailingFolderId } from '../utils/hr-task-matching';
 import { buildHrTaskDetailRows } from '../utils/hr-task-detail';
 import { extractPersonName, collectTaskAssigneeValues } from '../utils/person-name-matching';
+import { getTaskListName, isSameTask } from '../utils/task-identity';
 import { HrTaskDetailTone, HrTaskDetailView } from '../models/hr-task-detail.model';
 import { ViewRefreshService } from './view-refresh.service';
 import { UiStore } from './ui.store';
@@ -365,15 +366,12 @@ export class CommentsStore {
 
   /** "list|title" - the file a task or comment belongs to when it has no eForm list ID. */
   private getTaskFileKey(item: { listName?: unknown; name?: unknown; eFormDetails?: Record<string, unknown> }): string {
-    const listName = String(item.listName ?? item.eFormDetails?.['listName'] ?? '').trim().toLowerCase();
-    const title = getTaskEFormTitle(item).toLowerCase();
-    return `${listName}|${title}`;
+    return `${getTaskListName(item)}|${getTaskEFormTitle(item).toLowerCase()}`;
   }
 
   /** "list#id" - item ids are only unique within one SharePoint list. */
   private getTaskItemKey(item: { id?: unknown; listName?: unknown; eFormDetails?: Record<string, unknown> }): string {
-    const listName = String(item.listName ?? item.eFormDetails?.['listName'] ?? '').trim().toLowerCase();
-    return `${listName}#${String(item.id ?? '').trim()}`;
+    return `${getTaskListName(item)}#${String(item.id ?? '').trim()}`;
   }
 
   /** The opened To Do group's tasks (list#id) and the files they belong to (list|title). */
@@ -877,7 +875,9 @@ export class CommentsStore {
           .map(key => String(savedFields?.[key] ?? '').trim())
           .find(value => /complet/i.test(value)) || 'Completed';
 
-      this.todoService.removeTask(taskId);
+      // Ids repeat across lists, so remove/update only this list's item.
+      const listName = getTaskListName(task);
+      this.todoService.removeTask(taskId, listName);
       // Keep Redis in sync - otherwise the completed task reappears on the next
       // cache paint until a full Graph refresh replaces the snapshot.
       this.folderTasks.syncTaskCachesAfterMutation(task, 'complete');
@@ -887,7 +887,7 @@ export class CommentsStore {
         : `[Completed by ${completedByName}]`;
 
       this.commentItems = this.commentItems.map(item => {
-        if (String(item.id ?? '').trim() !== taskId) {
+        if (!isSameTask(item, taskId, listName)) {
           return item;
         }
 

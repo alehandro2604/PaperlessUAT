@@ -20,6 +20,7 @@ import { TodoStore } from './todo.store';
 import { AttachmentsStore } from './attachments.store';
 import { HrFilesStore } from './hr-files.store';
 import { AllFilesStore } from './all-files.store';
+import { getTaskListName, isSameTask } from '../utils/task-identity';
 
 /**
  * Loading the tasks that belong to a folder (All Files library folder or HR Files person), with shared Redis caching, prefetch and cache patching after edits.
@@ -639,19 +640,20 @@ export class FolderTasksStore {
   }
 
   /** Remove a task from every in-memory folder-task snapshot (HR + All Files). */
-  removeTaskFromFolderCaches(taskId: string): void {
-    this.mapTaskInFolderCaches(taskId, () => null);
+  removeTaskFromFolderCaches(taskId: string, listName?: string): void {
+    this.mapTaskInFolderCaches(taskId, () => null, listName);
   }
 
   /** Patch a task inside every in-memory folder-task snapshot that contains it. */
-  patchTaskInFolderCaches(taskId: string, patch: (item: any) => any): void {
-    this.mapTaskInFolderCaches(taskId, patch);
+  patchTaskInFolderCaches(taskId: string, patch: (item: any) => any, listName?: string): void {
+    this.mapTaskInFolderCaches(taskId, patch, listName);
   }
 
   /**
    * Walk HR / lib folder-task caches. Return `null` from `mapFn` to remove the item.
+   * Pass `listName` so a task with the same id in another list is left alone.
    */
-  mapTaskInFolderCaches(taskId: string, mapFn: (item: any) => any | null): void {
+  mapTaskInFolderCaches(taskId: string, mapFn: (item: any) => any | null, listName?: string): void {
     const id = String(taskId ?? '').trim();
     if (!id) return;
 
@@ -662,7 +664,7 @@ export class FolderTasksStore {
         let changed = false;
         const next: any[] = [];
         for (const item of data) {
-          if (String(item?.id ?? '').trim() !== id) {
+          if (!isSameTask(item, id, listName)) {
             next.push(item);
             continue;
           }
@@ -737,24 +739,26 @@ export class FolderTasksStore {
   ): void {
     const taskId = String(task?.id ?? task?.Id ?? '').trim();
     if (!taskId) return;
+    // Ids repeat across lists; the list name keeps other lists' tasks untouched.
+    const listName = getTaskListName(task);
 
     if (kind === 'complete') {
-      this.todo.removeTaskFromTodoCache(taskId);
-      this.removeTaskFromFolderCaches(taskId);
+      this.todo.removeTaskFromTodoCache(taskId, listName);
+      this.removeTaskFromFolderCaches(taskId, listName);
       this.invalidateRelatedFolderTaskCache(task);
     } else if (kind === 'dueDate' && extras?.dueDate) {
       const dueDate = extras.dueDate;
-      this.todo.patchTaskInTodoCache(taskId, (item) => applyDueDatePatch(item, dueDate));
-      this.patchTaskInFolderCaches(taskId, (item) => applyDueDatePatch(item, dueDate));
+      this.todo.patchTaskInTodoCache(taskId, (item) => applyDueDatePatch(item, dueDate), listName);
+      this.patchTaskInFolderCaches(taskId, (item) => applyDueDatePatch(item, dueDate), listName);
     } else if (kind === 'delegate') {
       const name = String(extras?.assignedToName ?? '').trim();
       const email = String(extras?.assignedToEmail ?? '').trim();
       if (!this.isAssigneeCurrentUser(name, email)) {
-        this.todo.removeTaskFromTodoCache(taskId);
+        this.todo.removeTaskFromTodoCache(taskId, listName);
       } else {
-        this.todo.patchTaskInTodoCache(taskId, (item) => this.applyAssigneePatch(item, name, email));
+        this.todo.patchTaskInTodoCache(taskId, (item) => this.applyAssigneePatch(item, name, email), listName);
       }
-      this.patchTaskInFolderCaches(taskId, (item) => this.applyAssigneePatch(item, name, email));
+      this.patchTaskInFolderCaches(taskId, (item) => this.applyAssigneePatch(item, name, email), listName);
       this.invalidateRelatedFolderTaskCache(task);
     } else if (kind === 'comment') {
       // Action comments may change assignee (handled via delegate); still refresh folder snapshots.
