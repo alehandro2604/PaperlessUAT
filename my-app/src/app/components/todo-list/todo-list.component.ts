@@ -9,6 +9,7 @@ import { DomainUser, SubordinaryTaskService } from '../../services/subordinaryTa
 import { CompleteTaskEvent, NewCommentCompleteComponent } from '../new-comment/complete/complete';
 import { ChangeTaskDateComponent } from './change task date/date';
 import { ClaimComponent, TaskClaimedEvent } from '../Claimable Task/claim';
+import { getTaskListFamily } from '../../utils/task-identity';
 
 export interface SubmitterSelection {
   name: string;
@@ -24,7 +25,7 @@ export interface SubmitterGroup{
   submitterKey: string;
   submitterName: string;
   email?: string;
-  subGroups: { groupKey: string; eFormListId: string; taskLabel: string; tasks: ToDoTask[] }[];
+  subGroups: { groupKey: string; eFormListId: string; taskLabel: string; formName: string; tasks: ToDoTask[] }[];
   totalCount: number;
 }
 
@@ -203,7 +204,8 @@ export class TodoListComponent implements OnInit, OnDestroy {
       if (!submitter) submitter = '__unknown__';
       const eFormListId = String(task.eFormDetails?.eFormListId ?? '').trim() || 'Unknown eForm';
       const eFormTitle = this.getTaskEFormTitle(task);
-      const key = this.buildGroupKey(submitter, eFormListId, eFormTitle);
+      const listFamily = getTaskListFamily(task);
+      const key = this.buildGroupKey(submitter, eFormListId, listFamily, eFormTitle);
 
       if (!groups[key]) groups[key] = [];
       groups[key].push(task);
@@ -365,7 +367,8 @@ export class TodoListComponent implements OnInit, OnDestroy {
          */
         // Internal key can be a placeholder, but we never display "Unknown User".
         const submitterKey = String(employee.ADmail || employee.PinNo || employee.FullName || '__unknown__').trim();
-        const groupKey = this.buildGroupKey(submitterKey, eFormListId, eFormTitle);
+        const listFamily = getTaskListFamily(task as any);
+        const groupKey = this.buildGroupKey(submitterKey, eFormListId, listFamily, eFormTitle);
 
         if (!groups[groupKey]) {
           groups[groupKey] = [];
@@ -552,6 +555,7 @@ export class TodoListComponent implements OnInit, OnDestroy {
         groupKey,
         eFormListId: eFormListId && eFormListId !== 'Unknown eForm' ? eFormListId : '',
         taskLabel: this.getGroupTaskLabel(groupKey),
+        formName: this.getGroupFormName(groupKey),
         tasks,
       });
 
@@ -749,6 +753,19 @@ export class TodoListComponent implements OnInit, OnDestroy {
     return this.showSubordinateTasks ? 'Subordinate pending tasks' : 'Tasks assigned to you';
   }
 
+  /** Form name for a card, e.g. "Missing Punch" or "Sick Leave By Appointment". */
+  getGroupFormName(groupKey: string): string {
+    const task: any = this.activeGroupedTasks[groupKey]?.[0] ?? {};
+    const raw = String(task.eFormDetails?.type ?? task.name ?? '').trim();
+    const listName = String(task.listName ?? task.eFormDetails?.listName ?? '').trim();
+    // Workflow lists (ProcTasks1, ECTasks...) put the list name here, not a form name.
+    if (!raw || raw.toLowerCase() === listName.toLowerCase()) return '';
+    const name = raw.replace(/([a-z])([A-Z])/g, '$1 $2');
+    const title = this.getTaskEFormTitle(task);
+    // Procurement files use the file name as both, so don't show it twice.
+    return name.toLowerCase() !== title.toLowerCase() ? name : '';
+  }
+
   private getTaskEFormListId(task: { eFormDetails?: { eFormListId?: unknown } }): string {
     return String(task.eFormDetails?.eFormListId ?? '').trim() || 'Unknown eForm';
   }
@@ -769,19 +786,20 @@ export class TodoListComponent implements OnInit, OnDestroy {
   }
 
 
-  private buildGroupKey(submitter: string, eFormListId: string, eFormTitle: string): string {
-    // Key format: submitter:eFormListId:eFormTitle
-    return [submitter, eFormListId, eFormTitle].join(TodoListComponent.GROUP_KEY_SEP);
+  private buildGroupKey(submitter: string, eFormListId: string, listFamily: string, eFormTitle: string): string {
+    // Key format: submitter:eFormListId:listFamily:eFormTitle
+    return [submitter, eFormListId, listFamily, eFormTitle].join(TodoListComponent.GROUP_KEY_SEP);
   }
 
-  private parseGroupKey(groupKey: string): { submitter: string; eFormListId: string; eFormTitle: string } {
+  private parseGroupKey(groupKey: string): { submitter: string; eFormListId: string; listFamily: string; eFormTitle: string } {
     const sep = TodoListComponent.GROUP_KEY_SEP;
     const parts = String(groupKey ?? '').split(sep);
-    if (parts.length <= 1) return { submitter: groupKey, eFormListId: '', eFormTitle: '' };
+    if (parts.length <= 1) return { submitter: groupKey, eFormListId: '', listFamily: '', eFormTitle: '' };
     const submitter = parts[0] ?? '';
     const eFormListId = parts[1] ?? '';
-    const eFormTitle = parts.slice(2).join(sep); // preserve any separators in title
-    return { submitter, eFormListId, eFormTitle };
+    const listFamily = parts[2] ?? '';
+    const eFormTitle = parts.slice(3).join(sep); // preserve any separators in title
+    return { submitter, eFormListId, listFamily, eFormTitle };
   }
   // ── END: Group tasks by eForm List ID ────────────────────────────
 

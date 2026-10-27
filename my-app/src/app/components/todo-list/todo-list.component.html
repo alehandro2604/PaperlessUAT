@@ -116,6 +116,7 @@
             <div class="user-info">
               <span class="user-meta">{{ sub.taskLabel }}</span>
               <span class="user-meta">
+                <ng-container *ngIf="sub.formName">{{ sub.formName }} · </ng-container>
                 <ng-container *ngIf="sub.eFormListId">eForm {{ sub.eFormListId }} · </ng-container>{{ sub.tasks[0].createdDate | date:'dd/MM/yyyy HH:mm' }}
               </span>
             </div>
