@@ -10,6 +10,15 @@ export function getTaskListName(item: { listName?: unknown; eFormDetails?: unkno
 }
 
 /**
+ * The list a form belongs to, ignoring copies: "ProcTasks1" and "ProcTasksArchive"
+ * both give "proctasks". Used to tell apart forms that share an eForm number
+ * (Increment #14 in HRTaskIncrement is not Pr-Computer-14 in ProcTasks1).
+ */
+export function getTaskListFamily(item: { listName?: unknown; eFormDetails?: unknown } | null | undefined): string {
+  return getTaskListName(item).replace(/archive$/, '').replace(/\d+$/, '');
+}
+
+/**
  * True when `item` is the task with this id in this list. When either side has
  * no list name, falls back to matching on id alone (the old behaviour).
  */

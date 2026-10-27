@@ -1,4 +1,4 @@
-import { getTaskListName, isSameTask } from './task-identity';
+import { getTaskListFamily, getTaskListName, isSameTask } from './task-identity';
 
 describe('task identity', () => {
   const shiftDev51 = { id: '51', listName: 'SAPTaskShiftingAndDeviation' };
@@ -27,6 +27,18 @@ describe('task identity', () => {
   it('falls back to id only when a list name is missing', () => {
     expect(isSameTask(noFlow51, '51')).toBe(true);
     expect(isSameTask({ id: '51' }, '51', 'NoFlowTasks')).toBe(true);
+  });
+
+  it('treats numbered and archive copies of a list as the same form list', () => {
+    expect(getTaskListFamily({ listName: 'ProcTasks1' })).toBe('proctasks');
+    expect(getTaskListFamily({ listName: 'ProcTasksArchive' })).toBe('proctasks');
+    expect(getTaskListFamily({ listName: 'ProcTasks' })).toBe('proctasks');
+  });
+
+  it('keeps forms with the same eForm number in different lists apart', () => {
+    const increment = getTaskListFamily({ listName: 'HRTaskIncrement' });
+    expect(increment).not.toBe(getTaskListFamily({ listName: 'ProcTasks1' }));
+    expect(increment).not.toBe(getTaskListFamily({ listName: 'HRTaskSickLeaveByAppointment' }));
   });
 
   it('never matches a different or empty id', () => {

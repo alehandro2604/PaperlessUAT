@@ -15,7 +15,7 @@ import { isSyntheticCommentCard, shouldHideCommentStatus, isCommentTypeItem, ext
 import { isItemSubmittedBy, getDateSearchTokens, getTaskEFormTitle, extractTrailingFolderId } from '../utils/hr-task-matching';
 import { buildHrTaskDetailRows } from '../utils/hr-task-detail';
 import { extractPersonName, collectTaskAssigneeValues } from '../utils/person-name-matching';
-import { getTaskListName, isSameTask } from '../utils/task-identity';
+import { getTaskListFamily, getTaskListName, isSameTask } from '../utils/task-identity';
 import { HrTaskDetailTone, HrTaskDetailView } from '../models/hr-task-detail.model';
 import { ViewRefreshService } from './view-refresh.service';
 import { UiStore } from './ui.store';
@@ -397,6 +397,28 @@ export class CommentsStore {
     return { items, files };
   }
 
+  /**
+   * Lists (ignoring archive copies) that the opened group's tasks come from. An eForm
+   * number is only unique within its list: Increment #14 and Pr-Computer-14 both have 14.
+   */
+  private getSelectedFormListFamilies(): Set<string> {
+    const families = new Set<string>();
+    const formId = String(this.todo.selectedEFormListId ?? '').trim();
+    for (const id of this.todo.selectedGroupTaskIds) {
+      const sameId = this.todoService.getTasksById(id);
+      const candidates = sameId.length
+        ? sameId
+        : this.commentItems.filter(item => String(item.id ?? '').trim() === id);
+      for (const task of candidates) {
+        // Ids repeat across lists too, so only keep the task that has this group's form number.
+        if (String((task as any).eFormDetails?.eFormListId ?? '').trim() !== formId) continue;
+        const family = getTaskListFamily(task as any);
+        if (family) families.add(family);
+      }
+    }
+    return families;
+  }
+
   filterCommentItems(): Array<typeof this.commentItems[0]> {
     let filtered = this.commentItems;
     if (this.todo.selectedSubmitter && !this.ui.showAllFilesSection) {
@@ -404,6 +426,10 @@ export class CommentsStore {
       // every comment without one would match. Link them on list + Title instead.
       const noFormIdTasks = this.todo.selectedEFormListId === 'Unknown eForm'
         ? this.getSelectedTaskKeys()
+        : null;
+      // Forms with an ID: same number in another list is a different form.
+      const formListFamilies = this.todo.selectedEFormListId && !noFormIdTasks
+        ? this.getSelectedFormListFamilies()
         : null;
 
       filtered = filtered.filter(item => {
@@ -420,6 +446,12 @@ export class CommentsStore {
           !noFormIdTasks.files.has(this.getTaskFileKey(item))
         ) {
           return false;
+        }
+
+        if (formListFamilies?.size) {
+          const itemFamily = getTaskListFamily(item);
+          // Items without a list name (e.g. a just-saved comment card) are kept.
+          if (itemFamily && !formListFamilies.has(itemFamily)) return false;
         }
 
         const isCommentEntry = isCommentTypeItem(item);
