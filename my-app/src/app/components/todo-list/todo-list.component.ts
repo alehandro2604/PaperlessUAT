@@ -495,15 +495,6 @@ export class TodoListComponent implements OnInit, OnDestroy {
     );
   }
 
-  get filteredSubmitterNames(): string[] {
-    if (!this.searchTerm.trim()) return this.submitterNames;
-    const query = this.searchTerm.toLowerCase().trim();
-    return this.submitterNames.filter(name => {
-      if (name.toLowerCase().includes(query)) return true;
-      if (this.showSubordinateTasks && this.getEmployeeFullName(name).toLowerCase().includes(query)) return true;
-      return this.activeGroupedTasks[name].some(task => this.taskMatchesSearch(task, query));
-    });
-  }
 
   get groupedBySubmitter(): SubmitterGroup[] {
     /**
@@ -586,11 +577,14 @@ export class TodoListComponent implements OnInit, OnDestroy {
           (group.email ?? '').toLowerCase().includes(query);
         if (nameMatches) return group;
   
-        const filteredSubGroups = group.subGroups.filter(sg =>
-          sg.taskLabel.toLowerCase().includes(query) ||
-          sg.tasks.some(t => this.taskMatchesSearch(t, query))
-        );
-        return filteredSubGroups.length ? { ...group, subGroups: filteredSubGroups } : null;
+        const filteredSubGroups = group.subGroups.filter(sg => this.subGroupMatchesSearch(sg, query));
+        return filteredSubGroups.length
+          ? {
+              ...group,
+              subGroups: filteredSubGroups,
+              totalCount: filteredSubGroups.reduce((n, sg) => n + sg.tasks.length, 0),
+            }
+          : null;
       })
       .filter((g): g is SubmitterGroup => g !== null);
   }
@@ -611,23 +605,13 @@ export class TodoListComponent implements OnInit, OnDestroy {
 
 
 
-  private taskMatchesSearch(task: ToDoTask, query: string): boolean {
-    const extended = task as ToDoTask & {
-      listName?: string;
-      submittedDate?: string;
-      eFormDetails?: Record<string, unknown>;
-    };
-    const searchableValues = [
-      extended.name,
-      extended.description,
-      extended.status,
-      extended.assignedTo,
-      extended.listName,
-      extended.submittedBy,
-      extended.submittedDate,
-      ...Object.values(extended.eFormDetails ?? {}),
-    ];
-    return searchableValues.some(value => String(value ?? '').toLowerCase().includes(query));
+  /** Only what the card displays: task type line, form name and eForm number (never dates). */
+  private subGroupMatchesSearch(
+    sg: { taskLabel: string; formName: string; eFormListId: string },
+    query: string,
+  ): boolean {
+    return [sg.taskLabel, sg.formName, sg.eFormListId, sg.eFormListId ? `eform ${sg.eFormListId}` : '']
+      .some(v => String(v ?? '').toLowerCase().includes(query));
   }
 
 
