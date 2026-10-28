@@ -3,7 +3,8 @@ import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { sharePointConfig } from '../sharepoint.config';
 import { AppConstants } from '../app.constants';
-import { graphGet, isGraphBackgroundBackedOff } from '../microsoft-graph';
+import { graphGet, graphPost, isGraphBackgroundBackedOff } from '../microsoft-graph';
+import { ALL_FILES_GROUPS } from '../hr-task-lists.config';
 import { InteractionRequiredAuthError } from '@azure/msal-browser';
 import { AuthService } from '../services/auth.service';
 import { FormConfigurationService } from '../services/form-configuration.service';
@@ -86,6 +87,20 @@ export class SessionStore {
   } | null = null;
 
   get isUserLoggedIn(): boolean { return !!this.currentUser; }
+
+  /** Which of the ALL_FILES_GROUPS the signed-in user belongs to (read once at sign-in; empty if the lookup fails). */
+  groupIds = new Set<string>();
+
+  private async loadGroupMemberships(token: string): Promise<void> {
+    try {
+      const res: any = await firstValueFrom(
+        graphPost(this.http, '/me/checkMemberGroups', { groupIds: Object.values(ALL_FILES_GROUPS) }, token),
+      );
+      this.groupIds = new Set<string>(res?.value ?? []);
+    } catch {
+      this.groupIds = new Set<string>();
+    }
+  }
 
   // Site info lives in SiteMetadataService; these just read it (no second copy).
   get cachedSiteId(): string | null { return this.siteMetadataService.current?.siteId ?? null; }
@@ -209,6 +224,7 @@ export class SessionStore {
 
           // Set current user in UserService for other components to use
           this.userService.setCurrentUser(this.currentUser);
+          void this.loadGroupMemberships(token);
 
           // Hydrate personal + shared Redis crawl cache so All Files / HR Files
           // paint instantly after a tab restart (including other users' folder crawls).

@@ -209,8 +209,8 @@
           <h2>Comments</h2>
         </div>
         <div class="header-actions">
-          <div class="plus-btn" *ngIf="ui.showToDoSection">
-            <button type="button" aria-label="Add new comment" (click)="comments.openNewCommentModal(); $event.stopPropagation()">
+          <div class="plus-btn" *ngIf="ui.showToDoSection || ui.showAllFilesSection" [class.plus-btn--disabled]="ui.showAllFilesSection && !canAddOnAllFiles">
+            <button type="button" aria-label="Add new comment" [disabled]="ui.showAllFilesSection && !canAddOnAllFiles" (click)="onPlusClick(); $event.stopPropagation()">
               <i class="fi fi-br-plus" aria-hidden="true"></i>
             </button>
           </div>
@@ -642,12 +642,12 @@
 
   <app-new-comment
     [open]="comments.isCommentPanelOpen"
-    [taskId]="comments.selectedTask?.Id ?? ''"
-    [listName]="comments.selectedCommentListName"
-    [eFormListId]="todo.selectedEFormListId ?? ''"
-    [eFormTitle]="todo.selectedEFormTitle ?? ''"
+    [taskId]="allFilesCommentTarget?.taskId ?? comments.selectedTask?.Id ?? ''"
+    [listName]="allFilesCommentTarget?.listName ?? comments.selectedCommentListName"
+    [eFormListId]="allFilesCommentTarget?.eFormListId ?? todo.selectedEFormListId ?? ''"
+    [eFormTitle]="allFilesCommentTarget?.eFormTitle ?? todo.selectedEFormTitle ?? ''"
     [showRequestForAction]="comments.showRequestForActionCategory"
-    (closed)="comments.closeNewCommentModal()"
+    (closed)="onNewCommentClosed()"
     (saved)="comments.onNewCommentSaved($event)"
   ></app-new-comment>
   

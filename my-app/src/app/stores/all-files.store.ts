@@ -60,6 +60,9 @@ export class AllFilesStore {
 
   /** SharePoint lastModifiedBy for the folder selected in All Files (shown as Submitted by). */
   selectedFolderModifiedBy = '';
+  /** Who the open folder is assigned to / who created it (used by the All Files "+" rules). */
+  selectedFolderAssignedTo = '';
+  selectedFolderCreatedBy = '';
 
   /** Library name ? task list name, sourced from the eForms list via FormConfigurationService. */
   documentLibraryTaskMap: Record<string, string> = {};
@@ -279,6 +282,8 @@ export class AllFilesStore {
         const libName = file.libraryName ?? this.attachments.currentLibraryName;
         if (libName) {
           this.selectedFolderModifiedBy = String(file.modifiedby ?? '').trim();
+          this.selectedFolderAssignedTo = String(file.assignedTo ?? '').trim();
+          this.selectedFolderCreatedBy = String(file.createdBy ?? '').trim();
           // ChildSubject accordion: fetch source eForm in parallel (don't wait for task scan).
           void this.primeChildSubjectForFolder(libName, String(file.name || ''), this.selectedAllFilesFolderId);
           this.folderTasks.loadAllFilesTasksForLibrary(libName, String(file.name || ''));
@@ -357,6 +362,8 @@ export class AllFilesStore {
     this.attachments.folderStack = [];
     this.attachments.currentFolderName = folderName;
     this.selectedFolderModifiedBy = String(file.modifiedby ?? '').trim();
+    this.selectedFolderAssignedTo = String(file.assignedTo ?? '').trim();
+    this.selectedFolderCreatedBy = String(file.createdBy ?? '').trim();
     this.ui.hideComments = false;
     Object.assign(this.ui, getCommentsTabMobileState());
 
@@ -411,6 +418,8 @@ export class AllFilesStore {
     this.attachments.folderStack = [];
     this.attachments.currentFolderName = folderName;
     this.selectedFolderModifiedBy = String(file.modifiedby ?? hit.author ?? '').trim();
+    this.selectedFolderAssignedTo = String(file.assignedTo ?? '').trim();
+    this.selectedFolderCreatedBy = String(file.createdBy ?? '').trim();
     this.ui.hideComments = false;
     Object.assign(this.ui, getAttachmentsTabMobileState());
 
@@ -591,6 +600,8 @@ export class AllFilesStore {
     // Tasks and attachments load only when a folder is clicked
     this.selectedFolderName = '';
     this.selectedFolderModifiedBy = '';
+    this.selectedFolderAssignedTo = '';
+    this.selectedFolderCreatedBy = '';
     this.comments.commentItems = [];
     this.comments.commentsMessage = '';
     this.ui.hideComments = true;
@@ -662,6 +673,8 @@ export class AllFilesStore {
     this.attachments.attachmentBrowsingRoot = null;
     this.selectedFolderName = '';
     this.selectedFolderModifiedBy = '';
+    this.selectedFolderAssignedTo = '';
+    this.selectedFolderCreatedBy = '';
     this.folderTasks.selectedHrPersonalTaskFolder = '';
     this.attachments.showUserFile = false;
     this.attachments.userFiles = [];

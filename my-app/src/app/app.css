@@ -2988,6 +2988,15 @@
   border-radius: 8px;
 }
 
+.plus-btn--disabled {
+  color: #9e9e9e;
+  opacity: 0.6;
+}
+
+.plus-btn--disabled button {
+  cursor: not-allowed;
+}
+
 .new-comment-badge{
   width: 30px;
   height: 30px;

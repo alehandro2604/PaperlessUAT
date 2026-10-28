@@ -163,6 +163,11 @@ export class TodoService {
     }
   }
 
+  /** Current To Do tasks (the user's own plus subordinates', as loaded by the To Do store). */
+  get currentTasks(): ToDoTask[] {
+    return this.tasks.value;
+  }
+
   getTasksForCurrentUser(): Observable<ToDoTask[]> {
     return this.tasks.asObservable();
   }
