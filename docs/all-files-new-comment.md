@@ -30,6 +30,61 @@ is disabled. Nothing selected yet is always disabled.
 | 5 | **In my To Do** — the folder name equals the name of one of my To Do tasks (own and subordinates'), and that task is still **pending or in progress** (not completed/rejected) | 1 |
 | 6 | **Per-library rules** (below) — group membership and/or being the person who opened the file | 2, 3, 6, 9–12 |
 
+### Flowchart
+
+```mermaid
+flowchart TD
+    A([User opens a folder in All Files]) --> B{Library selected?}
+    B -- No --> X[/Disabled - greyed out/]
+    B -- Yes --> C{Open library?<br/>CFA / Illicit Connections / TDI}
+    C -- Yes --> OK[/Enabled/]
+    C -- No --> D{Email on allow-list?}
+    D -- Yes --> OK
+    D -- No --> E{Folder's tasks belong to<br/>an SAP workflow eForm?}
+    E -- Yes --> OK
+    E -- No --> F{Assigned to me?}
+    F -- Yes --> OK
+    F -- No --> G{Folder is one of my open To Do /<br/>subordinate tasks?<br/>pending or in progress}
+    G -- Yes --> OK
+    G -- No --> H{Library has a per-library rule?<br/>Procurement / EC / Electricity Supply / PV / NoFlow}
+    H -- No --> X
+    H -- Yes --> I{Member of the library's group?}
+    I -- Yes --> OK
+    I -- No --> J{Library allows the opener<br/>and I created the folder?}
+    J -- Yes --> OK
+    J -- No --> X
+
+    OK --> K([Click +])
+    K --> L{First task in the folder?}
+    L -- No --> M[Log: Select a folder with a task first]
+    L -- Yes --> N[Open the new-comment panel<br/>for that task]
+    N --> O[Save: category + comment + attachments]
+```
+
+### Sequence on click
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant H as app.html (+ button)
+    participant A as AppComponent.onPlusClick
+    participant C as CommentsStore
+    participant P as app-new-comment panel
+    U->>H: click +
+    H->>A: onPlusClick()
+    alt To Do tab
+        A->>C: openNewCommentModal() (selected task)
+    else All Files tab
+        A->>C: read commentItems of open folder
+        A->>A: allFilesCommentTarget = first task (id, list, eForm)
+        A->>C: isCommentPanelOpen = true
+    end
+    C-->>P: open
+    U->>P: category, comment, attachments, save
+    P->>C: onNewCommentSaved()
+    P-->>A: closed -> onNewCommentClosed() clears target
+```
+
 ### Per-library rules (`ALL_FILES_LIBRARY_RULES`)
 
 | Library | Allowed if | Rule |
