@@ -1022,6 +1022,23 @@ export class CommentsStore {
     onCommentLinkClick(event);
   }
 
+  expandedCommentIds = new Set<string>();
+
+  isCommentExpanded(eform: CommentListItem): boolean {
+    return this.expandedCommentIds.has(String(eform.id));
+  }
+
+  toggleCommentExpanded(eform: CommentListItem): void {
+    const id = String(eform.id);
+    if (!this.expandedCommentIds.delete(id)) this.expandedCommentIds.add(id);
+  }
+
+  /** Rough check for a comment that won't fit in the two-line mobile preview. */
+  isLongComment(eform: CommentListItem): boolean {
+    const text = (eform.eFormDetails?.commentHtml ?? '').replace(/<[^>]*>/g, '');
+    return text.trim().length > 80;
+  }
+
   prependCommentItem(item: CommentListItem): void {
     this.commentItems = [item, ...this.commentItems];
     this.invalidateCommentFilters();

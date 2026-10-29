@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, HostListener, Input, OnDestroy, OnInit, forwardRef } from '@angular/core';
+import { Component, ElementRef, HostListener, Input, OnDestroy, OnInit, forwardRef } from '@angular/core';
 import { ControlValueAccessor, NG_VALUE_ACCESSOR } from '@angular/forms';
 import { Subject, Subscription } from 'rxjs';
 
@@ -59,10 +59,19 @@ export class AppDropdownComponent implements ControlValueAccessor, OnInit, OnDes
   open = false;
   value = '';
   disabled = false;
+  /** Fixed-position coordinates so the menu is not clipped by overflow:hidden ancestors. */
+  menuStyle: Record<string, string> = {};
 
   private onChange: (value: string) => void = () => {};
   private onTouched: () => void = () => {};
   private openedSub?: Subscription;
+  private readonly closeOnScroll = (event: Event): void => {
+    const target = event.target as Node | null;
+    if (target && this.host.nativeElement.querySelector('.app-dropdown-menu')?.contains(target)) return;
+    this.setOpen(false);
+  };
+
+  constructor(private readonly host: ElementRef<HTMLElement>) {}
 
   get selectedOption(): AppDropdownOption | undefined {
     return this.options.find(option => option.value === this.value);
@@ -82,12 +91,54 @@ export class AppDropdownComponent implements ControlValueAccessor, OnInit, OnDes
 
   ngOnInit(): void {
     this.openedSub = AppDropdownComponent.opened$.subscribe(source => {
-      if (source !== this) this.open = false;
+      if (source !== this) this.setOpen(false);
     });
   }
 
   ngOnDestroy(): void {
     this.openedSub?.unsubscribe();
+    window.removeEventListener('scroll', this.closeOnScroll, true);
+  }
+
+  /** Single place that opens/closes so the scroll listener only exists while the menu is open. */
+  private setOpen(value: boolean): void {
+    if (this.open === value) return;
+    this.open = value;
+    if (value) {
+      this.positionMenu();
+      window.addEventListener('scroll', this.closeOnScroll, true);
+    } else {
+      window.removeEventListener('scroll', this.closeOnScroll, true);
+    }
+  }
+
+  private positionMenu(): void {
+    const rect = this.host.nativeElement.getBoundingClientRect();
+    const gap = 6;
+    const margin = 8;
+    const width = Math.max(rect.width, 220);
+    // Content-sized variant (see CSS): only set a minimum width and reserve its max width when clamping.
+    const contentSized = this.host.nativeElement.classList.contains('assigned-select-dropdown');
+    const clampWidth = contentSized ? 320 : width;
+    const spaceBelow = window.innerHeight - rect.bottom - gap - margin;
+    const spaceAbove = rect.top - gap - margin;
+    const openUp = spaceBelow < 180 && spaceAbove > spaceBelow;
+    const maxHeight = Math.min(320, openUp ? spaceAbove : spaceBelow);
+    const preferredLeft = this.menuAlign === 'right' ? rect.right - width : rect.left;
+    const left = Math.max(margin, Math.min(preferredLeft, window.innerWidth - clampWidth - margin));
+    this.menuStyle = {
+      left: `${left}px`,
+      right: 'auto',
+      ...(contentSized ? { minWidth: `${width}px` } : { width: `${width}px` }),
+      maxHeight: `${Math.max(maxHeight, 80)}px`,
+      top: openUp ? 'auto' : `${rect.bottom + gap}px`,
+      bottom: openUp ? `${window.innerHeight - rect.top + gap}px` : 'auto',
+    };
+  }
+
+  @HostListener('window:resize')
+  closeOnResize(): void {
+    this.setOpen(false);
   }
 
   writeValue(value: string | null): void {
@@ -109,7 +160,7 @@ export class AppDropdownComponent implements ControlValueAccessor, OnInit, OnDes
   toggle(event: Event): void {
     event.stopPropagation();
     if (this.disabled) return;
-    this.open = !this.open;
+    this.setOpen(!this.open);
     if (this.open) {
       AppDropdownComponent.opened$.next(this);
       this.onTouched();
@@ -121,11 +172,11 @@ export class AppDropdownComponent implements ControlValueAccessor, OnInit, OnDes
     if (option.disabled || this.disabled) return;
     this.value = option.value;
     this.onChange(this.value);
-    this.open = false;
+    this.setOpen(false);
   }
 
   @HostListener('document:click')
   closeOnOutsideClick(): void {
-    this.open = false;
+    this.setOpen(false);
   }
 }

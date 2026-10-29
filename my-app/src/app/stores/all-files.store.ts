@@ -274,9 +274,9 @@ export class AllFilesStore {
         this.attachments.attachmentBrowsingRoot = { id: file.id, name: file.name, webUrl: file.webUrl ?? '' };
         this.attachments.folderStack = [];
         this.attachments.currentFolderName = file.name;
-        // Show Attachments immediately - tasks load in the background for Comments.
+        // Mobile opens on Comments; Attachments are one tab away and keep loading in the background.
         this.ui.hideComments = false;
-        Object.assign(this.ui, getAttachmentsTabMobileState());
+        Object.assign(this.ui, getCommentsTabMobileState());
         void this.attachments.loadDriveFolderContents(driveId, file.id, file.webUrl, file.name);
 
         const libName = file.libraryName ?? this.attachments.currentLibraryName;

@@ -1,10 +1,9 @@
 import { DatePipe } from '@angular/common';
-import { Component, effect, inject, input, signal } from '@angular/core';
+import { Component, HostListener, effect, inject, input, signal } from '@angular/core';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { AttachmentFile } from '../attachments/attachment-list/attachment-list';
 import { AuthService } from '../../services/auth.service';
 import { DriveFilesService } from '../../services/drive-files.service';
-
 /** Shows a live SharePoint preview of one file. */
 @Component({
   selector: 'app-preview-attachments',
@@ -24,6 +23,13 @@ export class PreviewAttachments {
   private auth = inject(AuthService);            // gets the login token
   private driveFiles = inject(DriveFilesService); // calls Graph
   private sanitizer = inject(DomSanitizer);      // lets us put the link in an iframe
+  protected expand = signal(false);                       // whether the user clicked "expand" to see the full preview
+  protected toggleExpand(): void { this.expand.update(v => !v); }
+
+  // Collapse the expanded preview on Esc, or if the window is resized.
+  @HostListener('document:keydown.escape')
+  @HostListener('window:resize')
+  protected collapse(): void { this.expand.set(false); }
 
   constructor() {
     // effect() re-runs whenever a signal it reads changes. Here: every time file() changes.
@@ -37,6 +43,7 @@ export class PreviewAttachments {
   private async load(f: AttachmentFile): Promise<void> {
     this.status.set('loading');
     this.link.set(null);
+    this.expand.set(false);           // a new file always starts collapsed
 
     if (!f.driveId) {                 // e.g. an HR task list item, not a SharePoint file
       this.status.set('failed');

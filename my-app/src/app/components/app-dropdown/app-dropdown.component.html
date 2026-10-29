@@ -30,6 +30,7 @@
   *ngIf="open"
   class="app-dropdown-menu"
   [class.app-dropdown-menu--align-right]="menuAlign === 'right'"
+  [ngStyle]="menuStyle"
   role="listbox"
   [attr.aria-label]="ariaLabel"
   (click)="$event.stopPropagation()"

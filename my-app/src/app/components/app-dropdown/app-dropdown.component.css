@@ -168,7 +168,8 @@
 }
 
 .app-dropdown-menu {
-  position: absolute;
+  /* fixed (coords set in the component) so overflow:hidden parents cannot clip the menu */
+  position: fixed;
   top: calc(100% + 6px);
   left: 0;
   z-index: 50;
@@ -252,7 +253,7 @@
 /* Grow to fit full names instead of cutting them off */
 :host(.assigned-select-dropdown) .app-dropdown-menu {
   width: max-content;
-  min-width: max(100%, 220px);
+  min-width: 220px;
   max-width: min(320px, calc(100vw - 48px));
 }
 

@@ -278,4 +278,48 @@
   .task-detail-grid--2 {
     grid-template-columns: minmax(0, 1fr);
   }
+
+  .task-detail-close {
+    width: 44px;
+    height: 44px;
+  }
+
+  .task-detail-section h4 {
+    margin: 16px 0 8px;
+  }
+
+  /* References and details: one grouped card, label left / value right, instead of tall stacked tiles */
+  .task-detail-grid:has(> .task-detail-tile:not(.task-detail-tile--outline)) {
+    gap: 0;
+    border: 1px solid var(--td-border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+
+  .task-detail-grid > .task-detail-tile:not(.task-detail-tile--outline) {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 16px;
+    padding: 11px 14px;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .task-detail-grid > .task-detail-tile:not(.task-detail-tile--outline) + .task-detail-tile:not(.task-detail-tile--outline) {
+    border-top: 1px solid var(--td-border);
+  }
+
+  .task-detail-grid > .task-detail-tile:not(.task-detail-tile--outline) .task-detail-label {
+    flex-shrink: 0;
+  }
+
+  .task-detail-grid > .task-detail-tile:not(.task-detail-tile--outline) .task-detail-value {
+    text-align: right;
+  }
+
+  .task-detail-timeline-date {
+    white-space: normal;
+    text-align: right;
+  }
 }

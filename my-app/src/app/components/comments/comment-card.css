@@ -227,6 +227,10 @@
   color: var(--brand-blue);
 }
 
+.comment-card-more {
+  display: none;
+}
+
 @media (max-width: 640px) {
   .eform-list .eform-item {
     padding: 14px;
@@ -236,13 +240,118 @@
     font-size: 15px;
   }
 
-  .comment-card-people,
   .comment-card-extras {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* People: two equal columns, same left edge, divider between */
+  .comment-card-people {
+    gap: 0;
+    padding: 0;
+  }
+
+  .comment-card-person {
+    padding: 10px 0;
+  }
+
+  .comment-card-person + .comment-card-person {
+    padding-left: 14px;
+    border-left: 1px solid var(--cc-border);
+  }
+
+  .comment-card-person--assigned,
+  .comment-card-person--completed {
+    justify-self: stretch;
+  }
+
+  .comment-card-label {
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--cc-muted);
+  }
+
+  .comment-card-name {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    overflow-wrap: normal;
+  }
+
+  /* Comment preview: quote style, two lines max */
+  .comment-card-message {
+    padding: 2px 0 2px 10px;
+    border-left: 2px solid var(--cc-border);
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .comment-card-message .comment-text {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .comment-card-message.is-expanded .comment-text {
+    display: block;
+    -webkit-line-clamp: unset;
+    overflow: visible;
+  }
+
+  .comment-card-more {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 32px;
+    margin: 4px 0 0 12px;
+    padding: 0;
+    border: none;
+    background: none;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--brand-blue);
+    cursor: pointer;
+  }
+
+  /* Actions: delegate icon on the left, View details fills the rest, 44px tap targets */
+  .eform-list .eform-item .eform-actions {
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+  }
+
+  .eform-list .eform-item .eform-actions app-delegate-component {
+    flex: none;
+    margin-right: 0;
   }
 
   .comment-card-btn {
     flex: 1;
     justify-content: center;
+    min-height: 44px;
+  }
+
+  .comment-card-btn:active {
+    filter: brightness(0.95);
+  }
+}
+
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Upload box (New Attachment) + both RFA panels */
+.file-upload-form,
+.request-for-action-col,
+.request-for-action-assign-panel {
+  animation: panel-in 0.22s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .file-upload-form,
+  .request-for-action-col,
+  .request-for-action-assign-panel {
+    animation: none;
   }
 }

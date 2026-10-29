@@ -39,7 +39,7 @@ export function isHrSourceEFormList(listName: string): boolean {
   if (!key) return false;
   if (HR_SOURCE_EFORM_LIST_NAMES.some(name => name.toLowerCase() === key)) return true;
   if (key.includes('sickcertificate')) return true;
-  return /_eform$/i.test(key) || /eform$/i.test(key.replace(/[^a-z0-9]/g, ''));//this os checking if the list name ends with _eform or eform
+  return /_eform$/i.test(key) || /eform$/i.test(key.replace(/[^a-z0-9]/g, ''));//this is checking if the list name ends with _eform or eform
 }
 
 /** Increment / probation / performance review are created by HR; Title holds the employee email. */

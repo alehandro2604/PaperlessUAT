@@ -17,7 +17,7 @@
   padding: 18px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   overflow: visible;
-  transition: width 0.2s ease;
+  transition: width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .new-comment-modal--with-upload {
@@ -55,14 +55,40 @@
 }
 
 .new-comment-content-row {
-  display: block;
+  display: grid;
+  /* Same track structure as the --split state so the browser can interpolate it */
+  grid-template-columns: minmax(0, 1fr) minmax(0px, 0px);
+  gap: 0;
+  transition: grid-template-columns 0.45s cubic-bezier(0.4, 0, 0.2, 1),
+              gap 0.45s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .new-comment-content-row--split {
-  display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
   gap: 16px;
   align-items: start;
+}
+
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.file-upload-form,
+.request-for-action-col,
+.request-for-action-assign-panel {
+  /* Slight delay so the panel fades in as the container finishes opening */
+  animation: panel-in 0.35s cubic-bezier(0.4, 0, 0.2, 1) 0.15s both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .new-comment-content-row { transition: none; }
+
+  .file-upload-form,
+  .request-for-action-col,
+  .request-for-action-assign-panel {
+    animation: none;
+  }
 }
 
 .new-comment-comment-col {

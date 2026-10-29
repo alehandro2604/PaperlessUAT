@@ -5,7 +5,7 @@ import { sharePointConfig } from '../sharepoint.config';
 import { AppConstants } from '../app.constants';
 import { graphGetWithRetry, clearGraphThrottleCooldown, toGraphPath, normalizeName } from '../microsoft-graph';
 import { AuthService } from '../services/auth.service';
-import { getAttachmentsTabMobileState, getTaskTabMobileState } from '../components/mobile navigation/mobile-navigation';
+import { getCommentsTabMobileState, getTaskTabMobileState } from '../components/mobile navigation/mobile-navigation';
 import { FileCrawlCacheService } from '../services/file-crawl.service';
 import { SiteMetadataService } from '../services/site-metadata.service';
 import { DriveFilesService } from '../services/drive-files.service';
@@ -676,8 +676,8 @@ export class HrFilesStore {
       this.comments.commentsMessage = '';
     }
     this.comments.invalidateCommentFilters();
-    // Attachments first — tasks continue in the background for Comments.
-    Object.assign(this.ui, getAttachmentsTabMobileState());
+    // Mobile opens on Comments; Attachments are one tab away and keep loading in the background.
+    Object.assign(this.ui, getCommentsTabMobileState());
     this.view.refreshView();
     void this.attachments.loadDriveFolderContents(driveId, item.id, item.webUrl, item.name);
     this.folderTasks.loadAllFilesTasksForLibrary(this.targetLibraryName, item.name);

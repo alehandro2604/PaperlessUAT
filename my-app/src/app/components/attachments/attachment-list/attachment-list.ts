@@ -21,10 +21,10 @@ export interface AttachmentFile {
 })
 
 export class AttachmentList {
-
   files = input.required<AttachmentFile[]>();//required must pass it
   highlightedId = input<string | null>(null); //row to highlight after a search click
   fallbackAuthor = input(''); // shown when a file has no author
+  selectedId = input<string | null>(null); // file currently previewed -> active row
 
   folderOpened = output<AttachmentFile>();
   fileSelected = output<AttachmentFile>();

@@ -446,7 +446,8 @@
               <div class="eform-details">
                 <!-- Comment body and form-specific extras -->
                 <div class="eform-card-details" *ngIf="eform.isContentLoaded && eform.eFormDetails">
-                  <div class="comment-card-message" *ngIf="eform.eFormDetails?.commentHtml">
+                  <div class="comment-card-message" *ngIf="eform.eFormDetails?.commentHtml"
+                    [class.is-expanded]="comments.isCommentExpanded(eform)">
                     <i class="fi fi-rr-comment-alt" aria-hidden="true"></i>
                     <span
                       class="detail-value comment-text"
@@ -454,6 +455,15 @@
                       (click)="comments.onCommentLinkClick($event)"
                     ></span>
                   </div>
+                  <button
+                    type="button"
+                    class="comment-card-more"
+                    *ngIf="comments.isLongComment(eform)"
+                    [attr.aria-expanded]="comments.isCommentExpanded(eform)"
+                    (click)="comments.toggleCommentExpanded(eform)">
+                    {{ comments.isCommentExpanded(eform) ? 'Show less' : 'Show more' }}
+                    <i class="fi" [ngClass]="comments.isCommentExpanded(eform) ? 'fi-rr-angle-small-up' : 'fi-rr-angle-small-down'" aria-hidden="true"></i>
+                  </button>
                   <dl
                     class="comment-card-extras"
                     *ngIf="eform.eFormDetails?.dateOfMissingPunch || eform.eFormDetails?.approverName || eform.eFormDetails?.approverComments">
@@ -612,6 +622,7 @@
               [files]="attachments.filteredAttachments"
               [highlightedId]="attachments.highlightedAttachmentId"
               [fallbackAuthor]="session.currentUser?.username ?? ''"
+              [selectedId]="attachments.previewFile()?.id ?? null"
               [class.attachment-list--with-preview]="!!attachments.previewFile()"
               (folderOpened)="attachments.openFolder($event)"
               (fileSelected)="attachments.previewFile.set($event)" />

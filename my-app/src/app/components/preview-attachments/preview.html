@@ -1,12 +1,24 @@
 @if (file(); as f){
-<section class="preview">
+@if (expand()) { <div class="preview-backdrop" (click)="expand.set(false)"></div> }
+
+<section class="preview" [class.preview--expanded]="expand()">
     <header class="preview-header">
-        <h2 class="preview-title">{{ f.name }}</h2>
-        <span class="preview-meta">
-            {{ f.lastModifiedDateTime ? (f.lastModifiedDateTime | date: 'dd/MM/yyyy') : '—' }}
-            &nbsp;|&nbsp;
-            {{ f.modifiedBy || '—' }}
-        </span>
+        <div class="preview-heading">
+            <h2 class="preview-title">{{ f.name }}</h2>
+            <span class="preview-meta">
+                {{ f.lastModifiedDateTime ? (f.lastModifiedDateTime | date: 'dd/MM/yyyy') : '—' }}
+                &nbsp;|&nbsp;
+                {{ f.modifiedBy || '—' }}
+            </span>
+        </div>
+
+        @if (status() === 'ready') {
+        <button type="button" class="preview-expand-btn" (click)="toggleExpand()"
+                [attr.aria-label]="expand() ? 'Close expanded preview' : 'Expand preview'"
+                [attr.aria-expanded]="expand()">
+            <i class="fi" [class.fi-br-expand]="!expand()" [class.fi-br-compress]="expand()" aria-hidden="true"></i>
+        </button>
+        }
     </header>
 
     <div class="preview-body">

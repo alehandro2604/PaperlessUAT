@@ -603,8 +603,6 @@ export class TodoListComponent implements OnInit, OnDestroy {
     this.searchTerm = term ?? '';
   }
 
-
-
   /** Only what the card displays: task type line, form name and eForm number (never dates). */
   private subGroupMatchesSearch(
     sg: { taskLabel: string; formName: string; eFormListId: string },
