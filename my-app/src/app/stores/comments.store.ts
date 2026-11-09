@@ -831,8 +831,14 @@ export class CommentsStore {
     return String(value || '').toLowerCase().replace(/[^a-z]/g, '');
   }
 
+  /** Scroll position of the task list when "View details" was opened, so closing returns to the same spot. */
+  private listScrollTop = 0;
+
   openHrTaskForm(task: any): void {
     if (!task.id) return;
+
+    // The list is removed from the page while details are open, so remember where it was scrolled to.
+    this.listScrollTop = document.querySelector<HTMLElement>('.eforms-container')?.scrollTop ?? 0;
 
     try {
       const d = task.eFormDetails;
@@ -860,7 +866,16 @@ export class CommentsStore {
     this.view.refreshView();
   }
 
-  closeFormViewer(): void { this.selectedEFormContent = null; }
+  closeFormViewer(): void {
+    this.selectedEFormContent = null;
+    this.view.refreshView();
+    // The list is recreated on close, so put it back where the user was once it has rendered.
+    const top = this.listScrollTop;
+    requestAnimationFrame(() => {
+      const list = document.querySelector<HTMLElement>('.eforms-container');
+      if (list) list.scrollTop = top;
+    });
+  }
 
   isCommentPanelOpen = false;
 
