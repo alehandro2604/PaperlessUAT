@@ -476,10 +476,9 @@ git status
 # Stage everything (files in .gitignore, like .env.uat, are skipped)
 git add -A
 
-# Save a snapshot with a message
-git commit -m "Describe what you changed"
-
-# Upload to the UAT repo
+#To push and save to github
+git add -A my-app/src
+git commit -m "Preview: add a download button and stop linking attachments to SharePoint"
 git push uat main
 ```
 
