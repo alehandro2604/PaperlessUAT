@@ -2,7 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { AppConstants } from '../app.constants';
 import { getFileCategory, getFileExtension, getFileIcon } from '../file-utils';
-import { graphGetWithRetry, normalizeName, toGraphPath , graphPost} from '../microsoft-graph';
+import { graphGet, graphGetWithRetry, normalizeName, toGraphPath , graphPost} from '../microsoft-graph';
 import { AttachmentFile } from '../components/attachments/attachment-list/attachment-list';
 import {firstValueFrom} from "rxjs";
 import { AppUser } from '../models/app-user.model';
@@ -105,6 +105,26 @@ async getPreviewUrl(driveId: string, fileId: string, token: string): Promise<str
   catch{
     return null;
   }
+}
+
+/**
+ * Downloads a copy of the file as a Blob; the SharePoint original is never opened.
+ * Uses Graph's pre-authenticated download link, or the /content endpoint if the link is missing.
+ */
+async downloadFile(driveId: string, fileId: string, token: string): Promise<Blob> {
+  // No $select: Graph only reliably includes the downloadUrl annotation on the default response.
+  const item = await firstValueFrom(
+    graphGet(this.http, `/drives/${driveId}/items/${fileId}`, token)
+  ) as Record<string, unknown>;
+  const link = item['@microsoft.graph.downloadUrl'];
+
+  const res = typeof link === 'string' && link.startsWith('https://')
+    ? await fetch(link)
+    : await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/items/${fileId}/content`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+  if (!res.ok) throw new Error(`Download failed (${res.status})`);
+  return res.blob();
 }
 
   // ============================================================

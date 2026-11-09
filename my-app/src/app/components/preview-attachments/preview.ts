@@ -23,7 +23,8 @@ export class PreviewAttachments {
   private auth = inject(AuthService);            // gets the login token
   private driveFiles = inject(DriveFilesService); // calls Graph
   private sanitizer = inject(DomSanitizer);      // lets us put the link in an iframe
-  protected expand = signal(false);                       // whether the user clicked "expand" to see the full preview
+  protected downloadError = signal(false);                // true when the last download attempt failed
+  protected expand = signal(false);                      // whether the user clicked "expand" to see the full preview
   protected toggleExpand(): void { this.expand.update(v => !v); }
 
   // Collapse the expanded preview on Esc, or if the window is resized.
@@ -40,10 +41,33 @@ export class PreviewAttachments {
     });
   }
 
+  /** Downloads a copy of the file. The preview is read-only, so nothing is saved back to SharePoint. */
+  protected async download(): Promise<void> {
+    const f = this.file();
+    if (!f?.driveId) return;
+    this.downloadError.set(false);
+    try {
+      const token = await this.auth.acquireSharePointToken();
+      const blob = await this.driveFiles.downloadFile(f.driveId, f.id, token);
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      a.download = f.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 10_000);
+    } catch (err) {
+      console.error('Download failed', err);
+      this.downloadError.set(true);
+    }
+  }
+
   private async load(f: AttachmentFile): Promise<void> {
     this.status.set('loading');
     this.link.set(null);
     this.expand.set(false);           // a new file always starts collapsed
+    this.downloadError.set(false);
 
     if (!f.driveId) {                 // e.g. an HR task list item, not a SharePoint file
       this.status.set('failed');

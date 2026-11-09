@@ -12,6 +12,12 @@
             </span>
         </div>
 
+        @if (f.driveId) {
+        <button type="button" class="preview-expand-btn" (click)="download()"
+                aria-label="Download file" title="Download">
+            <i class="fi fi-br-download" aria-hidden="true"></i>
+        </button>
+        }
         @if (status() === 'ready') {
         <button type="button" class="preview-expand-btn" (click)="toggleExpand()"
                 [attr.aria-label]="expand() ? 'Close expanded preview' : 'Expand preview'"
@@ -20,6 +26,10 @@
         </button>
         }
     </header>
+
+    @if (downloadError()) {
+    <p class="preview-msg preview-msg--error">Download failed. Please try again.</p>
+    }
 
     <div class="preview-body">
         @switch (status()) {
@@ -32,7 +42,7 @@
         @case ('failed') {
         <p class="preview-msg">
             No preview for this file.
-            <a [href]="f.webUrl" target="_blank" rel="noopener noreferrer">Open it</a>
+            @if (f.driveId) { Use the download button to open it. }
         </p>
         }
         }

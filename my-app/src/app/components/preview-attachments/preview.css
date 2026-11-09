@@ -74,3 +74,4 @@
 .preview-body { flex: 1; min-height: 0; }      /* takes all space under the header */
 .preview-body iframe { width: 100%; height: 100%; border: 0; display: block; }
 .preview-msg { padding: 16px; text-align: center; color: #4b5563; }
+.preview-msg--error { padding: 8px 16px; color: #b91c1c; }
