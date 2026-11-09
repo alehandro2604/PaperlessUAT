@@ -12,8 +12,6 @@
       [class.attachment-row-active]="!item.isFolder && selectedId() === item.id"
       [class.attachment-row-folder]="item.isFolder"
       [class.attachment-row-file]="!item.isFolder"
-      (mouseenter)="onHover(item)"
-      (mouseleave)="onHoverLeave()"
       (click)="onClick(item)">
 
       <span class="att-col-name">

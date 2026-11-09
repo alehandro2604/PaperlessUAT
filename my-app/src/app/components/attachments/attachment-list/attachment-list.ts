@@ -28,29 +28,10 @@ export class AttachmentList {
 
   folderOpened = output<AttachmentFile>();
   fileSelected = output<AttachmentFile>();
-  private hovereTime?: ReturnType<typeof setTimeout>;
 
-
-  /** Mouse rests on a file for 500 ms -> ask the parent to preview it. */
-  protected onHover(item: AttachmentFile) {
-    if (item.isFolder) return;              // folders have no preview
-    clearTimeout(this.hovereTime);          // cancel the previous row's timer
-    this.hovereTime = setTimeout(() => {
-      this.fileSelected.emit(item);         // "preview this file"
-    }, 500);
-  }
-
-  protected onHoverLeave() {
-    if (this.hovereTime) {
-      clearTimeout(this.hovereTime);
-      this.hovereTime = undefined;
-    }
-  }
-
-  /** Click / tap (phones have no hover) -> preview straight away. */
+  /** Click / tap a file -> preview it. */
   protected onClick(item: AttachmentFile) {
     if (item.isFolder) return;
-    clearTimeout(this.hovereTime);
     this.fileSelected.emit(item);
   }
 }
